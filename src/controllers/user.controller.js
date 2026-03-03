@@ -1,6 +1,6 @@
 const { ERROR_BAD_REQUEST_RESPONSE } = require('../../shared/util/constants');
 const BusinessException = require('../../shared/exceptionHandler/BusinessException');
-const { 
+const {
   registerUser: serviceRegisterUser,
   verifyCodeUser: serviceVerifyCodeUser,
   registerWalletToUser: serviceRegisterWalletToUser,

@@ -28,29 +28,18 @@ const refreshTokenSchema = Joi.object({
  *     LoginSchema:
  *       type: object
  *       required:
- *         - email
- *         - password
+ *         - token
  *       properties:
- *         email:
+ *         token:
  *           type: string
- *           example: johndoe@example.com
- *         password:
- *           type: string
- *           example: strongPassword123*
+ *           description: Google ID token obtained from the Google Sign-In button
+ *           example: eyJhbGciOi...
 */
 const loginSchema = Joi.object({
-    email: Joi.string().trim().max(256).email().required()
+    token: Joi.string().trim().required()
         .messages({
-            'any.required': 'email.required',
-            'string.empty': 'email.required',
-            'string.max': 'email.max',
-            'string.email': 'email.invalid'
-        }),
-    password: Joi.string().trim().max(256).required()
-        .messages({
-            'any.required': 'password.required',
-            'string.empty': 'password.required',
-            'string.max': 'password.max'
+            'any.required': 'token.required',
+            'string.empty': 'token.required'
         })
 });
 

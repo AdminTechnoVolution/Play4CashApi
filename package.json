@@ -18,6 +18,7 @@
     "decimal.js": "^10.6.0",
     "dotenv": "^17.2.0",
     "express": "^5.1.0",
+    "google-auth-library": "^10.6.1",
     "i18n": "^0.15.1",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",

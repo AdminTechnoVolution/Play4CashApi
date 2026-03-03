@@ -11,7 +11,8 @@ const jwt = require('../../shared/util/jwt');
 const redisClient = require('../../shared/config/redis');
 const bcrypt = require('bcryptjs');
 const User = require('../models/user.model');
-
+const { OAuth2Client } = require('google-auth-library');
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const logoutUser = async (req) => {
     try {
         let { refreshToken } = req.body;
@@ -42,21 +43,21 @@ const refreshTokenUser = async (req) => {
             _id: jwt.getValueFromJwtToken(refreshToken, 'id', false),
             email: jwt.getValueFromJwtToken(refreshToken, 'email', false),
             username: jwt.getValueFromJwtToken(refreshToken, 'username', false),
-            referral_code: jwt.getValueFromJwtToken(refreshToken, 'referral_code', false)
+            name: jwt.getValueFromJwtToken(refreshToken, 'name', false)
         };
 
         const payload = {
             id: user._id,
             email: user.email,
             username: user.username,
-            referral_code: user.referral_code,
+            name: user.name,
         };
 
         const payloadRefresh = {
             id: user._id,
             email: user.email,
             username: user.username,
-            referral_code: user.referral_code,
+            name: user.name,
             hash: util.generateRandomHash(),
         };
 
@@ -72,33 +73,44 @@ const refreshTokenUser = async (req) => {
 }
 
 const loginUser = async (req) => {
-    let { email, password } = req.body;
+    let { token } = req.body;
+
+    let payload;
+    try {
+        const ticket = await googleClient.verifyIdToken({
+            idToken: token,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
+        payload = ticket.getPayload();
+    } catch (error) {
+        throw new BusinessException('ERROR_LOGIN', 401);
+    }
+
+    let { email, name } = payload;
     email = email.toLowerCase();
+
     const user = await User.findOne({ email, status: 'active' });
 
     if (!user) throw new BusinessException('ERROR_LOGIN', 401);
-    let isMatch = bcrypt.compareSync(password, user.password);
 
-    if (!isMatch) throw new BusinessException('ERROR_LOGIN', 401);
-
-    const payload = {
+    const userPayload = {
         id: user._id,
         email: user.email,
         username: user.username,
-        referral_code: user.referral_code,
+        name: name,
     };
 
     const payloadRefresh = {
         id: user._id,
         email: user.email,
         username: user.username,
-        referral_code: user.referral_code,
+        name: name,
         hash: util.generateRandomHash(),
     };
-    const token = await generateTokenAndSaveToken(payload, JWT_ACCESS_TOKEN_TTL_SECS, REDIS_KEY_ACCESS_TOKEN);
+    const accessToken = await generateTokenAndSaveToken(userPayload, JWT_ACCESS_TOKEN_TTL_SECS, REDIS_KEY_ACCESS_TOKEN);
     const refreshToken = await generateTokenAndSaveToken(payloadRefresh, JWT_REFRESH_TOKEN_TTL_SECS, REDIS_KEY_REFRESH_TOKEN);
 
-    return new BaseResponse(true, [], { token, refreshToken });
+    return new BaseResponse(true, [], { token: accessToken, refreshToken });
 };
 
 const generateTokenAndSaveToken = async (payload, ttl, redisKey) => {
