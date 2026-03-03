@@ -1,5 +1,5 @@
 const Joi = require('joi');
-const { PASSWORD_PATTERN, USERNAME_PATTERN } = require('../../shared/util/constants');
+const { USERNAME_PATTERN } = require('../../shared/util/constants');
 
 /**
  * @swagger
@@ -10,7 +10,6 @@ const { PASSWORD_PATTERN, USERNAME_PATTERN } = require('../../shared/util/consta
  *       required:
  *         - email
  *         - username
- *         - password
  *       properties:
  *         email:
  *           type: string
@@ -18,12 +17,6 @@ const { PASSWORD_PATTERN, USERNAME_PATTERN } = require('../../shared/util/consta
  *         username:
  *           type: string
  *           example: JhonDoe123
- *         password:
- *           type: string
- *           example: strongPassword123*
- *         referred_by:
- *           type: string
- *           example: 770cf33e00f78dc687e9157b95e89b395b9986f653d4e2282047567c3a49d2c0 
 */
 const registerUserSchema = Joi.object({
     email: Joi.string().trim().max(256).email().required()
@@ -39,17 +32,6 @@ const registerUserSchema = Joi.object({
             'string.empty': 'username.required',
             'string.max': 'username.max',
             'string.pattern.base': 'username.pattern'
-        }),
-    password: Joi.string().trim().max(256).pattern(new RegExp(PASSWORD_PATTERN)).required()
-        .messages({
-            'any.required': 'password.required',
-            'string.empty': 'password.required',
-            'string.max': 'password.max',
-            'string.pattern.base': 'password.pattern'
-        }),
-    referred_by: Joi.string().trim().length(64).optional()
-        .messages({
-            'string.length': 'referred_by.length',
         }),
 });
 

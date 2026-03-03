@@ -11,11 +11,10 @@ const getUserAccount = async (req) => {
     const auth = req.headers['authorization'];
     const user_id = getValueFromJwtToken(auth, 'id');
 
-    const user = await User.findById(user_id).select('-_id -password -created_at').lean();
+    const user = await User.findById(user_id).select('-_id -created_at').lean();
 
     if (!user) throw new BusinessException('ERROR_USER_NOTFOUND');
 
-    message = req.__(SUCCESS_REGISTER_WALLET);
     return new BaseResponse(true, [], user);
 }
 
@@ -31,39 +30,28 @@ const registerWalletToUser = async (req) => {
     user.wallet_address = { coin, network, wallet };
     await user.save();
 
-    message = req.__(SUCCESS_REGISTER_WALLET);
+    const message = req.__(SUCCESS_REGISTER_WALLET);
     return new BaseResponse(true, [message]);
 }
 
 const registerUser = async (req) => {
-    let { email, username, password, referred_by } = req.body;
+    let { email, username, referred_by } = req.body;
     email = email.toLowerCase();
     const existingUser = await User.findOne({ $or: [{ email: email }, { username: username }] })
         .collation({ locale: 'en', strength: 2 });
 
     if (existingUser) throw new BusinessException('user.exist');
 
-    let verification_code = generateVerificationCode();
-    let hashedPassword = await generateHash(password, true);
-    let hashedVerificationCode = await generateHash(verification_code, true);
-    let referral_code = await generateHash(email, false);
-    let verificationExpireMins = process.env.EMAIL_VERIFICATION_EXPIRY_MINUTES;
-    let verification_expires_at = new Date(Date.now() + verificationExpireMins * 60 * 1000);
-
     let user = new User({
         email: email,
         username,
-        password: hashedPassword,
-        referral_code,
         referred_by,
-        verification_code: hashedVerificationCode,
-        verification_expires_at,
+        status: 'active',
     });
 
     await user.save();
-    sendVerificationEmail(email, username, verification_code, verificationExpireMins, req);
 
-    message = req.__(SUCCESS_REGISTER_USER)
+    const message = req.__(SUCCESS_REGISTER_USER);
     return new BaseResponse(true, [message]);
 };
 
@@ -82,18 +70,8 @@ const verifyCodeUser = async (req) => {
     user.verification_expires_at = undefined;
 
     await user.save();
-    message = req.__(SUCCESS_VERIFY_CODE_USER)
+    const message = req.__(SUCCESS_VERIFY_CODE_USER);
     return new BaseResponse(true, [message]);
-};
-
-const sendVerificationEmail = async (email, username, code, verificationExpireMins, req) => {
-    let subject = req.__('mailer.verifyAccount.subject');
-    let html = req.__('mailer.verifyAccount.template.body');
-    html = html
-        .replace(/\[code\]/g, code)
-        .replace(/\[username\]/g, username)
-        .replace(/\[verificationExpireMins\]/g, verificationExpireMins);
-    await sendEmail(email, subject, html);
 };
 
 module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount };

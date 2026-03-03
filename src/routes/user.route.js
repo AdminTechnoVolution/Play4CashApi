@@ -31,28 +31,10 @@ const { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount } = r
  *     responses:
  *       200:
  *         description: Success
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
- *       400:
- *         description: Bad Request
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       401:
  *         description: Unauthorized
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       500:
  *         description: Internal Server Error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  */
 router.get('/account', validateToken, getUserAccount);
 
@@ -63,15 +45,6 @@ router.get('/account', validateToken, getUserAccount);
  *     summary: Register new user
  *     tags:
  *       - User
- *     security:
- *       - Bearer: []
- *     parameters:
- *       - in: header
- *         name: Accept-Language
- *         schema:
- *           type: string
- *         description: Language to response
- *         example: es
  *     requestBody:
  *       required: true
  *       content:
@@ -81,22 +54,10 @@ router.get('/account', validateToken, getUserAccount);
  *     responses:
  *       200:
  *         description: Success
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       400:
  *         description: Bad Request
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       500:
  *         description: Internal Server Error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  */
 router.post('/register', validateBody(registerUserSchema), registerUser);
 
@@ -109,20 +70,6 @@ router.post('/register', validateBody(registerUserSchema), registerUser);
  *       - User
  *     security:
  *       - Bearer: []
- *     parameters:
- *       - in: header
- *         name: Authorization
- *         required: true
- *         schema:
- *           type: string
- *         description: Authorization token
- *         example: Bearer eyJhbGciOi
- *       - in: header
- *         name: Accept-Language
- *         schema:
- *           type: string
- *         description: Language to response
- *         example: es
  *     requestBody:
  *       required: true
  *       content:
@@ -132,28 +79,12 @@ router.post('/register', validateBody(registerUserSchema), registerUser);
  *     responses:
  *       200:
  *         description: Success
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       400:
  *         description: Bad Request
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       401:
  *         description: Unauthorized
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       500:
  *         description: Internal Server Error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  */
 router.post('/register-wallet', validateToken, validateBody(registerWalletToUserSchema), registerWalletToUser);
 
@@ -164,13 +95,6 @@ router.post('/register-wallet', validateToken, validateBody(registerWalletToUser
  *     summary: Verify the code to complete the new user registration
  *     tags:
  *       - User
- *     parameters:
- *       - in: header
- *         name: Accept-Language
- *         schema:
- *           type: string
- *         description: Language to response
- *         example: es
  *     requestBody:
  *       required: true
  *       content:
@@ -180,22 +104,10 @@ router.post('/register-wallet', validateToken, validateBody(registerWalletToUser
  *     responses:
  *       200:
  *         description: Success
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       400:
  *         description: Bad Request
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  *       500:
  *         description: Internal Server Error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BaseResponse'
  */
 router.post('/verify-code', validateBody(verifyCodeUserSchema), verifyCodeUser);
 

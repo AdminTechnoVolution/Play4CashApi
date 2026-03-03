@@ -89,9 +89,20 @@ const loginUser = async (req) => {
     let { email, name } = payload;
     email = email.toLowerCase();
 
-    const user = await User.findOne({ email, status: 'active' });
+    let user = await User.findOne({ email });
 
-    if (!user) throw new BusinessException('ERROR_LOGIN', 401);
+    if (!user) {
+        // Auto-register: valid Google token but no account yet — create one
+        let username = name.replace(/\s+/g, '_').toLowerCase();
+        const existingUsername = await User.findOne({ username }).collation({ locale: 'en', strength: 2 });
+        if (existingUsername) {
+            username = username + Math.floor(Math.random() * 10000);
+        }
+        user = new User({ email, username, status: 'active' });
+        await user.save();
+    }
+
+    if (user.status !== 'active') throw new BusinessException('ERROR_LOGIN', 401);
 
     const userPayload = {
         id: user._id,
