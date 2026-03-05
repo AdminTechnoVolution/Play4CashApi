@@ -13,6 +13,7 @@ const userRoutes = require('./src/routes/user.route');
 const loginRoutes = require('./src/routes/auth.route');
 const rechargesRoutes = require('./src/routes/recharge.route');
 const gamesRoutes = require('./src/routes/game.route');
+const roomRoutes = require('./src/routes/room.route');
 const withdrawalRoutes = require('./src/routes/withdrawal.route');
 const wsRoutes = require('./src/routes/ws.route');
 const setupWebSocketServer = require('./shared/config/ws');
@@ -29,6 +30,7 @@ app.use('/api/', loginRoutes);
 app.use('/api/transactions/', rechargesRoutes);
 app.use('/api/transactions/', withdrawalRoutes);
 app.use('/api/games', gamesRoutes);
+app.use('/api/rooms', roomRoutes);
 app.use('/api', wsRoutes);
 app.use(exceptionHandler);
 

@@ -6,6 +6,7 @@ const moveSchema = new mongoose.Schema({
 
 const playerSchema = new mongoose.Schema({
     playerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    ready: { type: Boolean, default: false },
     moves: { type: [moveSchema], default: [] }
 }, { _id: false });
 
