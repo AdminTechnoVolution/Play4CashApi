@@ -15,6 +15,7 @@ const gameSchema = new mongoose.Schema({
     default_bets: { type: [Number], required: true },
     house_edge: { type: Number, required: true, min: 1, max: 100 },
     socket_code: { type: String, required: true },
+    turn_timer_seconds: { type: Number, required: true, min: 1 },
     created_at: { type: Date, default: Date.now }
 });
 

@@ -41,7 +41,6 @@ const verifyCodeUser = async (req, res, next) => {
 const registerWalletToUser = async (req, res, next) => {
   try {
     if (!req.body) throw new BusinessException(ERROR_BAD_REQUEST_RESPONSE);
-
     let jsonResponse = await serviceRegisterWalletToUser(req);
     res.status(200).json(jsonResponse);
   } catch (err) {
