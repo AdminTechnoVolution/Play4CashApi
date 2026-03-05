@@ -101,13 +101,13 @@ const joinRoom = async (req) => {
 
         const room = await Room.findById(id).populate('game_id');
         if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-        if (room.status !== 'waiting') throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
+        if (room.status !== 'waiting') throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
 
         const maxPlayers = room.game_id.max_players;
-        if (room.players.length >= maxPlayers) throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
+        if (room.players.length >= maxPlayers) throw new BusinessException('ERROR_ROOM_FULL', 400);
 
         const alreadyIn = room.players.some(p => p.playerId.toString() === user_id);
-        if (alreadyIn) throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
+        if (alreadyIn) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
 
         room.players.push({ playerId: user_id, ready: false });
         await room.save();
