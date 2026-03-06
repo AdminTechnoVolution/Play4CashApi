@@ -129,14 +129,25 @@ const setReady = async (req) => {
         const { id } = req.params;
         const { ready } = req.body;
 
-        const room = await Room.findById(id);
+        const room = await Room.findById(id).populate('game_id', 'max_players');
         if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
         if (room.status !== 'waiting') throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
 
         const player = room.players.find(p => p.playerId.toString() === user_id);
         if (!player) throw new BusinessException('ERROR_AUTH', 403);
+        if (player.ready) throw new BusinessException('ERROR_PLAYER_ALREADY_READY', 400);
 
         player.ready = ready;
+
+        // Auto-start: room is full AND every player is ready
+        const maxPlayers = room.game_id?.max_players;
+        const roomFull = maxPlayers && room.players.length >= maxPlayers;
+        const allReady = room.players.every(p => p.ready);
+
+        if (roomFull && allReady) {
+            room.status = 'started';
+        }
+
         await room.save();
 
         return new BaseResponse(true, [], room);
@@ -146,6 +157,7 @@ const setReady = async (req) => {
         throw new DataLayerException('ERROR_GENERIC_RESPONSE');
     }
 };
+
 
 // ─── DELETE ROOM ──────────────────────────────────────────────────────────────
 
