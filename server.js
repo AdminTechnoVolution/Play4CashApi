@@ -44,6 +44,8 @@ if (process.env.ENABLE_SWAGGER === 'true') {
 }
 
 setupWebSocketServer(server);
-
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => logger.info(`Play4Cash server running on port ${PORT}`, { className: filename }));
+
+server.listen(PORT, "0.0.0.0", () =>
+    logger.info(`Play4Cash server running on port ${PORT}`, { className: filename })
+);
