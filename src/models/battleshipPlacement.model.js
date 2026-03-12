@@ -31,6 +31,10 @@ const battleshipPlacementSchema = new mongoose.Schema({
         type: [shipSchema],
         required: true,
     },
+    shotsFired: {
+        type: [[Number]],
+        default: [],
+    },
     ready_at: { type: Date, default: Date.now },
     status: {
         type: String,
