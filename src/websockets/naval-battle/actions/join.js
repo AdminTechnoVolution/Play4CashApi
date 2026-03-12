@@ -8,6 +8,7 @@ const filename = path.basename(__filename);
 const Joi = require('joi');
 const Room = require('../../../models/room.model');
 const BattleshipPlacement = require('../../../models/battleshipPlacement.model');
+const User = require('../../../models/user.model');
 
 // Event name for all naval-battle messages on this socket
 const EVENT = 'naval-battle';
@@ -64,6 +65,19 @@ module.exports = (socket, namespace) => {
             socket.emit(EVENT, emitMsg);
 
             logger.info(`Player ${player_id} joined naval-battle room ${room_id}`, { className: filename });
+
+            // Fetch the joining player's username
+            const joiningUser = await User.findById(player_id).select('username');
+            const username = joiningUser ? joiningUser.username : 'Opponent';
+
+            // Notify the already-waiting player(s) that their opponent just arrived
+            const existingSockets = await namespace.in(room_id).fetchSockets();
+            if (existingSockets.length > 1) {
+                socket.to(room_id).emit(EVENT, WsBaseResponse.success(
+                    { opponentJoined: true, opponentName: username },
+                    [`${username} has joined the room!`]
+                ));
+            }
 
             // Determine if the game is already started (e.g., reconnecting after both placed ships)
             if (room.status === 'started') {
