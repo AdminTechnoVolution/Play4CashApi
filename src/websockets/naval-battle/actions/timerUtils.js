@@ -44,14 +44,21 @@ const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, second
 
             // Notify both players
             activeSocket.emit(EVENT, WsBaseResponse.error(
-                { outcome: 'timeout_loss' },
+                { outcome: 'timeout_loss', gameEnded: true },
                 ['You ran out of time! You lose.']
             ));
 
             opponentSocket.emit(EVENT, WsBaseResponse.success(
-                { outcome: 'win', reason: 'timeout', prize },
+                { outcome: 'win', reason: 'timeout', prize, gameEnded: true },
                 ['Opponent ran out of time! You win!']
             ));
+            
+            // Notify the global lobby that this room is gone
+            const { getIo } = require('../../../../shared/config/ws');
+            const io = getIo();
+            if (io) {
+                io.of('/rooms').emit('roomDeleted', { id: room_id });
+            }
 
         } catch (err) {
             logger.error(`Error processing turn timeout: ${err}`, { className: filename });

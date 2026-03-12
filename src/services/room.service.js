@@ -111,18 +111,41 @@ const joinRoom = async (req) => {
         const user_id = getValueFromJwtToken(auth, 'id');
         const { id } = req.params;
 
-        const room = await Room.findById(id).populate('game_id');
-        if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-        if (room.status !== 'waiting') throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
+        const roomInfo = await Room.findById(id).populate('game_id');
+        if (!roomInfo) throw new BusinessException('ERROR_NOT_FOUND', 404);
+        if (roomInfo.status !== 'waiting') throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
 
-        const maxPlayers = room.game_id.max_players;
-        if (room.players.length >= maxPlayers) throw new BusinessException('ERROR_ROOM_FULL', 400);
+        const maxPlayers = roomInfo.game_id.max_players;
 
-        const alreadyIn = room.players.some(p => p.playerId.toString() === user_id);
-        if (alreadyIn) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
+        // Perform an atomic update to prevent race conditions during concurrent "joins"
+        const room = await Room.findOneAndUpdate(
+            {
+                _id: id,
+                status: 'waiting',
+                // If maxPlayers is 2, ensure the index 1 (the 2nd slot) doesn't exist yet
+                [`players.${maxPlayers - 1}`]: { $exists: false },
+                'players.playerId': { $ne: user_id }
+            },
+            {
+                $push: { players: { playerId: user_id, ready: false } }
+            },
+            { new: true }
+        ).populate('game_id');
 
-        room.players.push({ playerId: user_id, ready: false });
-        await room.save();
+        // If 'room' is null, the atomic condition failed (it was full, started, or user already joined)
+        if (!room) {
+            // Re-fetch to give an accurate error message
+            const currentRoom = await Room.findById(id);
+            if (!currentRoom) throw new BusinessException('ERROR_NOT_FOUND', 404);
+            if (currentRoom.status !== 'waiting') throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
+            
+            const alreadyIn = currentRoom.players.some(p => p.playerId.toString() === user_id);
+            if (alreadyIn) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
+
+            if (currentRoom.players.length >= maxPlayers) throw new BusinessException('ERROR_ROOM_FULL', 400);
+            
+            throw new BusinessException('ERROR_ROOM_FULL', 400); // Fallback
+        }
 
         const populatedRoom = await Room.findById(room._id)
             .populate('game_id', '-created_at')

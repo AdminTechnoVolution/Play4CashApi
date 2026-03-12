@@ -207,6 +207,14 @@ module.exports = (socket, namespace) => {
                         { outcome: 'lose', row, col, shipType: result.shipType, yourTurn: false, gameEnded: true },
                         ['All your ships have been sunk. You lose!']
                     ));
+                    
+                    // Notify the global lobby that this room is gone
+                    const { getIo } = require('../../../../shared/config/ws');
+                    const io = getIo();
+                    if (io) {
+                        io.of('/rooms').emit('roomDeleted', { id: room_id });
+                    }
+                    
                     return;
                 }
             }

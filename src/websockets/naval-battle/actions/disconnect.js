@@ -27,6 +27,19 @@ module.exports = (socket, namespace) => {
                 [i18n.__('ws.games.playerDisconnected') || 'Your opponent disconnected. You win by forfeit!']
             );
             socket.to(room_id).emit(EVENT, emitMsg);
+            
+            // Mark the room as finished since it was a forfeit
+            room.status = 'finished';
+            room.winner = player_id === room.players[0]?.playerId?.toString() ? room.players[1]?.playerId : room.players[0]?.playerId;
+            room.finished_at = new Date();
+            await room.save();
+
+            // Notify the global lobby that this room is gone
+            const { getIo } = require('../../../../shared/config/ws');
+            const io = getIo();
+            if (io) {
+                io.of('/rooms').emit('roomDeleted', { id: room_id });
+            }
 
             logger.info(`Player ${player_id} forfeit by disconnecting from naval-battle room ${room_id}`, { className: filename });
         } catch (err) {
