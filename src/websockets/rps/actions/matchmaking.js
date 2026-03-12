@@ -26,7 +26,7 @@ module.exports = (socket, namespace) => {
                 return;
             }
 
-            const userId = jwt.getValueFromJwtToken(socket.handshake.query.token, "id");
+            const userId = jwt.getValueFromJwtToken(socket.data.token, "id");
 
             if (await hasBalanceForBet(userId, payload.bet) === false) {
                 emitMsg = WsBaseResponse.error(socket.data, i18n.__('ws.games.insufficientBalance'));
@@ -60,14 +60,14 @@ module.exports = (socket, namespace) => {
 
             emitMsg = WsBaseResponse.success({
                 players: [
-                    jwt.getValueFromJwtToken(waitingSocket.handshake.query.token, "username"),
-                    jwt.getValueFromJwtToken(socket.handshake.query.token, "username")],
+                    jwt.getValueFromJwtToken(waitingSocket.data.token, "username"),
+                    jwt.getValueFromJwtToken(socket.data.token, "username")],
                 roomId,
                 bet: payload.bet
             }, [i18n.__('ws.games.matchFound')]);
 
             namespace.to(roomId).emit(EVENT_NAME_MATCHMAKING, emitMsg);
-            const userIdWaitingSocket = jwt.getValueFromJwtToken(waitingSocket.handshake.query.token, "id");
+            const userIdWaitingSocket = jwt.getValueFromJwtToken(waitingSocket.data.token, "id");
 
             socket.data.userId = userId;
             socket.data.opponentId = waitingSocket.id;

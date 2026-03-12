@@ -17,7 +17,7 @@ const roomRoutes = require('./src/routes/room.route');
 const battleshipPlacementRoutes = require('./src/routes/battleshipPlacement.routes');
 const withdrawalRoutes = require('./src/routes/withdrawal.route');
 const wsRoutes = require('./src/routes/ws.route');
-const setupWebSocketServer = require('./shared/config/ws');
+const { setupWebSocketServer } = require('./shared/config/ws');
 const exceptionHandler = require('./shared/exceptionHandler/exceptionHandler');
 const { swaggerUi, swaggerSpec } = require('./shared/config/swagger');
 

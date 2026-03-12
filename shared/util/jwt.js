@@ -11,8 +11,11 @@ const generateToken = (payload, expiresIn) => {
 
 const getValueFromJwtToken = (token, key, hasBearer = true) => {
     try {
-        if (hasBearer)
+        if (hasBearer && token && token.includes(' '))
             token = token.split(' ')[1];
+        else if (token && token.startsWith('Bearer '))
+            token = token.substring(7);
+
         const decoded = jwt.verify(token, JWT_SECRET_KEY);
 
         return decoded[key] || '';
@@ -24,7 +27,9 @@ const getValueFromJwtToken = (token, key, hasBearer = true) => {
 
 const verifyJwtToken = (token) => {
     try {
-        token = token.split(' ')[1];
+        if (token && token.includes(' ')) {
+            token = token.split(' ')[1];
+        }
         jwt.verify(token, JWT_SECRET_KEY);
         return token;
     } catch (error) {

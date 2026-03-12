@@ -27,26 +27,23 @@ module.exports = (socket, namespace) => {
             if (error) {
                 emitMsg = WsBaseResponse.error({}, error.details.map(d => d.message));
                 socket.emit(EVENT, emitMsg);
-                socket.disconnect(true);
                 return;
             }
 
             const { room_id } = payload;
-            const player_id = jwt.getValueFromJwtToken(socket.handshake.query.token, 'id');
+            const player_id = jwt.getValueFromJwtToken(socket.data.token, 'id');
 
             // 2. Room must exist and be started
             const room = await Room.findById(room_id);
             if (!room) {
                 emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.gameNotFound')]);
                 socket.emit(EVENT, emitMsg);
-                socket.disconnect(true);
                 return;
             }
 
-            if (room.status !== 'started') {
-                emitMsg = WsBaseResponse.error({}, ['Room is not in started status.']);
+            if (room.status !== 'waiting' && room.status !== 'started') {
+                emitMsg = WsBaseResponse.error({}, ['Room is not open for joining.']);
                 socket.emit(EVENT, emitMsg);
-                socket.disconnect(true);
                 return;
             }
 
@@ -55,7 +52,6 @@ module.exports = (socket, namespace) => {
             if (!isMember) {
                 emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.notInRoom') || 'You are not a member of this room.']);
                 socket.emit(EVENT, emitMsg);
-                socket.disconnect(true);
                 return;
             }
 
@@ -64,10 +60,30 @@ module.exports = (socket, namespace) => {
             socket.data.player_id = player_id;
             socket.data.room_id = room_id;
 
-            emitMsg = WsBaseResponse.success({ room_id }, [i18n.__('ws.games.waitingOpponent') || 'Joined room. Waiting for opponent.']);
+            emitMsg = WsBaseResponse.success({ room_id, waitingForOpponent: true }, [i18n.__('ws.games.waitingOpponent') || 'Joined room. Waiting for opponent.']);
             socket.emit(EVENT, emitMsg);
 
             logger.info(`Player ${player_id} joined naval-battle room ${room_id}`, { className: filename });
+
+            // Determine if the game is already started (e.g., reconnecting after both placed ships)
+            if (room.status === 'started') {
+                const roomObj = await Room.findById(room_id).populate('game_id', 'turn_timer_seconds');
+                const timerSeconds = roomObj?.game_id?.turn_timer_seconds ?? 30;
+                
+                // Read from room object who's turn it is
+                // (This assumes the first player in the room.players array goes first.
+                // In a production app, you might track current_turn_player_id in the Room model).
+                const isMyTurn = room.players[0].playerId.toString() === player_id;
+                
+                socket.data.turnTimerSeconds = timerSeconds;
+                socket.data.myTurn = isMyTurn;
+
+                emitMsg = WsBaseResponse.success(
+                    { yourTurn: isMyTurn, turnTimerSeconds: timerSeconds, waitingForOpponent: false },
+                    isMyTurn ? ['Reconnected. Your turn — fire!'] : ['Reconnected. Waiting for opponent to fire.']
+                );
+                socket.emit(EVENT, emitMsg);
+            }
 
         } catch (err) {
             logger.error(`Error joining naval-battle room: ${err}`, { className: filename });

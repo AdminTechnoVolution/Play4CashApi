@@ -29,7 +29,7 @@ module.exports = (req, res, next) => {
     }
 };
 
-function validateJwtSocketConnection(token) {
+async function validateJwtSocketConnection(token) {
     if (!token)
         throw new BusinessException('ERROR_AUTH');
 
@@ -38,7 +38,7 @@ function validateJwtSocketConnection(token) {
         throw new BusinessException('ERROR_AUTH');
 
     try {
-        exists = validateToken(token);
+        const exists = await validateToken(token);
         if (!exists)
             throw new BusinessException('ERROR_AUTH');
         return new BaseResponse(true);

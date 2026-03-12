@@ -7,6 +7,7 @@ const BaseResponse = require('../../shared/util/baseResponse');
 const BusinessException = require('../../shared/exceptionHandler/BusinessException');
 const DataLayerException = require('../../shared/exceptionHandler/DataLayerException');
 const { getValueFromJwtToken } = require('../../shared/util/jwt');
+const { getIo } = require('../../shared/config/ws');
 
 const SHIP_SIZES = {
     carrier: 5,
@@ -98,6 +99,48 @@ const savePlacement = async (req) => {
         }
 
         await room.save();
+
+        if (room.status === 'started') {
+            const io = getIo();
+            if (io) {
+                const namespace = io.of('/naval-battle');
+                const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
+                
+                // Get sockets in room
+                const socketsInRoom = await namespace.in(roomId).fetchSockets();
+                
+                if (socketsInRoom.length === 2) {
+                    const firstPlayer = socketsInRoom[0];
+                    const secondPlayer = socketsInRoom[1];
+
+                    // Store timer duration on each socket for later use in fire.js
+                    firstPlayer.data.turnTimerSeconds = timerSeconds;
+                    secondPlayer.data.turnTimerSeconds = timerSeconds;
+                    
+                    firstPlayer.data.myTurn = true;
+                    secondPlayer.data.myTurn = false;
+
+                    // Notify both players
+                    firstPlayer.emit('naval-battle', {
+                        success: true,
+                        data: { yourTurn: true, turnTimerSeconds: timerSeconds, waitingForOpponent: false },
+                        messages: ['Opponent is ready. Your turn — fire!']
+                    });
+                    
+                    secondPlayer.emit('naval-battle', {
+                        success: true,
+                        data: { yourTurn: false, turnTimerSeconds: timerSeconds, waitingForOpponent: false },
+                        messages: ['Enemy ships detected. Waiting for opponent to fire.']
+                    });
+
+                    // Start the timer for the first player
+                    const { startTurnTimer } = require('../websockets/naval-battle/actions/timerUtils');
+                    startTurnTimer(firstPlayer, secondPlayer, namespace, roomId, timerSeconds);
+
+                    logger.info(`REST API broadcasted game start for room ${roomId}`, { className: filename });
+                }
+            }
+        }
 
         return new BaseResponse(true, [], { message: 'Placement saved', status: placement.status, roomStatus: room.status });
     } catch (err) {
