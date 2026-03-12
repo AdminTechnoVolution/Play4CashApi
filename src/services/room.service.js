@@ -7,6 +7,7 @@ const BaseResponse = require('../../shared/util/baseResponse');
 const BusinessException = require('../../shared/exceptionHandler/BusinessException');
 const DataLayerException = require('../../shared/exceptionHandler/DataLayerException');
 const { getValueFromJwtToken } = require('../../shared/util/jwt');
+const { getIo } = require('../../shared/config/ws');
 const { LANGUAGE_ES, LANGUAGE_EN } = require('../../shared/util/constants');
 const util = require('../../shared/util/util');
 
@@ -83,6 +84,17 @@ const createRoom = async (req) => {
 
         await room.save();
 
+        const populatedRoom = await Room.findById(room._id)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+        const [enriched] = localizeRooms(req, [populatedRoom]);
+
+        const io = getIo();
+        if (io) {
+            io.of('/rooms').emit('roomCreated', enriched);
+        }
+
         return new BaseResponse(true, [], room);
     } catch (err) {
         if (err instanceof BusinessException) throw err;
@@ -111,6 +123,17 @@ const joinRoom = async (req) => {
 
         room.players.push({ playerId: user_id, ready: false });
         await room.save();
+
+        const populatedRoom = await Room.findById(room._id)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+        const [enriched] = localizeRooms(req, [populatedRoom]);
+
+        const io = getIo();
+        if (io) {
+            io.of('/rooms').emit('roomUpdated', enriched);
+        }
 
         return new BaseResponse(true, [], room);
     } catch (err) {
@@ -150,6 +173,17 @@ const setReady = async (req) => {
 
         await room.save();
 
+        const populatedRoom = await Room.findById(room._id)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+        const [enriched] = localizeRooms(req, [populatedRoom]);
+
+        const io = getIo();
+        if (io) {
+            io.of('/rooms').emit('roomUpdated', enriched);
+        }
+
         return new BaseResponse(true, [], room);
     } catch (err) {
         if (err instanceof BusinessException) throw err;
@@ -165,6 +199,12 @@ const deleteRoom = async (req) => {
     try {
         const room = await Room.findByIdAndDelete(req.params.id);
         if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
+
+        const io = getIo();
+        if (io) {
+            io.of('/rooms').emit('roomDeleted', { id: req.params.id });
+        }
+
         return new BaseResponse(true, []);
     } catch (err) {
         if (err instanceof BusinessException) throw err;

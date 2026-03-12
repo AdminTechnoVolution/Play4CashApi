@@ -139,6 +139,30 @@ const savePlacement = async (req) => {
 
                     logger.info(`REST API broadcasted game start for room ${roomId}`, { className: filename });
                 }
+                
+                // ALSO notify the global /rooms lobby that this room is now "started"
+                // (Populate it identically to getRooms so the frontend can replace the object)
+                const populatedRoom = await Room.findById(roomId)
+                    .populate('game_id', '-created_at')
+                    .populate('players.playerId', 'username')
+                    .lean();
+
+                // Mocking a req object just to pass the language headers for localization
+                const mockReq = { headers: { 'accept-language': req.headers['accept-language'] } };
+                
+                // localizeRooms is not imported here, we need to import it or recreate the logic
+                // Importing from room.service.js could cause circular dependency, so let's just 
+                // do the localization here since it's just a language check.
+                const language = mockReq.headers['accept-language'] || 'en';
+                if (populatedRoom.game_id && populatedRoom.game_id.name) {
+                    populatedRoom.game_id = {
+                        ...populatedRoom.game_id,
+                        name: language === 'es' ? populatedRoom.game_id.name.es : populatedRoom.game_id.name.en,
+                        description: language === 'es' ? populatedRoom.game_id.description.es : populatedRoom.game_id.description.en,
+                    };
+                }
+                
+                io.of('/rooms').emit('roomUpdated', populatedRoom);
             }
         }
 
