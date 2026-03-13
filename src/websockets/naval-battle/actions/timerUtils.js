@@ -4,6 +4,7 @@ const path = require('path');
 const filename = path.basename(__filename);
 const Room = require('../../../models/room.model');
 const User = require('../../../models/user.model');
+const i18n = require('../../../../shared/language/i18n');
 
 const EVENT = 'naval-battle';
 
@@ -45,12 +46,12 @@ const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, second
             // Notify both players
             activeSocket.emit(EVENT, WsBaseResponse.error(
                 { outcome: 'timeout_loss', gameEnded: true },
-                ['You ran out of time! You lose.']
+                [i18n.__('ws.games.timeoutLoss') || 'You ran out of time! You lose.']
             ));
 
             opponentSocket.emit(EVENT, WsBaseResponse.success(
                 { outcome: 'win', reason: 'timeout', prize, gameEnded: true },
-                ['Opponent ran out of time! You win!']
+                [i18n.__('ws.games.timeoutWin') || 'Opponent ran out of time! You win!']
             ));
             
             // Notify the global lobby that this room is gone

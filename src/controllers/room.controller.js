@@ -5,6 +5,7 @@ const {
     joinRoom: serviceJoinRoom,
     setReady: serviceSetReady,
     deleteRoom: serviceDeleteRoom,
+    leaveRoom: serviceLeaveRoom,
 } = require('../services/room.service');
 
 const getRooms = async (req, res, next) => {
@@ -43,4 +44,10 @@ const deleteRoom = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
-module.exports = { getRooms, getRoom, createRoom, joinRoom, setReady, deleteRoom };
+const leaveRoom = async (req, res, next) => {
+    try {
+        res.status(200).json(await serviceLeaveRoom(req));
+    } catch (err) { next(err); }
+};
+
+module.exports = { getRooms, getRoom, createRoom, joinRoom, setReady, deleteRoom, leaveRoom };

@@ -3,11 +3,13 @@ const logger = require('../../shared/config/logger');
 const filename = path.basename(__filename);
 const BattleshipPlacement = require('../models/battleshipPlacement.model');
 const Room = require('../models/room.model');
+const User = require('../models/user.model');
 const BaseResponse = require('../../shared/util/baseResponse');
 const BusinessException = require('../../shared/exceptionHandler/BusinessException');
 const DataLayerException = require('../../shared/exceptionHandler/DataLayerException');
 const { getValueFromJwtToken } = require('../../shared/util/jwt');
 const { getIo } = require('../../shared/config/ws');
+const i18n = require('../../shared/language/i18n');
 
 const SHIP_SIZES = {
     carrier: 5,
@@ -82,11 +84,36 @@ const savePlacement = async (req) => {
         const player = room.players.find(p => p.playerId.toString() === player_id);
         if (!player) throw new BusinessException('You are not a member of this room', 403);
 
-        // 5. Save placement — unique index raises code 11000 on duplicate
-        const placement = new BattleshipPlacement({ room_id: roomId, player_id, ships });
-        await placement.save();
+        // 5. Check if they already placed ships (e.g., Opponent 1 left, so they are waiting for Opponent 2)
+        let placement;
+        const existingPlacement = await BattleshipPlacement.findOne({ room_id: roomId, player_id });
 
-        // 6. Auto-mark this player as ready in the room
+        if (existingPlacement) {
+            // Player already paid and placed ships previously. Just update them to avoid double-charging.
+            existingPlacement.ships = ships;
+            await existingPlacement.save();
+            placement = existingPlacement;
+        } else {
+            // New placement. Deduct the bet amount from the user's balance atomically.
+            const user = await User.findOneAndUpdate(
+                { _id: player_id, balance: { $gte: room.bet_amount } },
+                { $inc: { balance: -room.bet_amount } },
+                { new: true }
+            );
+            if (!user) throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE', 400);
+
+            // Save placement
+            placement = new BattleshipPlacement({ room_id: roomId, player_id, ships });
+            try {
+                await placement.save();
+            } catch (saveErr) {
+                // If a race condition caused a save error right after deduction, refund the user!
+                await User.updateOne({ _id: player_id }, { $inc: { balance: room.bet_amount } });
+                throw saveErr;
+            }
+        }
+
+        // 7. Auto-mark this player as ready in the room
         player.ready = true;
 
         // 7. If room is full and everyone is ready → start the game
@@ -109,6 +136,9 @@ const savePlacement = async (req) => {
                 // Get sockets in room
                 const socketsInRoom = await namespace.in(roomId).fetchSockets();
                 
+                // Determine language based on headers
+                const language = req.headers['accept-language'] || 'en';
+                
                 if (socketsInRoom.length === 2) {
                     const firstPlayer = socketsInRoom[0];
                     const secondPlayer = socketsInRoom[1];
@@ -124,13 +154,13 @@ const savePlacement = async (req) => {
                     firstPlayer.emit('naval-battle', {
                         success: true,
                         data: { yourTurn: true, turnTimerSeconds: timerSeconds, waitingForOpponent: false },
-                        messages: ['Opponent is ready. Your turn — fire!']
+                        messages: [i18n.__({phrase: 'ws.games.opponentReady', locale: language}) || 'Opponent is ready. Your turn — fire!']
                     });
                     
                     secondPlayer.emit('naval-battle', {
                         success: true,
                         data: { yourTurn: false, turnTimerSeconds: timerSeconds, waitingForOpponent: false },
-                        messages: ['Enemy ships detected. Waiting for opponent to fire.']
+                        messages: [i18n.__({phrase: 'ws.games.opponentReadyWait', locale: language}) || 'Enemy ships detected. Waiting for opponent to fire.']
                     });
 
                     // Start the timer for the first player
@@ -147,13 +177,9 @@ const savePlacement = async (req) => {
                     .populate('players.playerId', 'username')
                     .lean();
 
-                // Mocking a req object just to pass the language headers for localization
-                const mockReq = { headers: { 'accept-language': req.headers['accept-language'] } };
-                
                 // localizeRooms is not imported here, we need to import it or recreate the logic
                 // Importing from room.service.js could cause circular dependency, so let's just 
                 // do the localization here since it's just a language check.
-                const language = mockReq.headers['accept-language'] || 'en';
                 if (populatedRoom.game_id && populatedRoom.game_id.name) {
                     populatedRoom.game_id = {
                         ...populatedRoom.game_id,

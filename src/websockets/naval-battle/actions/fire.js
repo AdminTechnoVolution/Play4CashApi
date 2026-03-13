@@ -31,14 +31,14 @@ module.exports = (socket, namespace) => {
 
             // 1. Must have joined a room first
             if (!player_id || !room_id) {
-                emitMsg = WsBaseResponse.error({}, ['You must join the room before firing.']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.joinBeforeFire') || 'You must join the room before firing.']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
 
             // 2. Must be this player's turn
             if (!socket.data.myTurn) {
-                emitMsg = WsBaseResponse.error({}, ['It is not your turn.']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.notYourTurn') || 'It is not your turn.']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
@@ -56,7 +56,7 @@ module.exports = (socket, namespace) => {
             // 4. Room must still be active
             const room = await Room.findById(room_id);
             if (!room || room.status !== 'started') {
-                emitMsg = WsBaseResponse.error({}, ['Room is no longer active.']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.roomInactive') || 'Room is no longer active.']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
@@ -68,7 +68,7 @@ module.exports = (socket, namespace) => {
             });
 
             if (!shooterPlacement) {
-                emitMsg = WsBaseResponse.error({}, ['Your placement was not found.']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.placementNotFound') || 'Your placement was not found.']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
@@ -76,7 +76,7 @@ module.exports = (socket, namespace) => {
             // Optional: prevent firing at the same exact cell twice
             const alreadyFired = shooterPlacement.shotsFired?.some(c => c[0] === row && c[1] === col);
             if (alreadyFired) {
-                emitMsg = WsBaseResponse.error({}, ['You already fired at this coordinate!']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.alreadyFiredCoord') || 'You already fired at this coordinate!']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
@@ -91,7 +91,7 @@ module.exports = (socket, namespace) => {
             }
 
             if (!opponentSocket) {
-                emitMsg = WsBaseResponse.error({}, ['Opponent is not connected.']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.opponentNotConnected') || 'Opponent is not connected.']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
@@ -104,7 +104,7 @@ module.exports = (socket, namespace) => {
             });
 
             if (!opponentPlacement) {
-                emitMsg = WsBaseResponse.error({}, ['Opponent placement not found.']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.opponentPlacementNotFound') || 'Opponent placement not found.']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
@@ -116,7 +116,7 @@ module.exports = (socket, namespace) => {
                     if (cell[0] === row && cell[1] === col) {
                         if (cell[2] === true) {
                             // Already hit — reject
-                            emitMsg = WsBaseResponse.error({}, ['You already fired at this cell.']);
+                            emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.alreadyFiredCell') || 'You already fired at this cell.']);
                             socket.emit(EVENT, emitMsg);
                             return;
                         }
@@ -199,13 +199,13 @@ module.exports = (socket, namespace) => {
 
                     emitMsg = WsBaseResponse.success(
                         { outcome: 'win', row, col, shipType: result.shipType, prize, yourTurn: false, gameEnded: true },
-                        ['You sank the last ship! You win!']
+                        [i18n.__('ws.games.winLastShip') || 'You sank the last ship! You win!']
                     );
                     socket.emit(EVENT, emitMsg);
 
                     opponentSocket.emit(EVENT, WsBaseResponse.success(
                         { outcome: 'lose', row, col, shipType: result.shipType, yourTurn: false, gameEnded: true },
-                        ['All your ships have been sunk. You lose!']
+                        [i18n.__('ws.games.loseLastShip') || 'All your ships have been sunk. You lose!']
                     ));
                     
                     // Notify the global lobby that this room is gone
@@ -228,22 +228,24 @@ module.exports = (socket, namespace) => {
             const timerSeconds = socket.data.turnTimerSeconds ?? 30;
 
             // Notify current player (shooter)
+            const shooterMsg = result.outcome === 'miss'
+                ? i18n.__('ws.games.shotMiss') || 'Miss!'
+                : result.outcome === 'sunk'
+                    ? i18n.__('ws.games.shotSunk', { shipType: result.shipType }) || `You sank the ${result.shipType}!`
+                    : i18n.__('ws.games.shotHit', { shipType: result.shipType }) || `Hit on ${result.shipType}!`;
+
             emitMsg = WsBaseResponse.success(
                 { ...result, yourTurn: false, turnTimerSeconds: timerSeconds },
-                [result.outcome === 'miss'
-                    ? 'Miss!'
-                    : result.outcome === 'sunk'
-                        ? `You sank the ${result.shipType}!`
-                        : `Hit on ${result.shipType}!`]
+                [shooterMsg]
             );
             socket.emit(EVENT, emitMsg);
 
             // Notify opponent (receiver)
             const opponentMsg = result.outcome === 'miss'
-                ? 'Opponent missed! Your turn.'
+                ? i18n.__('ws.games.opponentMiss') || 'Opponent missed! Your turn.'
                 : result.outcome === 'sunk'
-                    ? `Opponent sank your ${result.shipType}! Your turn.`
-                    : `Opponent hit your ${result.shipType}! Your turn.`;
+                    ? i18n.__('ws.games.opponentSunk', { shipType: result.shipType }) || `Opponent sank your ${result.shipType}! Your turn.`
+                    : i18n.__('ws.games.opponentHit', { shipType: result.shipType }) || `Opponent hit your ${result.shipType}! Your turn.`;
 
             opponentSocket.emit(EVENT, WsBaseResponse.success(
                 { outcome: result.outcome === 'miss' ? 'miss' : result.outcome, row, col, shipType: result.shipType, yourTurn: true, turnTimerSeconds: timerSeconds },
@@ -260,7 +262,7 @@ module.exports = (socket, namespace) => {
 
         } catch (err) {
             logger.error(`Error in naval-battle fire: ${err}`, { className: filename });
-            emitMsg = WsBaseResponse.error({}, ['An error occurred processing your shot.']);
+            emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.shotError') || 'An error occurred processing your shot.']);
             socket.emit(EVENT, emitMsg);
         }
     });

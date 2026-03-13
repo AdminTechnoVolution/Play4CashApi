@@ -43,7 +43,7 @@ module.exports = (socket, namespace) => {
             }
 
             if (room.status !== 'waiting' && room.status !== 'started') {
-                emitMsg = WsBaseResponse.error({}, ['Room is not open for joining.']);
+                emitMsg = WsBaseResponse.error({}, [i18n.__('ws.games.roomInactive') || 'Room is no longer active.']);
                 socket.emit(EVENT, emitMsg);
                 return;
             }
@@ -73,9 +73,13 @@ module.exports = (socket, namespace) => {
             // Notify the already-waiting player(s) that their opponent just arrived
             const existingSockets = await namespace.in(room_id).fetchSockets();
             if (existingSockets.length > 1) {
+                // Determine translation dynamically based on socket language setting
+                const translatedMessage = i18n.__('ws.games.opponentJoined', { username }) 
+                    || `${username} has joined the room!`;
+
                 socket.to(room_id).emit(EVENT, WsBaseResponse.success(
                     { opponentJoined: true, opponentName: username },
-                    [`${username} has joined the room!`]
+                    [translatedMessage]
                 ));
             }
 
@@ -94,7 +98,9 @@ module.exports = (socket, namespace) => {
 
                 emitMsg = WsBaseResponse.success(
                     { yourTurn: isMyTurn, turnTimerSeconds: timerSeconds, waitingForOpponent: false },
-                    isMyTurn ? ['Reconnected. Your turn — fire!'] : ['Reconnected. Waiting for opponent to fire.']
+                    [isMyTurn 
+                        ? (i18n.__('ws.games.opponentReady') || 'Reconnected. Your turn — fire!') 
+                        : (i18n.__('ws.games.opponentReadyWait') || 'Reconnected. Waiting for opponent to fire.')]
                 );
                 socket.emit(EVENT, emitMsg);
             }

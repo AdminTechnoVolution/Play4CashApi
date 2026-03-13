@@ -4,7 +4,7 @@ const validateToken = require('../../shared/middlewares/validateToken');
 const validateAdmin = require('../../shared/middlewares/validateAdmin');
 const validateBody = require('../../shared/middlewares/validateBody');
 const { createRoomSchema, readyRoomSchema } = require('../validators/room.validator');
-const { getRooms, getRoom, createRoom, joinRoom, setReady, deleteRoom } = require('../controllers/room.controller');
+const { getRooms, getRoom, createRoom, joinRoom, setReady, deleteRoom, leaveRoom } = require('../controllers/room.controller');
 
 /**
  * @swagger
@@ -160,6 +160,44 @@ router.post('/', validateToken, validateBody(createRoomSchema), createRoom);
  *         description: Internal Server Error
  */
 router.post('/:id/join', validateToken, joinRoom);
+
+/**
+ * @swagger
+ * /api/rooms/{id}/leave:
+ *   post:
+ *     summary: Leave a room
+ *     tags:
+ *       - Rooms
+ *     security:
+ *       - Bearer: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *         example: Bearer eyJhbGciOi
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Room ID
+ *     responses:
+ *       200:
+ *         description: Left successfully
+ *       400:
+ *         description: Bad Request
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Player not in room
+ *       404:
+ *         description: Room not found
+ *       500:
+ *         description: Internal Server Error
+ */
+router.post('/:id/leave', validateToken, leaveRoom);
 
 /**
  * @swagger

@@ -2,7 +2,11 @@ const mongoose = require('mongoose');
 
 const languageSchema = new mongoose.Schema({
     es: { type: String },
-    en: { type: String }
+    en: { type: String },
+    fr: { type: String },
+    de: { type: String },
+    it: { type: String },
+    pt: { type: String }
 }, { _id: false });
 
 const gameSchema = new mongoose.Schema({
