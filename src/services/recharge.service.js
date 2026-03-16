@@ -30,7 +30,7 @@ const validateClientDepositsBinance = async (recharge, req) => {
         if (!deposit) throw new BusinessException(req.__("message_tx.processing.not_found"));
         if (deposit.amount !== recharge.amount.toString()) throw new BusinessException(req.__("message_tx.processing.amount_not_match"));
         if (deposit.coin.toUpperCase() !== recharge.coin.toUpperCase()) throw new BusinessException(req.__("message_tx.processing.coin_not_match"));
-        if (deposit.status !== SUCCESS_BINANCE_DEPOSIT) { 
+        if (deposit.status !== SUCCESS_BINANCE_DEPOSIT && deposit.status !== SUCCESS_BINANCE_WITHDRAWAL) {
             const message = req.__("message_tx.processing.status") + deposit.status;
             throw new BusinessException(message);
         }
