@@ -7,6 +7,7 @@ const { generateVerificationCode, generateHash } = require('../../shared/util/ut
 const bcrypt = require('bcryptjs');
 const User = require('../models/user.model');
 const Room = require('../models/room.model');
+const { getConfig } = require('./appConfig.service');
 
 const getUserAccount = async (req) => {
     const auth = req.headers['authorization'];
@@ -15,6 +16,11 @@ const getUserAccount = async (req) => {
     const user = await User.findById(user_id).select('-_id -created_at').lean();
 
     if (!user) throw new BusinessException('ERROR_USER_NOTFOUND');
+
+    const config = await getConfig();
+    user.limits = {
+        daily_withdrawal: config.withdrawal_daily_limit,
+    };
 
     return new BaseResponse(true, [], user);
 }

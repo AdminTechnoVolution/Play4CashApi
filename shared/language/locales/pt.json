@@ -105,7 +105,8 @@
     "ws.games.opponentMiss": "O oponente errou! Sua vez.",
     "ws.games.opponentSunk": "O oponente afundou seu {{shipType}}! Sua vez.",
     "ws.games.opponentHit": "O oponente acertou seu {{shipType}}! Sua vez.",
-
+    "ERROR_DEPOSIT_DAILY_LIMIT_EXCEEDED": "The daily deposit limit has been exceeded. Please try again tomorrow.",
+    "ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED": "The daily withdrawal limit has been exceeded. Please try again tomorrow.",
     "mailer.verifyAccount.subject": "Verifique a sua conta",
     "mailer.verifyAccount.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Bem-vindo ao Play4Cash [username]!</h2><p>O seu código de verificação</p><h3>[code]</h3><p>O código de verificação será válido por [verificationExpireMins] minutos. Por favor, não compartilhe este código com ninguém</p><p style='font-size: 12px; color: #888;'>Esta é uma mensagem automatizada. Se você não solicitou, por favor ignore e não responda.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Equipe Play4Cash</p></div>",
     "mailer.verifyWithdrawal.subject": "Verificação de saque",

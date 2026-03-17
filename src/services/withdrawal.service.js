@@ -15,6 +15,7 @@ const { sendWithdrawalRequest } = require('../../shared/clients/binance');
 const { sendEmail } = require('../../shared/email/mailer');
 const WITHDRAWAL_VERIFICATION_EXPIRY_MINUTES = process.env.WITHDRAWAL_VERIFICATION_EXPIRY_MINUTES;
 const MIN_WITHDRAWAL = process.env.MIN_WITHDRAWAL;
+const { getConfig } = require('./appConfig.service');
 
 const createWithdrawal = async (req) => {
     const user = await findUserWithValidWallet(req);
@@ -135,6 +136,28 @@ const saveWithdrawal = async (req, user, verification_code) => {
     });
 
     try {
+        const config = await getConfig();
+        const withdrawalDailyLimit = config.withdrawal_daily_limit;
+        if (withdrawalDailyLimit > 0) {
+            const startOfDay = new Date();
+            startOfDay.setUTCHours(0, 0, 0, 0);
+
+            const todayWithdrawals = await Withdrawal.aggregate([
+                { $match: { 
+                    user_id: user._id, 
+                    created_at: { $gte: startOfDay },
+                    status: { $ne: 'failed' }
+                } },
+                { $group: { _id: null, totalAmount: { $sum: "$amount" } } }
+            ]);
+
+            const totalToday = todayWithdrawals.length > 0 ? todayWithdrawals[0].totalAmount : 0;
+            
+            if (totalToday + amount > withdrawalDailyLimit) {
+                throw new BusinessException('ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED');
+            }
+        }
+
         const foundWithdrawal = await Withdrawal.findOne({ user_id: withdrawal.user_id, status: 'pending_verify' });
         if (foundWithdrawal) throw new BusinessException('ERROR_WITHDRAWAL_PENDING_VERIFY');
         if (amount < walletConfig.minAmount) throw new BusinessException('ERROR_WITHDRAWAL_AMOUNT_MINIMUM');
@@ -144,10 +167,11 @@ const saveWithdrawal = async (req, user, verification_code) => {
     } catch (err) {
         let message;
         logger.error(`Error creating withdrawal: ${err}`, { className: filename });
-        if (err.message === 'ERROR_WITHDRAWAL_PENDING_VERIFY' || err.message === 'ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE' || err.message === 'ERROR_WITHDRAWAL_AMOUNT_MINIMUM') {
+        if (err.message === 'ERROR_WITHDRAWAL_PENDING_VERIFY' || err.message === 'ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE' || err.message === 'ERROR_WITHDRAWAL_AMOUNT_MINIMUM' || err.message === 'ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED') {
             if (err.message === 'ERROR_WITHDRAWAL_PENDING_VERIFY') message = req.__("message_tx.pending.error");
             if (err.message === 'ERROR_WITHDRAWAL_AMOUNT_MINIMUM') message = req.__("message_tx.amount_minimum.error");
             if (err.message === 'ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE') message = req.__("message_tx.insufficient_balance.error");
+            if (err.message === 'ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED') message = req.__("ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
 
             await saveTxMessage(withdrawal.user_id, withdrawal.amount, withdrawal.coin, withdrawal.wallet, message);
             throw new BusinessException(err.message);

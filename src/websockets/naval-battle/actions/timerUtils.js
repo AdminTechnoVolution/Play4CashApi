@@ -40,7 +40,7 @@ const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, second
             await room.save();
 
             // Credit winner with prize
-            const prize = room.bet_amount * 2 * (1 - room.house_edge / 100);
+            const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
             await User.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
 
             // Notify both players

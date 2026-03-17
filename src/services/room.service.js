@@ -357,7 +357,7 @@ const leaveRoom = async (req) => {
         updatedRoom.finished_at = new Date();
 
         // Award prize to the remaining player
-        const prize = updatedRoom.bet_amount * 2 * (1 - updatedRoom.house_edge / 100);
+        const prize = updatedRoom.bet_amount + (updatedRoom.bet_amount * (1 - updatedRoom.house_edge / 100));
         await User.updateOne({ _id: updatedRoom.winner }, { $inc: { balance: prize } });
 
         await updatedRoom.save();

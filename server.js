@@ -18,6 +18,7 @@ const battleshipPlacementRoutes = require('./src/routes/battleshipPlacement.rout
 const withdrawalRoutes = require('./src/routes/withdrawal.route');
 const wsRoutes = require('./src/routes/ws.route');
 const walletRoutes = require('./src/routes/wallet.route');
+const appConfigRoutes = require('./src/routes/appConfig.route');
 const { setupWebSocketServer } = require('./shared/config/ws');
 const exceptionHandler = require('./shared/exceptionHandler/exceptionHandler');
 const { swaggerUi, swaggerSpec } = require('./shared/config/swagger');
@@ -36,6 +37,7 @@ app.use('/api/rooms', roomRoutes);
 app.use('/api/rooms/:roomId/battleship/placement', battleshipPlacementRoutes);
 app.use('/api', wsRoutes);
 app.use('/api', walletRoutes);
+app.use('/api', appConfigRoutes);
 app.use(exceptionHandler);
 
 const server = http.createServer(app);

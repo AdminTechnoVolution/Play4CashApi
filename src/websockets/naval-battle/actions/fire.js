@@ -194,7 +194,7 @@ module.exports = (socket, namespace) => {
                     room.finished_at = new Date();
                     await room.save();
 
-                    const prize = room.bet_amount * 2 * (1 - room.house_edge / 100);
+                    const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
                     // await User.findByIdAndUpdate(player_id, { $inc: { balance: prize } });
 
                     emitMsg = WsBaseResponse.success(

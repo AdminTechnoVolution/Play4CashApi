@@ -103,6 +103,8 @@
     "ws.games.opponentMiss": "¡El oponente falló! Es tu turno.",
     "ws.games.opponentSunk": "¡El oponente hundió tu {{shipType}}! Es tu turno.",
     "ws.games.opponentHit": "¡El oponente impactó tu {{shipType}}! Es tu turno.",
+    "ERROR_DEPOSIT_DAILY_LIMIT_EXCEEDED": "Se ha excedido el límite de recarga diario. Por favor, inténtelo de nuevo mañana.",
+    "ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED": "Se ha excedido el límite de retiro diario. Por favor, inténtelo de nuevo mañana.",
     "mailer.verifyAccount.subject": "Verifica tu cuenta",
     "mailer.verifyAccount.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Bienvenido a Play4Cash [username]!</h2><p>Tu código de verificación</p><h3>[code]</h3><p>El código de verificación será válido por [verificationExpireMins] minutos. Por favor no compartas este código con nadie</p><p style='font-size: 12px; color: #888;'>Este es un mensaje automático. Si no lo solicitaste, por favor ignóralo y no respondas.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
     "mailer.verifyWithdrawal.subject": "Verificación de retiro",
