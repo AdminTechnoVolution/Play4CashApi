@@ -4,7 +4,8 @@ const {
   registerUser: serviceRegisterUser,
   verifyCodeUser: serviceVerifyCodeUser,
   registerWalletToUser: serviceRegisterWalletToUser,
-  getUserAccount: serviceGetUserAccount
+  getUserAccount: serviceGetUserAccount,
+  getUserHistory: serviceGetUserHistory
 } = require('../services/user.service');
 
 const getUserAccount = async (req, res, next) => {
@@ -48,4 +49,13 @@ const registerWalletToUser = async (req, res, next) => {
   }
 };
 
-module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount };
+const getUserHistory = async (req, res, next) => {
+  try {
+    let jsonResponse = await serviceGetUserHistory(req);
+    res.status(200).json(jsonResponse);
+  } catch (err) {
+    next(err);
+  }
+};
+
+module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory };

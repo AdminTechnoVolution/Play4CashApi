@@ -4,12 +4,13 @@ const { createWallet, getWallets } = require('../controllers/wallet.controller')
 const { walletSchema } = require('../validators/wallet.validator');
 const validateBody = require('../../shared/middlewares/validateBody');
 const validateToken = require('../../shared/middlewares/validateToken');
+const validateAdmin = require('../../shared/middlewares/validateAdmin');
 
 /**
  * @swagger
  * /api/wallets:
  *   post:
- *     summary: Create a new wallet
+ *     summary: Create a new wallet (admin only)
  *     tags:
  *       - Wallets
  *     security:
@@ -54,7 +55,7 @@ const validateToken = require('../../shared/middlewares/validateToken');
  *             schema:
  *               $ref: '#/components/schemas/BaseResponse'
  */
-router.post('/wallets', validateToken, validateBody(walletSchema), createWallet);
+router.post('/wallets', validateToken, validateAdmin, validateBody(walletSchema), createWallet);
 
 /**
  * @swagger

@@ -6,6 +6,7 @@ const { getValueFromJwtToken } = require('../../shared/util/jwt');
 const { generateVerificationCode, generateHash } = require('../../shared/util/util');
 const bcrypt = require('bcryptjs');
 const User = require('../models/user.model');
+const Room = require('../models/room.model');
 
 const getUserAccount = async (req) => {
     const auth = req.headers['authorization'];
@@ -74,4 +75,30 @@ const verifyCodeUser = async (req) => {
     return new BaseResponse(true, [message]);
 };
 
-module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount };
+const getUserHistory = async (req) => {
+    const auth = req.headers['authorization'];
+    const user_id = getValueFromJwtToken(auth, 'id');
+
+    const rooms = await Room.find({
+        status: 'finished',
+        'players.playerId': user_id
+    })
+    .populate('game_id', 'name')
+    .sort({ finished_at: -1 })
+    .lean();
+
+    const history = rooms.map(room => {
+        const isWinner = room.winner && room.winner.toString() === user_id;
+        
+        return {
+            game_name: room.game_id ? room.game_id.name : 'Unknown',
+            bet_amount: room.bet_amount,
+            result: isWinner ? 'Won' : 'Lost',
+            date: room.finished_at
+        };
+    });
+
+    return new BaseResponse(true, ["Success"], history);
+};
+
+module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory };

@@ -3,7 +3,7 @@ const router = express.Router();
 const { registerUserSchema, verifyCodeUserSchema, registerWalletToUserSchema } = require('../validators/user.validator');
 const validateBody = require('../../shared/middlewares/validateBody');
 const validateToken = require('../../shared/middlewares/validateToken');
-const { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount } = require('../controllers/user.controller');
+const { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory } = require('../controllers/user.controller');
 
 /**
  * @swagger
@@ -37,6 +37,33 @@ const { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount } = r
  *         description: Internal Server Error
  */
 router.get('/account', validateToken, getUserAccount);
+
+/**
+ * @swagger
+ * /api/user/history:
+ *   get:
+ *     summary: Get user's game history
+ *     tags:
+ *       - User
+ *     security:
+ *       - Bearer: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Authorization token
+ *         example: Bearer eyJhbGciOi
+ *     responses:
+ *       200:
+ *         description: Success
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/history', validateToken, getUserHistory);
 
 /**
  * @swagger
