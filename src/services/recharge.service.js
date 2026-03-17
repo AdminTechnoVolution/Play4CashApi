@@ -8,7 +8,7 @@ const TxMessage = require('../models/tx_message.model');
 const User = require('../models/user.model');
 const { getValueFromJwtToken } = require('../../shared/util/jwt');
 const { getDepositHistory } = require('../../shared/clients/binance');
-const { SUCCESS_BINANCE_DEPOSIT } = require('../../shared/util/constants');
+const { SUCCESS_BINANCE_DEPOSIT, SUCCESS_BINANCE_WITHDRAWAL } = require('../../shared/util/constants');
 const Decimal = require('decimal.js');
 
 const createRecharge = async (req) => {
