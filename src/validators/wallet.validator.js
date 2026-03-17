@@ -20,6 +20,9 @@ const Joi = require('joi');
  *         red:
  *           type: string
  *           example: trc20
+ *         description:
+ *           type: string
+ *           example: Main wallet for TRC20 deposits
  *         isActive:
  *           type: boolean
  *           example: true
@@ -38,6 +41,7 @@ const walletSchema = Joi.object({
         'any.required': 'red.required',
         'string.empty': 'red.required'
     }),
+    description: Joi.string().trim().optional(),
     isActive: Joi.boolean().optional()
 });
 

@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const walletSchema = new mongoose.Schema({
   coin: { type: String, uppercase: true },
-  network: { type: String, uppercase: true },
+  network: { type: String, uppercase: true, maxlength: 50 },
   wallet: { type: String },
 }, { _id: false });
 

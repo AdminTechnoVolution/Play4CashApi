@@ -4,6 +4,7 @@ const walletSchema = new mongoose.Schema({
     coin: { type: String, required: true, uppercase: true },
     address: { type: String, required: true },
     red: { type: String, required: true },
+    description: { type: String },
     isActive: { type: Boolean, default: true }
 }, {
     versionKey: false,

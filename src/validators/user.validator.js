@@ -102,7 +102,7 @@ const registerWalletToUserSchema = Joi.object({
             'string.empty': 'coin.required',
             'string.max': 'coin.max'
         }),
-    network: Joi.string().trim().max(15).required()
+    network: Joi.string().trim().max(50).required()
         .messages({
             'any.required': 'network.required',
             'string.empty': 'network.required',
