@@ -1,4 +1,5 @@
 const Joi = require('joi');
+const { maxDecimals } = require('../../shared/util/util');
 
 /**
  * @swagger
@@ -23,6 +24,12 @@ const Joi = require('joi');
  *         description:
  *           type: string
  *           example: Main wallet for TRC20 deposits
+ *         minAmount:
+ *           type: number
+ *           example: 0.5
+ *         networkWithdrawalFee:
+ *           type: number
+ *           example: 0.8
  *         isActive:
  *           type: boolean
  *           example: true
@@ -42,6 +49,18 @@ const walletSchema = Joi.object({
         'string.empty': 'red.required'
     }),
     description: Joi.string().trim().optional(),
+    minAmount: Joi.number().min(0).custom(maxDecimals(10)).required().messages({
+        'any.required': 'minAmount.required',
+        'number.base': 'minAmount.invalid',
+        'number.min': 'minAmount.min',
+        'number.maxDecimals': 'minAmount.maxDecimals'
+    }),
+    networkWithdrawalFee: Joi.number().min(0).custom(maxDecimals(10)).required().messages({
+        'any.required': 'networkWithdrawalFee.required',
+        'number.base': 'networkWithdrawalFee.invalid',
+        'number.min': 'networkWithdrawalFee.min',
+        'number.maxDecimals': 'networkWithdrawalFee.maxDecimals'
+    }),
     isActive: Joi.boolean().optional()
 });
 

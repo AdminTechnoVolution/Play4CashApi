@@ -5,6 +5,8 @@ const walletSchema = new mongoose.Schema({
     address: { type: String, required: true },
     red: { type: String, required: true },
     description: { type: String },
+    minAmount: { type: Number, required: true, default: 0 },
+    networkWithdrawalFee: { type: Number, required: true, default: 0 },
     isActive: { type: Boolean, default: true }
 }, {
     versionKey: false,

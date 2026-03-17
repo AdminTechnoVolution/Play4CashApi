@@ -8,6 +8,7 @@ const BusinessException = require('../../shared/exceptionHandler/BusinessExcepti
 const TxMessage = require('../models/tx_message.model');
 const Withdrawal = require('../models/withdrawal.model');
 const User = require('../models/user.model');
+const Wallet = require('../models/wallet.model');
 const { getValueFromJwtToken } = require('../../shared/util/jwt');
 const { generateVerificationCode, generateHash } = require('../../shared/util/util');
 const { sendWithdrawalRequest } = require('../../shared/clients/binance');
@@ -39,7 +40,7 @@ const processWithdrawalAndCallBinance = async (req, user, withdrawal) => {
     const verification_code = withdrawal.verification_code;
     const verification_expires_at = withdrawal.verification_expires_at;
     try {
-        user.balance = new Decimal(user.balance).minus(withdrawal.amount);
+        user.balance = new Decimal(user.balance).minus(withdrawal.amount).toNumber();
 
         withdrawal.verification_code = undefined;
         withdrawal.verification_expires_at = undefined;
@@ -57,7 +58,7 @@ const processWithdrawalAndCallBinance = async (req, user, withdrawal) => {
         await saveTxMessage(withdrawal.user_id, withdrawal.amount, withdrawal.coin, withdrawal.wallet, req.__("message_tx.processing.ok"));
     } catch (err) {
         logger.error(`Error processing withdrawal: ${err}`, { className: filename });
-        user.balance += withdrawal.amount;
+        user.balance = new Decimal(user.balance).plus(withdrawal.amount).toNumber();
         withdrawal.status = 'pending_verify';
         withdrawal.verification_code = verification_code;
         withdrawal.verification_expires_at = verification_expires_at;
@@ -70,7 +71,10 @@ const processWithdrawalAndCallBinance = async (req, user, withdrawal) => {
 
 const verifyAmountAndBalance = async (req, user, withdrawal) => {
     try {
-        if (withdrawal.amount < MIN_WITHDRAWAL) throw new BusinessException('ERROR_WITHDRAWAL_AMOUNT_MINIMUM');
+        const walletConfig = await Wallet.findOne({ coin: withdrawal.coin, red: withdrawal.network, isActive: true });
+        if (!walletConfig) throw new BusinessException('ERROR_WALLET_NOT_CONFIGURED');
+
+        if (withdrawal.amount < walletConfig.minAmount) throw new BusinessException('ERROR_WITHDRAWAL_AMOUNT_MINIMUM');
         if (withdrawal.amount > user.balance) throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE');
     } catch (err) {
         let message;
@@ -112,11 +116,17 @@ const findUserWithValidWallet = async (req) => {
 const saveWithdrawal = async (req, user, verification_code) => {
     const { amount } = req.body;
 
+    const walletConfig = await Wallet.findOne({ coin: user.wallet_address.coin, red: user.wallet_address.network, isActive: true });
+    if (!walletConfig) throw new BusinessException('ERROR_WALLET_NOT_CONFIGURED');
+
+    const tx_fee = walletConfig.networkWithdrawalFee || 0;
+
     const verification_expires_at = new Date(Date.now() + WITHDRAWAL_VERIFICATION_EXPIRY_MINUTES * 60 * 1000);
     let hashedVerificationCode = await generateHash(verification_code, true);
     const withdrawal = new Withdrawal({
         user_id: user._id,
         amount,
+        tx_fee,
         coin: user.wallet_address.coin,
         wallet: user.wallet_address.wallet,
         network: user.wallet_address.network,
@@ -127,7 +137,7 @@ const saveWithdrawal = async (req, user, verification_code) => {
     try {
         const foundWithdrawal = await Withdrawal.findOne({ user_id: withdrawal.user_id, status: 'pending_verify' });
         if (foundWithdrawal) throw new BusinessException('ERROR_WITHDRAWAL_PENDING_VERIFY');
-        if (amount < MIN_WITHDRAWAL) throw new BusinessException('ERROR_WITHDRAWAL_AMOUNT_MINIMUM');
+        if (amount < walletConfig.minAmount) throw new BusinessException('ERROR_WITHDRAWAL_AMOUNT_MINIMUM');
         if (amount > user.balance) throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE');
 
         return await withdrawal.save();

@@ -7,7 +7,7 @@ const Wallet = require('../models/wallet.model');
 
 const createWallet = async (req) => {
     try {
-        const { coin, address, red, description, isActive } = req.body;
+        const { coin, address, red, description, minAmount, networkWithdrawalFee, isActive } = req.body;
         
         const existingWallet = await Wallet.findOne({ coin: coin.toUpperCase(), red });
         if (existingWallet) {
@@ -19,6 +19,8 @@ const createWallet = async (req) => {
             address,
             red,
             description,
+            minAmount,
+            networkWithdrawalFee,
             isActive: isActive !== undefined ? isActive : true
         });
 
