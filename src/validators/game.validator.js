@@ -5,6 +5,14 @@ const languageSchema = Joi.object({
         .messages({ 'any.required': 'name.es.required', 'string.empty': 'name.es.required' }),
     en: Joi.string().trim().max(256).required()
         .messages({ 'any.required': 'name.en.required', 'string.empty': 'name.en.required' }),
+    fr: Joi.string().trim().max(256).required()
+        .messages({ 'any.required': 'name.fr.required', 'string.empty': 'name.fr.required' }),
+    de: Joi.string().trim().max(256).required()
+        .messages({ 'any.required': 'name.de.required', 'string.empty': 'name.de.required' }),
+    it: Joi.string().trim().max(256).required()
+        .messages({ 'any.required': 'name.it.required', 'string.empty': 'name.it.required' }),
+    pt: Joi.string().trim().max(256).required()
+        .messages({ 'any.required': 'name.pt.required', 'string.empty': 'name.pt.required' }),
 });
 
 const languageDescriptionSchema = Joi.object({
@@ -12,6 +20,14 @@ const languageDescriptionSchema = Joi.object({
         .messages({ 'any.required': 'description.es.required', 'string.empty': 'description.es.required' }),
     en: Joi.string().trim().max(2000).required()
         .messages({ 'any.required': 'description.en.required', 'string.empty': 'description.en.required' }),
+    fr: Joi.string().trim().max(2000).required()
+        .messages({ 'any.required': 'description.fr.required', 'string.empty': 'description.fr.required' }),
+    de: Joi.string().trim().max(2000).required()
+        .messages({ 'any.required': 'description.de.required', 'string.empty': 'description.de.required' }),
+    it: Joi.string().trim().max(2000).required()
+        .messages({ 'any.required': 'description.it.required', 'string.empty': 'description.it.required' }),
+    pt: Joi.string().trim().max(2000).required()
+        .messages({ 'any.required': 'description.pt.required', 'string.empty': 'description.pt.required' }),
 });
 
 /**
@@ -36,11 +52,19 @@ const languageDescriptionSchema = Joi.object({
  *           properties:
  *             es: { type: string }
  *             en: { type: string }
+ *             fr: { type: string }
+ *             de: { type: string }
+ *             it: { type: string }
+ *             pt: { type: string }
  *         description:
  *           type: object
  *           properties:
  *             es: { type: string }
  *             en: { type: string }
+ *             fr: { type: string }
+ *             de: { type: string }
+ *             it: { type: string }
+ *             pt: { type: string }
  *         active:
  *           type: boolean
  *         min_players:
@@ -97,11 +121,19 @@ const createGameSchema = Joi.object({
  *           properties:
  *             es: { type: string }
  *             en: { type: string }
+ *             fr: { type: string }
+ *             de: { type: string }
+ *             it: { type: string }
+ *             pt: { type: string }
  *         description:
  *           type: object
  *           properties:
  *             es: { type: string }
  *             en: { type: string }
+ *             fr: { type: string }
+ *             de: { type: string }
+ *             it: { type: string }
+ *             pt: { type: string }
  *         active:
  *           type: boolean
  *         min_players:
@@ -126,10 +158,18 @@ const updateGameSchema = Joi.object({
     name: Joi.object({
         es: Joi.string().trim().max(256),
         en: Joi.string().trim().max(256),
+        fr: Joi.string().trim().max(256),
+        de: Joi.string().trim().max(256),
+        it: Joi.string().trim().max(256),
+        pt: Joi.string().trim().max(256),
     }),
     description: Joi.object({
         es: Joi.string().trim().max(2000),
         en: Joi.string().trim().max(2000),
+        fr: Joi.string().trim().max(2000),
+        de: Joi.string().trim().max(2000),
+        it: Joi.string().trim().max(2000),
+        pt: Joi.string().trim().max(2000),
     }),
     active: Joi.boolean(),
     min_players: Joi.number().integer().min(1),
