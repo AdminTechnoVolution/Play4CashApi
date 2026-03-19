@@ -2,7 +2,8 @@ const { ERROR_BAD_REQUEST_RESPONSE } = require('../../shared/util/constants');
 const BusinessException = require('../../shared/exceptionHandler/BusinessException');
 const {
     createWithdrawal: serviceCreateWithdrawal,
-    verifyWithdrawal: serviceVerifyWithdrawal
+    verifyWithdrawal: serviceVerifyWithdrawal,
+    getWithdrawalHistory: serviceGetWithdrawalHistory
 } = require('../services/withdrawal.service');
 
 const createWithdrawal = async (req, res, next) => {
@@ -27,4 +28,13 @@ const verifyWithdrawal = async (req, res, next) => {
     }
 };
 
-module.exports = { createWithdrawal, verifyWithdrawal };
+const getWithdrawalHistory = async (req, res, next) => {
+    try {
+        const jsonResponse = await serviceGetWithdrawalHistory(req);
+        res.status(200).json(jsonResponse);
+    } catch (err) {
+        next(err);
+    }
+};
+
+module.exports = { createWithdrawal, verifyWithdrawal, getWithdrawalHistory };

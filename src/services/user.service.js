@@ -90,21 +90,36 @@ const getUserHistory = async (req) => {
         'players.playerId': user_id
     })
     .populate('game_id', 'name')
+    .populate('players.playerId', 'username')
+    .populate('winner', 'username')
     .sort({ finished_at: -1 })
     .lean();
 
     const history = rooms.map(room => {
-        const isWinner = room.winner && room.winner.toString() === user_id;
-        
+        const isWinner = room.winner && room.winner._id.toString() === user_id;
+        const prize = isWinner
+            ? room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100))
+            : 0;
+
         return {
+            room_id: room._id,
             game_name: room.game_id ? room.game_id.name : 'Unknown',
             bet_amount: room.bet_amount,
+            house_edge: room.house_edge,
             result: isWinner ? 'Won' : 'Lost',
+            prize: isWinner ? prize : null,
+            players: room.players.map(p => ({
+                player_id: p.playerId?._id,
+                username: p.playerId?.username,
+            })),
+            winner: room.winner
+                ? { player_id: room.winner._id, username: room.winner.username }
+                : null,
             date: room.finished_at
         };
     });
 
-    return new BaseResponse(true, ["Success"], history);
+    return new BaseResponse(true, [], history);
 };
 
 module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory };

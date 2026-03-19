@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { createRecharge } = require('../controllers/recharge.controller');
+const { createRecharge, getRechargeHistory } = require('../controllers/recharge.controller');
 const { rechargeSchema } = require('../validators/recharge.validator');
 const validateBody = require('../../shared/middlewares/validateBody');
 const validateToken = require('../../shared/middlewares/validateToken');
@@ -61,5 +61,32 @@ const validateToken = require('../../shared/middlewares/validateToken');
  *               $ref: '#/components/schemas/BaseResponse'
  */
 router.post('/recharge', validateToken, validateBody(rechargeSchema), createRecharge);
+
+/**
+ * @swagger
+ * /api/transactions/recharge/history:
+ *   get:
+ *     summary: Get the authenticated user's deposit history
+ *     tags:
+ *       - Transactions
+ *     security:
+ *       - Bearer: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Authorization token
+ *         example: Bearer eyJhbGciOi
+ *     responses:
+ *       200:
+ *         description: Success
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/recharge/history', validateToken, getRechargeHistory);
 
 module.exports = router;

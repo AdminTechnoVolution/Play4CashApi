@@ -120,4 +120,16 @@ const saveTxMessage = async (user_id, txId, amount, coin, message) => {
     }
 }
 
-module.exports = { createRecharge };
+const getRechargeHistory = async (req) => {
+    const auth = req.headers['authorization'];
+    const user_id = getValueFromJwtToken(auth, 'id');
+
+    const recharges = await Recharge.find({ user_id })
+        .select('amount coin status wallet network txId created_at confirmed_at')
+        .sort({ created_at: -1 })
+        .lean();
+
+    return new BaseResponse(true, [], recharges);
+};
+
+module.exports = { createRecharge, getRechargeHistory };

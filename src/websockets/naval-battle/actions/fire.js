@@ -133,8 +133,24 @@ module.exports = (socket, namespace) => {
             shooterPlacement.shotsFired.push([row, col]);
             await shooterPlacement.save();
 
+            // Also record the move generically on the Room document so all game types
+            // share a unified move history (Room.players[].moves) regardless of the game.
+            // Each move stores { data: <game-specific payload> } — for Battleship: { row, col }.
+            // outcome will be updated below once we know hit/miss/sunk/win.
+            // We store the index of this move so we can update outcome after resolving it.
+            const moveIndex = room.players.find(p => p.playerId.toString() === player_id)?.moves?.length ?? 0;
+            await Room.updateOne(
+                { _id: room_id, 'players.playerId': player_id },
+                { $push: { 'players.$.moves': { data: { row, col, outcome: 'pending' } } } }
+            );
+
             if (!hitShip) {
                 result.outcome = 'miss';
+                // Update the move outcome from 'pending' to 'miss'
+                await Room.updateOne(
+                    { _id: room_id, 'players.playerId': player_id },
+                    { $set: { [`players.$.moves.${moveIndex}.data.outcome`]: 'miss' } }
+                );
             } else {
                 // To force Mongoose to save a deeply nested array of arrays change, 
                 // we must replace the *entire* ships array with a new reference.
@@ -167,6 +183,12 @@ module.exports = (socket, namespace) => {
                 opponentPlacement.markModified('ships');
                 await opponentPlacement.save();
 
+                // Update the move outcome from 'pending' to actual result (hit / sunk / win)
+                await Room.updateOne(
+                    { _id: room_id, 'players.playerId': player_id },
+                    { $set: { [`players.$.moves.${moveIndex}.data.outcome`]: result.outcome, [`players.$.moves.${moveIndex}.data.shipType`]: result.shipType ?? null } }
+                );
+
                 // 8. Win condition — all ships destroyed
                 // Use the shooter's shotsFired array to perfectly match against all opponent ships
                 let totalShipCells = 0;
@@ -195,7 +217,7 @@ module.exports = (socket, namespace) => {
                     await room.save();
 
                     const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-                    // await User.findByIdAndUpdate(player_id, { $inc: { balance: prize } });
+                    await User.findByIdAndUpdate(player_id, { $inc: { balance: prize } });
 
                     emitMsg = WsBaseResponse.success(
                         { outcome: 'win', row, col, shipType: result.shipType, prize, yourTurn: false, gameEnded: true },

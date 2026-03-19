@@ -282,38 +282,36 @@ const leaveRoom = async (req) => {
 
         const io = getIo();
 
-        // Atomically pull the user from the players array
-        // We use new: true to see what the room looks like exactly after they were removed
-        const updatedRoom = await Room.findOneAndUpdate(
-            { _id: id, 'players.playerId': user_id },
-            { $pull: { players: { playerId: user_id } } },
-            { new: true }
-        );
+        // Peek at the room first WITHOUT modifying the players array
+        const roomInfo = await Room.findOne({ _id: id, 'players.playerId': user_id });
 
-        // If updatedRoom is null, the user wasn't in the room (or room deleted)
-        if (!updatedRoom) throw new BusinessException('ERROR_AUTH', 403);
+        if (!roomInfo) throw new BusinessException('ERROR_AUTH', 403);
 
-        // If the room is already finished, ignore the rest of the leave logic
-        if (updatedRoom.status === 'finished') {
-            return new BaseResponse(true, [], updatedRoom);
+        // If already finished, nothing to do
+        if (roomInfo.status === 'finished') {
+            return new BaseResponse(true, [], roomInfo);
         }
 
-        // If the room was waiting, the game hasn't started yet. No one wins a forfeit.
-        // We just check if the leaving player had already paid by setting their ships.
-        if (updatedRoom.status === 'waiting') {
+        // ── WAITING ─────────────────────────────────────────────────────────────
+        // Game hasn't started — safe to pull the player out
+        if (roomInfo.status === 'waiting') {
+            const updatedRoom = await Room.findOneAndUpdate(
+                { _id: id, 'players.playerId': user_id },
+                { $pull: { players: { playerId: user_id } } },
+                { new: true }
+            );
+
+            if (!updatedRoom) throw new BusinessException('ERROR_AUTH', 403);
 
             // Did THIS leaving user already place ships? If so, they paid. Refund them.
             const placement = await BattleshipPlacement.findOne({ room_id: id, player_id: user_id });
             if (placement) {
-                // Refund them, because the game never started
                 await User.updateOne({ _id: user_id }, { $inc: { balance: updatedRoom.bet_amount } });
-                await BattleshipPlacement.findByIdAndDelete(placement._id); // Cleanup their old placement
+                await BattleshipPlacement.findByIdAndDelete(placement._id);
             }
 
             if (updatedRoom.players.length === 0) {
-                // We only delete if it's STILL empty (in case someone joined in the last microsecond)
                 const deletedRoom = await Room.findOneAndDelete({ _id: id, players: { $size: 0 } });
-                
                 if (deletedRoom) {
                     if (io) {
                         io.of('/rooms').emit('roomDeleted', { id: id });
@@ -326,17 +324,14 @@ const leaveRoom = async (req) => {
                     return new BaseResponse(true, [], { status: 'deleted' });
                 }
             } else {
-                // There is still someone in the room. Just notify them that the opponent left the lobby.
                 if (io) {
                     const populatedRoom = await Room.findById(id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
                     const [enriched] = localizeRooms(req, [populatedRoom]);
                     io.of('/rooms').emit('roomUpdated', enriched);
-                    
-                    // Iterate over sockets to avoid emitting back to the player who just left via REST
+
                     const sockets = await io.of('/naval-battle').in(id).fetchSockets();
                     for (const s of sockets) {
                         if (s.data && s.data.player_id !== user_id) {
-                            // Extract other player's language from their socket if possible, fallback to request header
                             const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
                             s.emit('naval-battle', {
                                 success: true,
@@ -350,22 +345,22 @@ const leaveRoom = async (req) => {
             }
         }
 
-        // Otherwise, it was started (both players had placed ships and paid).
-        // The remaining player wins by forfeit.
-        updatedRoom.status = 'finished';
-        updatedRoom.winner = updatedRoom.players[0]?.playerId; // The remaining player wins
-        updatedRoom.finished_at = new Date();
+        // ── STARTED ─────────────────────────────────────────────────────────────
+        // Game was in progress — finish WITHOUT pulling the leaving player
+        // so that both players remain in the document for history queries.
+        const winner_id = roomInfo.players.find(p => p.playerId.toString() !== user_id)?.playerId;
+
+        roomInfo.status = 'finished';
+        roomInfo.winner = winner_id;
+        roomInfo.finished_at = new Date();
+        await roomInfo.save();
 
         // Award prize to the remaining player
-        const prize = updatedRoom.bet_amount + (updatedRoom.bet_amount * (1 - updatedRoom.house_edge / 100));
-        await User.updateOne({ _id: updatedRoom.winner }, { $inc: { balance: prize } });
-
-        await updatedRoom.save();
+        const prize = roomInfo.bet_amount + (roomInfo.bet_amount * (1 - roomInfo.house_edge / 100));
+        await User.updateOne({ _id: winner_id }, { $inc: { balance: prize } });
 
         if (io) {
-            // Tell the global lobby this room is gone
             io.of('/rooms').emit('roomDeleted', { id: id });
-            // Warn the remaining room participant the game was forfeit (don't tell the leaver they won!)
             const sockets = await io.of('/naval-battle').in(id).fetchSockets();
             for (const s of sockets) {
                 if (s.data && s.data.player_id !== user_id) {
@@ -379,7 +374,7 @@ const leaveRoom = async (req) => {
             }
         }
 
-        return new BaseResponse(true, [], updatedRoom);
+        return new BaseResponse(true, [], roomInfo);
     } catch (err) {
         if (err instanceof BusinessException) throw err;
         logger.error(`Error leaving room: ${err}`, { className: filename });

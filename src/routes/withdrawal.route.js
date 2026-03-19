@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { createWithdrawal, verifyWithdrawal } = require('../controllers/withdrawal.controller');
+const { createWithdrawal, verifyWithdrawal, getWithdrawalHistory } = require('../controllers/withdrawal.controller');
 const { withdrawalSchema, verifyWithdrawalSchema } = require('../validators/withdrawal.validator');
 const validateBody = require('../../shared/middlewares/validateBody');
 const validateToken = require('../../shared/middlewares/validateToken');
@@ -118,5 +118,32 @@ router.post('/withdrawal', validateToken, validateBody(withdrawalSchema), create
  *               $ref: '#/components/schemas/BaseResponse'
  */
 router.post('/verify-withdrawal', validateToken, validateBody(verifyWithdrawalSchema), verifyWithdrawal);
+
+/**
+ * @swagger
+ * /api/transactions/withdrawal/history:
+ *   get:
+ *     summary: Get the authenticated user's withdrawal history
+ *     tags:
+ *       - Transactions
+ *     security:
+ *       - Bearer: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Authorization token
+ *         example: Bearer eyJhbGciOi
+ *     responses:
+ *       200:
+ *         description: Success
+ *       401:
+ *         description: Unauthorized
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/withdrawal/history', validateToken, getWithdrawalHistory);
 
 module.exports = router;

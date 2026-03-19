@@ -15,25 +15,27 @@ module.exports = (socket, namespace) => {
 
             if (!room_id) return; // Never joined a room properly
 
-            // Atomically pull the user from the players array
-            const updatedRoom = await Room.findOneAndUpdate(
-                { _id: room_id, 'players.playerId': player_id },
-                { $pull: { players: { playerId: player_id } } },
-                { new: true }
-            );
+            // Peek at the room first WITHOUT modifying the players array
+            const room = await Room.findOne({ _id: room_id, 'players.playerId': player_id });
 
-            // If updatedRoom is null, the user wasn't in the room (or room deleted)
-            if (!updatedRoom) return;
+            // User wasn't in the room (or room deleted)
+            if (!room) return;
 
-            // If the room is already finished, ignore the rest of the disconnect logic
-            if (updatedRoom.status === 'finished') {
+            // If the room is already finished, nothing to do
+            if (room.status === 'finished') {
                 logger.info(`Player ${player_id} disconnected from finished room ${room_id}`, { className: filename });
                 return;
             }
 
-            // If the room was waiting, the game hasn't started yet. No one wins a forfeit.
-            // We just check if the leaving player had already paid by setting their ships.
-            if (updatedRoom.status === 'waiting') {
+            // ── WAITING ─────────────────────────────────────────────────────────────
+            // Game hasn't started — safe to pull the player out
+            if (room.status === 'waiting') {
+                const updatedRoom = await Room.findOneAndUpdate(
+                    { _id: room_id, 'players.playerId': player_id },
+                    { $pull: { players: { playerId: player_id } } },
+                    { new: true }
+                );
+                if (!updatedRoom) return;
 
                 // Did THIS leaving user already place ships? If so, they paid. Refund them.
                 const BattleshipPlacement = require('../../../models/battleshipPlacement.model');
@@ -44,22 +46,17 @@ module.exports = (socket, namespace) => {
                 }
 
                 if (updatedRoom.players.length === 0) {
-                    // We only delete if it's STILL empty (in case someone joined in the last microsecond)
                     const deletedRoom = await Room.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
-                    
                     if (deletedRoom) {
-                        // Notify via global lobby that this room is gone
                         const { getIo } = require('../../../../shared/config/ws');
                         const io = getIo();
                         if (io) {
                             io.of('/rooms').emit('roomDeleted', { id: room_id });
                         }
-
                         logger.info(`Player ${player_id} closed waiting room ${room_id} by disconnecting`, { className: filename });
                         return;
                     }
                 } else {
-                    // There is still someone in the room. Just notify them that the opponent left the lobby.
                     const { getIo } = require('../../../../shared/config/ws');
                     const io = getIo();
                     if (io) {
@@ -73,35 +70,34 @@ module.exports = (socket, namespace) => {
                                 ));
                             }
                         }
+                        const populatedRoom = await Room.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+                        if (populatedRoom?.game_id?.name) {
+                            populatedRoom.game_id = {
+                                ...populatedRoom.game_id,
+                                name: populatedRoom.game_id.name.en,
+                                description: populatedRoom.game_id.description?.en,
+                            };
+                        }
+                        io.of('/rooms').emit('roomUpdated', populatedRoom);
                     }
-                    if (io) {
-                         const populatedRoom = await Room.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
-                         if (populatedRoom.game_id && populatedRoom.game_id.name) {
-                             populatedRoom.game_id = {
-                                 ...populatedRoom.game_id,
-                                 name: populatedRoom.game_id.name.en,
-                                 description: populatedRoom.game_id.description.en,
-                             };
-                         }
-                         io.of('/rooms').emit('roomUpdated', populatedRoom);
-                    }
-                    
                     logger.info(`Player ${player_id} left waiting room ${room_id}, but room remains open`, { className: filename });
-                    return;
                 }
+                return;
             }
 
-            // Otherwise, it was started (both players had placed ships and paid).
-            // The remaining player wins by forfeit.
-            updatedRoom.status = 'finished';
-            updatedRoom.winner = updatedRoom.players[0]?.playerId; // The remaining player wins
-            updatedRoom.finished_at = new Date();
+            // ── STARTED ─────────────────────────────────────────────────────────────
+            // Game was in progress — finish the room WITHOUT removing the leaving player
+            // so that both players remain in the document for history queries.
+            const winner_id = room.players.find(p => p.playerId.toString() !== player_id)?.playerId;
 
-            // Award prize to the remaining player
-            const prize = updatedRoom.bet_amount + (updatedRoom.bet_amount * (1 - updatedRoom.house_edge / 100));
-            await User.updateOne({ _id: updatedRoom.winner }, { $inc: { balance: prize } });
+            room.status = 'finished';
+            room.winner = winner_id;
+            room.finished_at = new Date();
+            await room.save();
 
-            await updatedRoom.save();
+            // Award prize to the winner
+            const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
+            await User.updateOne({ _id: winner_id }, { $inc: { balance: prize } });
 
             // Notify the global lobby and the specific room
             const { getIo } = require('../../../../shared/config/ws');

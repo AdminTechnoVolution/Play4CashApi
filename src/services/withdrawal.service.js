@@ -207,4 +207,17 @@ const saveTxMessage = async (user_id, amount, coin, wallet, message) => {
         logger.error(`Error saving message transaction: ${err}`, { className: filename });
     }
 }
-module.exports = { createWithdrawal, verifyWithdrawal };
+const getWithdrawalHistory = async (req) => {
+    const auth = req.headers['authorization'];
+    const user_id = getValueFromJwtToken(auth, 'id');
+
+    const withdrawals = await Withdrawal.find({ user_id })
+        .select('amount coin wallet network tx_fee status txId created_at confirmed_at')
+        .sort({ created_at: -1 })
+        .lean();
+
+    return new BaseResponse(true, [], withdrawals);
+};
+
+module.exports = { createWithdrawal, verifyWithdrawal, getWithdrawalHistory };
+
