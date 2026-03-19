@@ -113,25 +113,38 @@ const savePlacement = async (req) => {
             }
         }
 
-        // 7. Auto-mark this player as ready in the room
-        player.ready = true;
+        // 7. Atomically mark this player as ready in the DB (not on the in-memory object).
+        //    This prevents the race condition where two simultaneous placements both read
+        //    the room before either marks themselves ready, causing neither to trigger game start.
+        const updatedRoom = await Room.findOneAndUpdate(
+            { _id: roomId, 'players.playerId': player_id },
+            { $set: { 'players.$.ready': true } },
+            { new: true }
+        ).populate('game_id', 'max_players turn_timer_seconds');
 
-        // 7. If room is full and everyone is ready → start the game
-        const maxPlayers = room.game_id?.max_players;
-        const roomFull = maxPlayers && room.players.length >= maxPlayers;
-        const allReady = room.players.every(p => p.ready);
+        const maxPlayers = updatedRoom.game_id?.max_players;
+        const roomFull = maxPlayers && updatedRoom.players.length >= maxPlayers;
+        const allReady = updatedRoom.players.every(p => p.ready);
 
         if (roomFull && allReady) {
-            room.status = 'started';
+            // Atomically transition to 'started' — only one concurrent request will match this
+            const startedRoom = await Room.findOneAndUpdate(
+                { _id: roomId, status: 'waiting' },
+                { $set: { status: 'started' } },
+                { new: true }
+            );
+
+            // If startedRoom is null, another concurrent request already started the game — skip
+            if (!startedRoom) {
+                return new BaseResponse(true, [], { message: 'Placement saved', status: placement.status, roomStatus: 'started' });
+            }
         }
 
-        await room.save();
-
-        if (room.status === 'started') {
+        if (roomFull && allReady && updatedRoom.status !== 'finished') {
             const io = getIo();
             if (io) {
                 const namespace = io.of('/naval-battle');
-                const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
+                const timerSeconds = updatedRoom.game_id?.turn_timer_seconds ?? 30;
                 
                 // Get sockets in room
                 const socketsInRoom = await namespace.in(roomId).fetchSockets();
@@ -192,7 +205,7 @@ const savePlacement = async (req) => {
             }
         }
 
-        return new BaseResponse(true, [], { message: 'Placement saved', status: placement.status, roomStatus: room.status });
+        return new BaseResponse(true, [], { message: 'Placement saved', status: placement.status, roomStatus: updatedRoom.status });
     } catch (err) {
         if (err instanceof BusinessException) throw err;
         if (err.code === 11000) {
