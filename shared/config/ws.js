@@ -5,8 +5,10 @@ const { Server } = require('socket.io');
 const namespaces = [
     { path: '/rps', handler: require('../../src/websockets/rps') },
     { path: '/naval-battle', handler: require('../../src/websockets/naval-battle') },
+    { path: '/halma', handler: require('../../src/websockets/halma') },
     { path: '/rooms', handler: require('../../src/websockets/rooms') }
 ];
+
 
 let ioInstance = null;
 

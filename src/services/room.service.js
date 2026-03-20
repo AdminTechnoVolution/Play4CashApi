@@ -196,7 +196,9 @@ const setReady = async (req) => {
 
         const room = await Room.findById(id).populate('game_id', 'max_players');
         if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-        if (room.status !== 'waiting') throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
+        // If the room is already started (e.g. Halma auto-starts on WebSocket join),
+        // return gracefully instead of throwing an error.
+        if (room.status !== 'waiting') return new BaseResponse(true, [], room);
 
         const player = room.players.find(p => p.playerId.toString() === user_id);
         if (!player) throw new BusinessException('ERROR_AUTH', 403);

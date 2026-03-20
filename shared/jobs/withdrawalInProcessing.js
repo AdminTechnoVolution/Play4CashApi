@@ -15,6 +15,8 @@ async function verifyWithdrawalsInProcessing() {
     const withdrawals = await getWithdrawalHistoryInProcessing();
     if (withdrawals.length === 0) return;
 
+    logger.info(`JOB Running: withdrawal in processing at ${new Date().toISOString()}`, { className: filename });
+
     const inputParam = await getInputParam(withdrawals);
     if (!inputParam) return;
 
@@ -132,6 +134,5 @@ async function getInputParam(withdrawals) {
 }
 
 cron.schedule(schedule, () => {
-    logger.info(`JOB Running: withdrawal in processing at ${new Date().toISOString()}`, { className: filename });
     verifyWithdrawalsInProcessing();
 });
