@@ -58,6 +58,39 @@ const getRoom = async (req) => {
     }
 };
 
+const getRoomStatus = async (req) => {
+    try {
+        const room = await Room.findById(req.params.id)
+            .populate('game_id', 'name')
+            .lean();
+
+        if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
+
+        const statusData = {
+            id: room._id,
+            status: room.status,
+            playerCount: room.players.length,
+            bet_amount: room.bet_amount,
+        };
+
+        // If it's started and we have a Halma game, include current player
+        if (room.status === 'started') {
+            const HalmaGame = require('../models/halmaGame.model');
+            const halma = await HalmaGame.findOne({ room_id: room._id });
+            if (halma) {
+                statusData.currentPlayer = halma.current_player;
+            }
+        }
+
+        return new BaseResponse(true, [], statusData);
+    } catch (err) {
+        if (err instanceof BusinessException) throw err;
+        logger.error(`Error getting room status: ${err}`, { className: filename });
+        throw new DataLayerException('ERROR_GENERIC_RESPONSE');
+    }
+};
+
+
 // ─── CREATE ROOM ─────────────────────────────────────────────────────────────
 
 const createRoom = async (req) => {
@@ -295,88 +328,139 @@ const leaveRoom = async (req) => {
         }
 
         // ── WAITING ─────────────────────────────────────────────────────────────
-        // Game hasn't started — safe to pull the player out
         if (roomInfo.status === 'waiting') {
             const updatedRoom = await Room.findOneAndUpdate(
-                { _id: id, 'players.playerId': user_id },
+                { _id: id, status: 'waiting', 'players.playerId': user_id },
                 { $pull: { players: { playerId: user_id } } },
                 { new: true }
             );
 
-            if (!updatedRoom) throw new BusinessException('ERROR_AUTH', 403);
-
-            // Did THIS leaving user already place ships? If so, they paid. Refund them.
-            const placement = await BattleshipPlacement.findOne({ room_id: id, player_id: user_id });
-            if (placement) {
-                await User.updateOne({ _id: user_id }, { $inc: { balance: updatedRoom.bet_amount } });
-                await BattleshipPlacement.findByIdAndDelete(placement._id);
-            }
-
-            if (updatedRoom.players.length === 0) {
-                const deletedRoom = await Room.findOneAndDelete({ _id: id, players: { $size: 0 } });
-                if (deletedRoom) {
-                    if (io) {
-                        io.of('/rooms').emit('roomDeleted', { id: id });
-                        io.of('/naval-battle').to(id).emit('naval-battle', {
-                            success: false,
-                            data: { outcome: 'match_cancelled', gameEnded: true },
-                            messages: [i18n.__({phrase: 'ws.games.matchCancelled', locale: language}) || 'The game was cancelled before starting']
-                        });
-                    }
-                    return new BaseResponse(true, [], { status: 'deleted' });
+            if (!updatedRoom) {
+                // Race: the room status changed between our findById at line 288 and here.
+                // Re-fetch to find out the current status.
+                const currentRoom = await Room.findById(id);
+                if (!currentRoom) throw new BusinessException('ERROR_NOT_FOUND', 404);
+                
+                if (currentRoom.status === 'started') {
+                    // Update our stale roomInfo status so we hit the started block below
+                    roomInfo.status = 'started';
+                } else {
+                    throw new BusinessException('ERROR_AUTH', 403);
                 }
             } else {
-                if (io) {
-                    const populatedRoom = await Room.findById(id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
-                    const [enriched] = localizeRooms(req, [populatedRoom]);
-                    io.of('/rooms').emit('roomUpdated', enriched);
+                // Player was successfully removed from a 'waiting' room.
+                
+                // Did THIS leaving user already place ships? If so, they paid. Refund them.
+                const placement = await BattleshipPlacement.findOne({ room_id: id, player_id: user_id });
+                if (placement) {
+                    await User.updateOne({ _id: user_id }, { $inc: { balance: updatedRoom.bet_amount } });
+                    await BattleshipPlacement.findByIdAndDelete(placement._id);
+                }
 
-                    const sockets = await io.of('/naval-battle').in(id).fetchSockets();
-                    for (const s of sockets) {
-                        if (s.data && s.data.player_id !== user_id) {
-                            const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
-                            s.emit('naval-battle', {
-                                success: true,
-                                data: { opponentLeft: true, waitingForOpponent: true },
-                                messages: [i18n.__({phrase: 'ws.games.opponentLeft', locale: playerLanguage}) || 'Opponent abandoned the pre-game lobby.']
+                if (updatedRoom.players.length === 0) {
+                    // Room is empty. Atomic delete checking for size: 0.
+                    const deletedRoom = await Room.findOneAndDelete({ _id: id, players: { $size: 0 } });
+                    if (deletedRoom) {
+                        if (io) {
+                            io.of('/rooms').emit('roomDeleted', { id: id });
+                            io.of('/naval-battle').to(id).emit('naval-battle', {
+                                success: false,
+                                data: { outcome: 'match_cancelled', gameEnded: true },
+                                messages: [i18n.__({phrase: 'ws.games.matchCancelled', locale: language}) || 'The game was cancelled before starting']
                             });
                         }
+                        return new BaseResponse(true, [], { status: 'deleted' });
                     }
+                    
+                    // IF we reached here, someone joined while we were deleting.
+                    // Recalculate that we are NOT deleting and notify the new arrival.
+                    const reFetchedRoom = await Room.findById(id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+                    const [enriched] = localizeRooms(req, [reFetchedRoom]);
+                    if (io) io.of('/rooms').emit('roomUpdated', enriched);
+                    return new BaseResponse(true, [], reFetchedRoom);
+
+                } else {
+                    // Room still has players.
+                    if (io) {
+                        const populatedRoom = await Room.findById(id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+                        const [enriched] = localizeRooms(req, [populatedRoom]);
+                        io.of('/rooms').emit('roomUpdated', enriched);
+
+                        const sockets = await io.of('/naval-battle').in(id).fetchSockets();
+                        for (const s of sockets) {
+                            if (s.data && s.data.player_id !== user_id) {
+                                const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
+                                s.emit('naval-battle', {
+                                    success: true,
+                                    data: { opponentLeft: true, waitingForOpponent: true },
+                                    messages: [i18n.__({phrase: 'ws.games.opponentLeft', locale: playerLanguage}) || 'Opponent abandoned the pre-game lobby.']
+                                });
+                            }
+                        }
+
+                        // Notify halma namespace too
+                        io.of('/halma').to(id).except(
+                            (await io.of('/halma').in(id).fetchSockets())
+                                .filter(s => s.data?.player_id === user_id)
+                                .map(s => s.id)
+                        ).emit('halma', JSON.stringify({
+                            success: true,
+                            data: { opponentLeft: true, waitingForOpponent: true },
+                            messages: [i18n.__({phrase: 'ws.games.opponentLeft', locale: language}) || 'Opponent left the lobby.']
+                        }));
+                    }
+                    return new BaseResponse(true, [], updatedRoom);
                 }
-                return new BaseResponse(true, [], updatedRoom);
             }
         }
 
         // ── STARTED ─────────────────────────────────────────────────────────────
         // Game was in progress — finish WITHOUT pulling the leaving player
         // so that both players remain in the document for history queries.
-        const winner_id = roomInfo.players.find(p => p.playerId.toString() !== user_id)?.playerId;
+        if (roomInfo.status === 'started') {
+            const winner_id = roomInfo.players.find(p => p.playerId.toString() !== user_id)?.playerId;
 
-        roomInfo.status = 'finished';
-        roomInfo.winner = winner_id;
-        roomInfo.finished_at = new Date();
-        await roomInfo.save();
+            roomInfo.status = 'finished';
+            roomInfo.winner = winner_id;
+            roomInfo.finished_at = new Date();
+            await roomInfo.save();
 
-        // Award prize to the remaining player
-        const prize = roomInfo.bet_amount + (roomInfo.bet_amount * (1 - roomInfo.house_edge / 100));
-        await User.updateOne({ _id: winner_id }, { $inc: { balance: prize } });
+            // Award prize to the remaining player
+            const prize = roomInfo.bet_amount + (roomInfo.bet_amount * (1 - roomInfo.house_edge / 100));
+            await User.updateOne({ _id: winner_id }, { $inc: { balance: prize } });
 
-        if (io) {
-            io.of('/rooms').emit('roomDeleted', { id: id });
-            const sockets = await io.of('/naval-battle').in(id).fetchSockets();
-            for (const s of sockets) {
-                if (s.data && s.data.player_id !== user_id) {
-                    const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
-                    s.emit('naval-battle', {
-                        success: false,
-                        data: { outcome: 'opponent_disconnected', gameEnded: true },
-                        messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage}) || 'Your opponent disconnected. You win by forfeit!']
-                    });
+            if (io) {
+                io.of('/rooms').emit('roomDeleted', { id: id });
+                const socketsNaval = await io.of('/naval-battle').in(id).fetchSockets();
+                for (const s of socketsNaval) {
+                    if (s.data && s.data.player_id !== user_id) {
+                        const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
+                        s.emit('naval-battle', {
+                            success: false,
+                            data: { outcome: 'opponent_disconnected', gameEnded: true },
+                            messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage}) || 'Your opponent disconnected. You win by forfeit!']
+                        });
+                    }
+                }
+
+                const socketsHalma = await io.of('/halma').in(id).fetchSockets();
+                for (const s of socketsHalma) {
+                    if (s.data && s.data.player_id !== user_id) {
+                        const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
+                        s.emit('halma', JSON.stringify({
+                            success: false,
+                            data: { outcome: 'opponent_disconnected', gameEnded: true },
+                            messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage}) || 'Your opponent left. You win by forfeit!']
+                        }));
+                    }
                 }
             }
+
+            return new BaseResponse(true, [], roomInfo);
         }
 
         return new BaseResponse(true, [], roomInfo);
+
     } catch (err) {
         if (err instanceof BusinessException) throw err;
         logger.error(`Error leaving room: ${err}`, { className: filename });
@@ -384,4 +468,4 @@ const leaveRoom = async (req) => {
     }
 };
 
-module.exports = { getRooms, getRoom, createRoom, joinRoom, setReady, deleteRoom, leaveRoom };
+module.exports = { getRooms, getRoom, getRoomStatus, createRoom, joinRoom, setReady, deleteRoom, leaveRoom };

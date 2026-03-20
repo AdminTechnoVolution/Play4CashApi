@@ -33,9 +33,16 @@ const halmaGameSchema = new mongoose.Schema({
         type: Boolean,
         default: false,
     },
+    // For turn timers: when did the current turn begin?
+    turn_start_time: {
+        type: Date,
+        default: Date.now,
+    },
 }, {
     versionKey: false,
-    timestamps: false,
+    timestamps: true,
 });
+
+
 
 module.exports = mongoose.model('HalmaGame', halmaGameSchema);

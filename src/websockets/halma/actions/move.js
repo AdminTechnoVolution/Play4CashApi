@@ -129,11 +129,19 @@ module.exports = (socket, namespace) => {
                 { $push: { 'players.$.moves': { data: { fr, fc, tr, tc, type: isJump ? 'jump' : 'step' } } } }
             );
 
-            // 10. Find opponent socket
+            // 11. Calculate remaining time for the current turn
+            let timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
+            if (game?.turn_start_time) {
+                const elapsed = (Date.now() - new Date(game.turn_start_time).getTime()) / 1000;
+                timerSeconds = Math.max(0, timerSeconds - elapsed);
+            }
+
+            // 12. Find opponent socket
             const socketsInRoom = await namespace.in(room_id).fetchSockets();
             const opponentSocket = socketsInRoom.find(s => s.data.player_id !== player_id) ?? null;
 
-            // 11. Check win condition
+            // 13. Check win condition
+
             if (checkWin(board, playerNum)) {
                 clearTurnTimer(socket);
                 if (opponentSocket) clearTurnTimer(opponentSocket);
@@ -179,13 +187,20 @@ module.exports = (socket, namespace) => {
 
             // 12. Chain-jump continuation — if we just jumped and can jump again
             if (isJump && canJumpFurther(board, tr, tc)) {
-                // Stay on the same player's turn, but lock the piece
+                // Lock the piece so only it can jump next
                 socket.data.jumpingPiece = { row: tr, col: tc };
 
                 game.board = board;
                 await game.save();
 
-                const timerSeconds = socket.data.turnTimerSeconds ?? 30;
+                // Notify opponent board changed (they do NOT get the turn)
+                socket.to(room_id).emit(EVENT, WsBaseResponse.success({
+                    board,
+                    yourTurn: false,
+                    turnTimerSeconds: timerSeconds,
+                    outcome: '',
+                    isPlayerOne: opponentSocket?.data?.playerNum === 1,
+                }, ['Opponent is continuing their jump chain.']));
 
                 socket.emit(EVENT, WsBaseResponse.success({
                     board,
@@ -195,54 +210,40 @@ module.exports = (socket, namespace) => {
                     isPlayerOne: playerNum === 1,
                     continuingJump: true,
                     jumpingPiece: { row: tr, col: tc },
-                }, ['Jump successful! You may continue jumping with the same piece.']));
+                }, ['Jump successful! You may continue jumping with the same piece, or press End Turn.']));
 
-                if (opponentSocket) {
-                    opponentSocket.emit(EVENT, WsBaseResponse.success({
-                        board,
-                        yourTurn: false,
-                        outcome: '',
-                        isPlayerOne: opponentSocket.data.playerNum === 1,
-                    }, ['Opponent is continuing their jump chain.']));
-                }
                 return;
             }
 
-            // 13. Turn ended (step, or final jump in chain) — swap turns
-            socket.data.jumpingPiece = null;
-            clearTurnTimer(socket);
+            // 13. Move done — keep turn with current player, wait for end_turn.
+            // This applies to: a step, a single jump, or the final jump in a chain.
+            // The turn NEVER auto-swaps in Halma — the player must emit end_turn.
+            socket.data.jumpingPiece = null; // unlock piece constraint
 
-            const nextPlayer = playerNum === 1 ? 2 : 1;
             game.board = board;
-            game.current_player = nextPlayer;
             await game.save();
 
-            socket.data.myTurn = false;
-            if (opponentSocket) opponentSocket.data.myTurn = true;
-
-            const timerSeconds = socket.data.turnTimerSeconds ?? 30;
-
-            socket.emit(EVENT, WsBaseResponse.success({
+            // Notify opponent that the board changed (but it's still our turn)
+            socket.to(room_id).emit(EVENT, WsBaseResponse.success({
                 board,
                 yourTurn: false,
+                turnTimerSeconds: timerSeconds,
+                outcome: '',
+                isPlayerOne: opponentSocket?.data?.playerNum === 1,
+            }, ['Opponent made a move.']));
+
+            // Tell current player: move accepted, press End Turn when ready
+            socket.emit(EVENT, WsBaseResponse.success({
+                board,
+                yourTurn: true,
+                turnTimerSeconds: timerSeconds,
                 outcome: '',
                 isPlayerOne: playerNum === 1,
-            }, ['Move accepted.']));
-
-            if (opponentSocket) {
-                const opponentTimerSeconds = opponentSocket.data.turnTimerSeconds ?? timerSeconds;
-                opponentSocket.emit(EVENT, WsBaseResponse.success({
-                    board,
-                    yourTurn: true,
-                    turnTimerSeconds: opponentTimerSeconds,
-                    outcome: '',
-                    isPlayerOne: opponentSocket.data.playerNum === 1,
-                }, ["Opponent moved. Your turn!"]));
-
-                startTurnTimer(opponentSocket, socket, namespace, room_id, opponentTimerSeconds);
-            }
+                mustEndTurn: true,
+            }, ['Move accepted. Press End Turn when you are done.']));
 
             logger.info(`Halma move: P${playerNum} [${fr},${fc}]→[${tr},${tc}] (${isJump ? 'jump' : 'step'}) in room ${room_id}`, { className: filename });
+
 
         } catch (err) {
             logger.error(`Error in halma move: ${err}`, { className: filename });

@@ -48,23 +48,29 @@ module.exports = (socket, namespace) => {
             const nextPlayer = playerNum === 1 ? 2 : 1;
             if (game) {
                 game.current_player = nextPlayer;
+                game.turn_start_time = new Date();
                 await game.save();
             }
 
+
             socket.data.myTurn = false;
+
+            const timerSeconds = socket.data.turnTimerSeconds ?? 30;
 
             // Confirm turn ended to the current player
             socket.emit(EVENT, WsBaseResponse.success({
                 board: game ? game.board : null,
                 yourTurn: false,
+                turnTimerSeconds: timerSeconds,
                 outcome: '',
                 isPlayerOne: playerNum === 1,
             }, ['Turn ended.']));
 
+
             // Notify OPPONENT using socket.to() — guaranteed delivery to all
             // others in the room, regardless of how fetchSockets() behaves.
             const opponentPlayerNum = nextPlayer;
-            const timerSeconds = socket.data.turnTimerSeconds ?? 30;
+
 
             socket.to(room_id).emit(EVENT, WsBaseResponse.success({
                 board: game ? game.board : null,

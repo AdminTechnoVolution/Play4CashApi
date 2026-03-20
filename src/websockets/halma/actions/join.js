@@ -69,27 +69,36 @@ module.exports = (socket, namespace) => {
 
             logger.info(`Player ${player_id} (P${playerNum}) joined halma room ${room_id}`, { className: filename });
 
-            // 6. If game is already started (reconnect), send current board state
             if (room.status === 'started') {
                 const game = await HalmaGame.findOne({ room_id });
-                const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
+                let timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
                 const isMyTurn = game ? game.current_player === playerNum : playerNum === 1;
+
+                // Accuracy: calculate remaining time for the current turn
+                if (game?.turn_start_time) {
+                    const elapsed = (Date.now() - new Date(game.turn_start_time).getTime()) / 1000;
+                    timerSeconds = Math.max(0, timerSeconds - elapsed);
+                }
 
                 socket.data.myTurn = isMyTurn;
                 socket.data.turnTimerSeconds = timerSeconds;
 
+
                 socket.emit(EVENT, WsBaseResponse.success({
                     board: game ? game.board : createInitialBoard(),
                     yourTurn: isMyTurn,
-                    turnTimerSeconds: timerSeconds,
+                    turnTimerSeconds: timerSeconds, // Always send current timer
                     waitingForOpponent: false,
                     isPlayerOne: playerNum === 1,
+                    gameStarted: true,
                 }, [isMyTurn
                     ? (i18n.__('ws.games.opponentReady') || 'Game in progress. Your turn!')
                     : (i18n.__('ws.games.opponentReadyWait') || 'Game in progress. Waiting for opponent.')
                 ]));
                 return;
             }
+
+
 
             // 7. Still waiting — notify the joining player
             emitMsg = WsBaseResponse.success(
@@ -151,7 +160,14 @@ module.exports = (socket, namespace) => {
 
                 // Create the initial board
                 const board = createInitialBoard();
-                await HalmaGame.create({ room_id, player1_id, player2_id, board, current_player: 1 });
+                await HalmaGame.create({ 
+                    room_id, 
+                    player1_id, 
+                    player2_id, 
+                    board, 
+                    current_player: 1,
+                    turn_start_time: new Date()
+                });
 
                 const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
 
@@ -171,6 +187,7 @@ module.exports = (socket, namespace) => {
                         turnTimerSeconds: timerSeconds,
                         waitingForOpponent: false,
                         isPlayerOne: true,
+                        gameStarted: true,
                     }, [i18n.__('ws.games.opponentReady') || 'Game started! Your turn — make a move!']));
                 }
 
@@ -183,6 +200,7 @@ module.exports = (socket, namespace) => {
                         turnTimerSeconds: timerSeconds,
                         waitingForOpponent: false,
                         isPlayerOne: false,
+                        gameStarted: true,
                     }, [i18n.__('ws.games.opponentReadyWait') || 'Game started! Waiting for opponent to move.']));
                 }
 
@@ -212,6 +230,8 @@ module.exports = (socket, namespace) => {
 
                 logger.info(`Halma auto-started: room ${room_id} — P1:${player1_id}, P2:${player2_id}`, { className: filename });
             }
+
+
 
         } catch (err) {
             logger.error(`Error joining halma room: ${err}`, { className: filename });

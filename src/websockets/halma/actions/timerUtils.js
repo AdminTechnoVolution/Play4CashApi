@@ -15,6 +15,8 @@ const EVENT = 'halma';
 const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, seconds) => {
     clearTurnTimer(activeSocket);
 
+    activeSocket.data.turnStartTime = Date.now();
+    activeSocket.data.turnTimerSeconds = seconds;
     activeSocket.data.turnTimer = setTimeout(async () => {
         try {
             logger.info(`Halma turn timeout: player ${activeSocket.data.player_id} in room ${room_id}`, { className: filename });

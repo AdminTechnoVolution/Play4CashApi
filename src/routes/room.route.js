@@ -4,7 +4,7 @@ const validateToken = require('../../shared/middlewares/validateToken');
 const validateAdmin = require('../../shared/middlewares/validateAdmin');
 const validateBody = require('../../shared/middlewares/validateBody');
 const { createRoomSchema, readyRoomSchema } = require('../validators/room.validator');
-const { getRooms, getRoom, createRoom, joinRoom, setReady, deleteRoom, leaveRoom } = require('../controllers/room.controller');
+const { getRooms, getRoom, getRoomStatus, createRoom, joinRoom, setReady, deleteRoom, leaveRoom } = require('../controllers/room.controller');
 
 /**
  * @swagger
@@ -85,6 +85,39 @@ router.get('/:game_id', validateToken, getRooms);
  *         description: Internal Server Error
  */
 router.get('/:id', validateToken, getRoom);
+
+/**
+ * @swagger
+ * /api/rooms/{id}/status:
+ *   get:
+ *     summary: Get the current status of a room (status, player count, current turn)
+ *     tags:
+ *       - Rooms
+ *     security:
+ *       - Bearer: []
+ *     parameters:
+ *       - in: header
+ *         name: Authorization
+ *         required: true
+ *         schema:
+ *           type: string
+ *         example: Bearer eyJhbGciOi
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Room ID
+ *     responses:
+ *       200:
+ *         description: Success
+ *       404:
+ *         description: Room not found
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/:id/status', validateToken, getRoomStatus);
+
 
 /**
  * @swagger

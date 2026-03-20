@@ -6,6 +6,7 @@ const {
     setReady: serviceSetReady,
     deleteRoom: serviceDeleteRoom,
     leaveRoom: serviceLeaveRoom,
+    getRoomStatus: serviceGetRoomStatus,
 } = require('../services/room.service');
 
 const getRooms = async (req, res, next) => {
@@ -19,6 +20,13 @@ const getRoom = async (req, res, next) => {
         res.status(200).json(await serviceGetRoom(req));
     } catch (err) { next(err); }
 };
+
+const getRoomStatus = async (req, res, next) => {
+    try {
+        res.status(200).json(await serviceGetRoomStatus(req));
+    } catch (err) { next(err); }
+};
+
 
 const createRoom = async (req, res, next) => {
     try {
@@ -50,4 +58,4 @@ const leaveRoom = async (req, res, next) => {
     } catch (err) { next(err); }
 };
 
-module.exports = { getRooms, getRoom, createRoom, joinRoom, setReady, deleteRoom, leaveRoom };
+module.exports = { getRooms, getRoom, getRoomStatus, createRoom, joinRoom, setReady, deleteRoom, leaveRoom };
