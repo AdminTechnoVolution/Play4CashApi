@@ -1,4 +1,5 @@
 const BaseResponse = require('../../shared/util/baseResponse');
+const i18n = require('../../shared/language/i18n');
 const BusinessException = require('../../shared/exceptionHandler/BusinessException');
 const { SUCCESS_REGISTER_USER, SUCCESS_REGISTER_WALLET, SUCCESS_VERIFY_CODE_USER } = require('../../shared/util/constants');
 const { sendEmail } = require('../../shared/email/mailer');
@@ -84,12 +85,13 @@ const verifyCodeUser = async (req) => {
 const getUserHistory = async (req) => {
     const auth = req.headers['authorization'];
     const user_id = getValueFromJwtToken(auth, 'id');
+    const lang = req.headers['accept-language'] || 'es';
 
     const rooms = await Room.find({
         status: 'finished',
         'players.playerId': user_id
     })
-    .populate('game_id', 'name')
+    .populate('game_id', 'name socket_code')
     .populate('players.playerId', 'username')
     .populate('winner', 'username')
     .sort({ finished_at: -1 })
@@ -97,25 +99,48 @@ const getUserHistory = async (req) => {
 
     const history = rooms.map(room => {
         const isWinner = room.winner && room.winner._id.toString() === user_id;
-        const prize = isWinner
-            ? room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100))
-            : 0;
+        const isDraw = !room.winner && room.status === 'finished' && 
+                      ['stalemate', 'insufficient_material', 'draw'].includes(room.winner_reason);
+        
+        // Prize logic: 
+        // - Win: bet + (bet * edge_remainder)
+        // - Draw: bet back
+        // - Loss: 0
+        let prize = 0;
+        let resultKey = 'lose';
+        
+        if (isWinner) {
+            prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
+            resultKey = 'win';
+        } else if (isDraw) {
+            prize = room.bet_amount;
+            resultKey = 'draw';
+        }
+
+        const opponent = room.players.find(p => p.playerId?._id?.toString() !== user_id);
+        
+        // Localized game name
+        let gameName = 'Unknown';
+        if (room.game_id && room.game_id.name) {
+            gameName = room.game_id.name[lang] || room.game_id.name['en'] || room.game_id.name['es'] || 'Unknown';
+        }
+
+        const reason = room.winner_reason || (isWinner ? 'win' : (isDraw ? 'draw' : 'forfeit'));
 
         return {
             room_id: room._id,
-            game_name: room.game_id ? room.game_id.name : 'Unknown',
+            room_code: room.code,
+            game_name: gameName,
+            game_code: room.game_id?.socket_code || 'unknown',
             bet_amount: room.bet_amount,
-            house_edge: room.house_edge,
-            result: isWinner ? 'Won' : 'Lost',
-            prize: isWinner ? prize : null,
-            players: room.players.map(p => ({
-                player_id: p.playerId?._id,
-                username: p.playerId?.username,
-            })),
-            winner: room.winner
-                ? { player_id: room.winner._id, username: room.winner.username }
-                : null,
-            date: room.finished_at
+            result: i18n.__({ phrase: `ws.games.${resultKey}`, locale: lang }),
+            prize: prize > 0 ? prize : (isWinner ? 0 : (isDraw ? room.bet_amount : null)), 
+            winner_reason: i18n.__({ phrase: `ws.games.${reason}`, locale: lang }),
+            opponent: opponent ? {
+                username: opponent.playerId?.username,
+            } : null,
+            finished_at: room.finished_at,
+            date: room.finished_at // Keep for backward compatibility
         };
     });
 

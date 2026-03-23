@@ -122,5 +122,7 @@
     "ws.games.opponentMoved": "O oponente moveu.",
     "ws.games.mustEndTurn": "Movimento aceito. Pressione Finalizar Turno quando terminar.",
     "ws.games.continuingJump": "Salto bem-sucedido! Você pode continuar pulando com a mesma peça ou pressionar Finalizar Turno.",
-    "ws.games.opponentContinuingJump": "O oponente continua sua cadeia de saltos."
+    "ws.games.opponentContinuingJump": "O oponente continua sua cadeia de saltos.",
+    "ws.games.forfeit": "Desistência",
+    "ws.games.timeout": "Tempo esgotado"
 }

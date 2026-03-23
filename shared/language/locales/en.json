@@ -122,5 +122,7 @@
     "ws.games.opponentMoved": "Opponent moved.",
     "ws.games.mustEndTurn": "Move accepted. Press End Turn when you are done.",
     "ws.games.continuingJump": "Jump successful! You may continue jumping with the same piece, or press End Turn.",
-    "ws.games.opponentContinuingJump": "Opponent is continuing their jump chain."
+    "ws.games.opponentContinuingJump": "Opponent is continuing their jump chain.",
+    "ws.games.forfeit": "Forfeit",
+    "ws.games.timeout": "Timeout"
 }

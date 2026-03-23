@@ -122,5 +122,7 @@
     "ws.games.opponentMoved": "L'avversario ha mosso.",
     "ws.games.mustEndTurn": "Mossa accettata. Premi Fine turno quando hai finito.",
     "ws.games.continuingJump": "Salto riuscito! Puoi continuare a saltare con lo stesso pezzo o premere Fine turno.",
-    "ws.games.opponentContinuingJump": "L'avversario continua la sua catena di salti."
+    "ws.games.opponentContinuingJump": "L'avversario continua la sua catena di salti.",
+    "ws.games.forfeit": "Abbandono",
+    "ws.games.timeout": "Tempo scaduto"
 }

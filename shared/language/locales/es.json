@@ -119,6 +119,8 @@
     "ws.games.check": "¡Jaque! Movimiento aceptado. Presiona Finalizar Turno cuando estés listo.",
     "ws.games.opponentMoved": "El oponente ha movido.",
     "ws.games.mustEndTurn": "Movimiento aceptado. Presiona Finalizar Turno cuando hayas terminado.",
-    "ws.games.continuingJump": "¡Salto exitoso! Puedes seguir saltando con la misma pieza o presionar Finalizar Turno.",
-    "ws.games.opponentContinuingJump": "El oponente continúa su cadena de saltos."
+    "ws.games.continuingJump": "¡Salto exitoso! Puedes continuar saltando con la misma pieza o presionar Terminar turno.",
+    "ws.games.opponentContinuingJump": "El oponente continúa su cadena de saltos.",
+    "ws.games.forfeit": "Abandono",
+    "ws.games.timeout": "Tiempo agotado"
 }

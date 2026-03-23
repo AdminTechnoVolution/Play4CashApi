@@ -122,5 +122,7 @@
     "ws.games.opponentMoved": "L'adversaire a déplacé une pièce.",
     "ws.games.mustEndTurn": "Mouvement accepté. Appuyez sur Fin de tour quand vous avez terminé.",
     "ws.games.continuingJump": "Saut réussi ! Vous pouvez continuer à sauter avec la même pièce ou appuyer sur Fin de tour.",
-    "ws.games.opponentContinuingJump": "L'adversaire continue sa chaîne de sauts."
+    "ws.games.opponentContinuingJump": "L'adversaire continue sa chaîne de sauts.",
+    "ws.games.forfeit": "Forfait",
+    "ws.games.timeout": "Temps écoulé"
 }

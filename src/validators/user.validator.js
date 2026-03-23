@@ -110,6 +110,90 @@ const registerWalletToUserSchema = Joi.object({
         })
 });
 
+
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     UserAccountResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         messages:
+ *           type: array
+ *           items:
+ *             type: string
+ *         data:
+ *           type: object
+ *           properties:
+ *             _id:
+ *               type: string
+ *               example: 660d1abc...
+ *             email:
+ *               type: string
+ *               example: johndoe@example.com
+ *             username:
+ *               type: string
+ *               example: JhonDoe123
+ *             status:
+ *               type: string
+ *               example: active
+ *             balance:
+ *               type: number
+ *               example: 1500.50
+ *             limits:
+ *               type: object
+ *               properties:
+ *                 daily_withdrawal:
+ *                   type: number
+ *                   example: 5000
+ *
+ *     UserHistoryResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         messages:
+ *           type: array
+ *           items:
+ *             type: string
+ *         data:
+ *           type: array
+ *           items:
+ *             type: object
+ *             properties:
+ *               room_id:
+ *                 type: string
+ *               room_code:
+ *                 type: string
+ *               game_name:
+ *                 type: string
+ *               game_code:
+ *                 type: string
+ *               bet_amount:
+ *                 type: number
+ *               result:
+ *                 type: string
+ *                 example: Won
+ *               prize:
+ *                 type: number
+ *               winner_reason:
+ *                 type: string
+ *                 example: checkmate
+ *               opponent:
+ *                 type: object
+ *                 properties:
+ *                   username:
+ *                     type: string
+ *               finished_at:
+ *                 type: string
+ *                 format: date-time
+ *               date:
+ *                 type: string
+ *                 format: date-time
+ */
+
 module.exports = {
     registerUserSchema,
     verifyCodeUserSchema,

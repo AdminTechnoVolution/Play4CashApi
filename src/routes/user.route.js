@@ -31,6 +31,10 @@ const { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getU
  *     responses:
  *       200:
  *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/UserAccountResponse'
  *       401:
  *         description: Unauthorized
  *       500:
@@ -58,6 +62,10 @@ router.get('/account', validateToken, getUserAccount);
  *     responses:
  *       200:
  *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/UserHistoryResponse'
  *       401:
  *         description: Unauthorized
  *       500:

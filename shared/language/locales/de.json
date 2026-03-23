@@ -122,5 +122,7 @@
     "ws.games.opponentMoved": "Gegner hat gezogen.",
     "ws.games.mustEndTurn": "Zug akzeptiert. Drücken Sie Zug beenden, wenn Sie fertig sind.",
     "ws.games.continuingJump": "Sprung erfolgreich! Sie können mit demselben Stein weiter springen oder Zug beenden drücken.",
-    "ws.games.opponentContinuingJump": "Der Gegner setzt seine Sprungkette fort."
+    "ws.games.opponentContinuingJump": "Der Gegner setzt seine Sprungkette fort.",
+    "ws.games.forfeit": "Aufgabe",
+    "ws.games.timeout": "Zeit abgelaufen"
 }
