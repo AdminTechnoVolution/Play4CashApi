@@ -40,7 +40,7 @@ module.exports = (socket, namespace) => {
                         if (s.id !== socket.id) {
                             s.emit(EVENT, WsBaseResponse.success(
                                 { opponentLeft: true, waitingForOpponent: true },
-                                [i18n.__('ws.games.opponentLeft') || 'Opponent abandoned the lobby.']
+                                [i18n.__('ws.games.opponentLeft')]
                             ));
                         }
                     }
@@ -71,7 +71,7 @@ module.exports = (socket, namespace) => {
                     if (s.id !== socket.id) {
                         s.emit(EVENT, WsBaseResponse.error(
                             { outcome: 'opponent_disconnected', gameEnded: true },
-                            [i18n.__('ws.games.playerDisconnected') || 'Your opponent disconnected. You win by forfeit!']
+                            [i18n.__('ws.games.playerDisconnected')]
                         ));
                     }
                 }

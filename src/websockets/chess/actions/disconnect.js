@@ -59,7 +59,7 @@ module.exports = (socket, namespace) => {
                     logger.info('Chess Disconnect: Notifying remaining player that their opponent left the lobby.');
                     namespace.to(room_id).emit(EVENT, WsBaseResponse.success(
                         { opponentLeft: true, waitingForOpponent: true },
-                        [i18n.__('ws.games.opponentLeft') || 'Opponent abandoned the lobby.']
+                        [i18n.__('ws.games.opponentLeft')]
                     ));
                 }
                 logger.info(`Chess Disconnect: Player ${player_id} successfully left waiting room ${room_id}`);
@@ -99,7 +99,7 @@ module.exports = (socket, namespace) => {
                 logger.info('Chess Disconnect: Emitting win notification to remaining player.');
                 namespace.to(room_id).emit(EVENT, WsBaseResponse.error(
                     { outcome: 'opponent_disconnected', gameEnded: true },
-                    [i18n.__('ws.games.playerDisconnected') || 'Your opponent disconnected. You win by forfeit!']
+                    [i18n.__('ws.games.playerDisconnected')]
                 ));
 
                 logger.info('Chess Disconnect: Clearing turn timers for all remaining sockets in room.');

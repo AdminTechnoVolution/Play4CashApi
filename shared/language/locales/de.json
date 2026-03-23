@@ -110,5 +110,17 @@
     "mailer.verifyAccount.subject": "Bestätigen Sie Ihr Konto",
     "mailer.verifyAccount.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Willkommen bei Play4Cash [username]!</h2><p>Ihr Verifizierungscode</p><h3>[code]</h3><p>Der Verifizierungscode ist für [verificationExpireMins] Minuten gültig. Bitte geben Sie diesen Code nicht an andere weiter</p><p style='font-size: 12px; color: #888;'>Dies ist eine automatische Nachricht. Wenn Sie diese nicht angefordert haben, ignorieren Sie sie bitte und antworten Sie nicht.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
     "mailer.verifyWithdrawal.subject": "Bestätigung der Abhebung",
-    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Abhebungsanfrage bei Play4Cash</h2><p>Hallo <strong>[username]</strong></p><p>Wir haben Ihre Anfrage für eine Abhebung erhalten. Um fortzufahren, verwenden Sie bitte den folgenden Verifizierungscode:</p><h3>[code]</h3><p>Der Verifizierungscode ist für [verificationExpireMins] Minuten gültig. Bitte geben Sie diesen Code nicht an andere weiter</p><p style='font-size: 12px; color: #888;'>Dies ist eine automatische Nachricht. Wenn Sie diese nicht angefordert haben, ignorieren Sie sie bitte und antworten Sie nicht.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>"
+    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Auszahlungsanfrage bei Play4Cash</h2><p>Hallo <strong>[username]</strong></p><p>Wir haben Ihre Anfrage erhalten, eine Auszahlung vorzunehmen. Um fortzufahren, verwenden Sie bitte den folgenden Verifizierungscode:</p><h3>[code]</h3><p>Der Verifizierungscode ist [verificationExpireMins] Minuten lang gültig. Bitte teilen Sie diesen Code niemandem mit</p><p style='font-size: 12px; color: #888;'>Dies ist eine automatische Nachricht. Wenn Sie dies nicht angefordert haben, ignorieren Sie sie bitte und antworten Sie nicht.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
+    "ws.games.checkmate": "Schachmatt!",
+    "ws.games.stalemate": "Remis: Patt",
+    "ws.games.insufficientMaterial": "Remis: Unzureichendes Material",
+    "ws.games.win": "¡Du hast gewonnen!",
+    "ws.games.lose": "¡Du hast verloren!",
+    "ws.games.draw": "¡Unentschieden!",
+    "ws.games.moveAccepted": "Zug akzeptiert. Drücken Sie Zug beenden, wenn Sie bereit sind.",
+    "ws.games.check": "Schach! Zug akzeptiert. Drücken Sie Zug beenden, wenn Sie bereit sind.",
+    "ws.games.opponentMoved": "Gegner hat gezogen.",
+    "ws.games.mustEndTurn": "Zug akzeptiert. Drücken Sie Zug beenden, wenn Sie fertig sind.",
+    "ws.games.continuingJump": "Sprung erfolgreich! Sie können mit demselben Stein weiter springen oder Zug beenden drücken.",
+    "ws.games.opponentContinuingJump": "Der Gegner setzt seine Sprungkette fort."
 }

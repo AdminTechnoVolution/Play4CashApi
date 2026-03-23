@@ -109,8 +109,8 @@ module.exports = (socket, namespace) => {
             if (socket.save) await socket.save();
 
             const moveAcceptedMsg = isCheck(playerNum === 1 ? 'w' : 'b', nextBoard, nextState) 
-                ? 'Check! Move accepted. Press End Turn when ready.' 
-                : 'Move accepted. Press End Turn when ready.';
+                ? i18n.__('ws.games.check')
+                : i18n.__('ws.games.moveAccepted');
 
             socket.emit(EVENT, WsBaseResponse.success({
                 board: nextBoard,
@@ -125,7 +125,7 @@ module.exports = (socket, namespace) => {
                 reason: result.reason,
                 isPlayerOne: playerNum === 1,
                 playingWhite: playerNum === 1
-            }, [result.finished ? (result.winner ? (result.winner === playerNum ? 'Checkmate! You win!' : 'Checkmate! You lose.') : `Draw: ${result.reason}`) : moveAcceptedMsg]));
+            }, [result.finished ? (result.winner ? (result.winner === playerNum ? i18n.__('ws.games.win') : i18n.__('ws.games.lose')) : i18n.__({phrase: `ws.games.${result.reason}`})) : moveAcceptedMsg]));
 
             // Notify the opponent
             socket.to(room_id).emit(EVENT, WsBaseResponse.success({
@@ -140,7 +140,7 @@ module.exports = (socket, namespace) => {
                 reason: result.reason,
                 isPlayerOne: playerNum !== 1,
                 playingWhite: playerNum !== 1
-            }, [result.finished ? (result.winner ? (result.winner !== playerNum ? 'Checkmate! You win!' : 'Checkmate! You lose.') : `Draw: ${result.reason}`) : 'Opponent moved.']));
+            }, [result.finished ? (result.winner ? (result.winner !== playerNum ? i18n.__('ws.games.win') : i18n.__('ws.games.lose')) : i18n.__({phrase: `ws.games.${result.reason}`})) : i18n.__('ws.games.opponentMoved')]));
 
             if (result.finished) {
                 clearTurnTimer(socket);

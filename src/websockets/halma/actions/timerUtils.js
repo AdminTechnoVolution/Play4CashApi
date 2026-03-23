@@ -36,12 +36,12 @@ const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, second
 
             activeSocket.emit(EVENT, WsBaseResponse.error(
                 { outcome: 'timeout_loss', gameEnded: true },
-                [i18n.__('ws.games.timeoutLoss') || 'You ran out of time! You lose.']
+                [i18n.__('ws.games.timeoutLoss')]
             ));
 
             opponentSocket.emit(EVENT, WsBaseResponse.success(
                 { outcome: 'win', reason: 'timeout', prize, gameEnded: true },
-                [i18n.__('ws.games.timeoutWin') || 'Opponent ran out of time! You win!']
+                [i18n.__('ws.games.timeoutWin')]
             ));
 
             const { getIo } = require('../../../../shared/config/ws');

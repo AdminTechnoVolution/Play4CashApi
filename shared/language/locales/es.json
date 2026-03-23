@@ -108,5 +108,17 @@
     "mailer.verifyAccount.subject": "Verifica tu cuenta",
     "mailer.verifyAccount.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Bienvenido a Play4Cash [username]!</h2><p>Tu código de verificación</p><h3>[code]</h3><p>El código de verificación será válido por [verificationExpireMins] minutos. Por favor no compartas este código con nadie</p><p style='font-size: 12px; color: #888;'>Este es un mensaje automático. Si no lo solicitaste, por favor ignóralo y no respondas.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
     "mailer.verifyWithdrawal.subject": "Verificación de retiro",
-    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Solicitud de retiro en Play4Cash</h2><p>Hola <strong>[username]</strong></p><p>Recibimos tu solicitud para realizar un retiro. Para continuar, por favor utiliza el siguiente código de verificación:</p><h3>[code]</h3><p>El código de verificación será válido por [verificationExpireMins] minutos. Por favor no compartas este código con nadie</p><p style='font-size: 12px; color: #888;'>Este es un mensaje automático. Si no lo solicitaste, por favor ignóralo y no respondas.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>"
+    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Solicitud de retiro en Play4Cash</h2><p>Hola <strong>[username]</strong></p><p>Recibimos tu solicitud para realizar un retiro. Para continuar, por favor utiliza el siguiente código de verificación:</p><h3>[code]</h3><p>El código de verificación será válido por [verificationExpireMins] minutos. Por favor no compartas este código con nadie</p><p style='font-size: 12px; color: #888;'>Este es un mensaje automático. Si no lo solicitaste, por favor ignóralo y no respondas.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
+    "ws.games.checkmate": "¡Jaque mate!",
+    "ws.games.stalemate": "Empate: Tablas",
+    "ws.games.insufficientMaterial": "Empate: Material insuficiente",
+    "ws.games.win": "¡Has ganado!",
+    "ws.games.lose": "¡Has perdido!",
+    "ws.games.draw": "¡Empate!",
+    "ws.games.moveAccepted": "Movimiento aceptado. Presiona Finalizar Turno cuando estés listo.",
+    "ws.games.check": "¡Jaque! Movimiento aceptado. Presiona Finalizar Turno cuando estés listo.",
+    "ws.games.opponentMoved": "El oponente ha movido.",
+    "ws.games.mustEndTurn": "Movimiento aceptado. Presiona Finalizar Turno cuando hayas terminado.",
+    "ws.games.continuingJump": "¡Salto exitoso! Puedes seguir saltando con la misma pieza o presionar Finalizar Turno.",
+    "ws.games.opponentContinuingJump": "El oponente continúa su cadena de saltos."
 }

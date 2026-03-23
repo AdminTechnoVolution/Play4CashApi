@@ -112,7 +112,7 @@ module.exports = (socket, namespace) => {
                         const playerLang = s.handshake?.headers?.['accept-language'] || 'en';
                         s.emit(EVENT, WsBaseResponse.error(
                             { outcome: 'opponent_disconnected', gameEnded: true },
-                            [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLang}) || 'Your opponent disconnected. You win by forfeit!']
+                            [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLang})]
                         ));
                     }
                 }

@@ -222,13 +222,13 @@ module.exports = (socket, namespace) => {
 
                     emitMsg = WsBaseResponse.success(
                         { outcome: 'win', row, col, shipType: result.shipType, prize, yourTurn: false, gameEnded: true },
-                        [i18n.__('ws.games.winLastShip') || 'You sank the last ship! You win!']
+                        [i18n.__('ws.games.win')]
                     );
                     socket.emit(EVENT, emitMsg);
 
                     opponentSocket.emit(EVENT, WsBaseResponse.success(
                         { outcome: 'lose', row, col, shipType: result.shipType, yourTurn: false, gameEnded: true },
-                        [i18n.__('ws.games.loseLastShip') || 'All your ships have been sunk. You lose!']
+                        [i18n.__('ws.games.lose')]
                     ));
                     
                     // Notify the global lobby that this room is gone

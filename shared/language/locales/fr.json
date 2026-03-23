@@ -110,5 +110,17 @@
     "mailer.verifyAccount.subject": "Vérifiez votre compte",
     "mailer.verifyAccount.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Bienvenue sur Play4Cash [username]!</h2><p>Votre code de vérification</p><h3>[code]</h3><p>Le code de vérification sera valide pendant [verificationExpireMins] minutes. Veuillez ne partager ce code avec personne</p><p style='font-size: 12px; color: #888;'>Ceci est un message automatisé. Si vous ne l'avez pas demandé, veuillez l'ignorer et ne pas répondre.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>L'équipe Play4Cash</p></div>",
     "mailer.verifyWithdrawal.subject": "Vérification du retrait",
-    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Demande de retrait sur Play4Cash</h2><p>Bonjour <strong>[username]</strong></p><p>Nous avons reçu votre demande pour effectuer un retrait. Pour continuer, veuillez utiliser le code de vérification suivant :</p><h3>[code]</h3><p>Le code de vérification sera valide pendant [verificationExpireMins] minutes. Veuillez ne partager ce code avec personne</p><p style='font-size: 12px; color: #888;'>Ceci est un message automatisé. Si vous ne l'avez pas demandé, veuillez l'ignorer et ne pas répondre.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>L'équipe Play4Cash</p></div>"
+    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Demande de retrait sur Play4Cash</h2><p>Bonjour <strong>[username]</strong></p><p>Nous avons reçu votre demande pour effectuer un retrait. Pour continuer, veuillez utiliser le code de vérification suivant :</p><h3>[code]</h3><p>Le code de vérification sera valide pendant [verificationExpireMins] minutes. Veuillez ne partager ce code avec personne</p><p style='font-size: 12px; color: #888;'>Ceci est un message automatisé. Si vous ne l'avez pas demandé, veuillez l'ignorer et ne pas répondre.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>L'équipe Play4Cash</p></div>",
+    "ws.games.checkmate": "Échec et mat !",
+    "ws.games.stalemate": "Empate: Pat",
+    "ws.games.insufficientMaterial": "Empate: Matériel insuffisant",
+    "ws.games.win": "¡Vous avez gagné !",
+    "ws.games.lose": "¡Vous avez perdu !",
+    "ws.games.draw": "¡Égalité !",
+    "ws.games.moveAccepted": "Mouvement accepté. Appuyez sur Fin de tour lorsque vous êtes prêt.",
+    "ws.games.check": "Échec ! Mouvement accepté. Appuyez sur Fin de tour lorsque vous êtes prêt.",
+    "ws.games.opponentMoved": "L'adversaire a déplacé une pièce.",
+    "ws.games.mustEndTurn": "Mouvement accepté. Appuyez sur Fin de tour quand vous avez terminé.",
+    "ws.games.continuingJump": "Saut réussi ! Vous pouvez continuer à sauter avec la même pièce ou appuyer sur Fin de tour.",
+    "ws.games.opponentContinuingJump": "L'adversaire continue sa chaîne de sauts."
 }

@@ -2,9 +2,9 @@ const i18n = require('i18n');
 const path = require('path');
 
 i18n.configure({
-    locales: ['en', 'es'],
+    locales: ['en', 'es', 'fr', 'it', 'pt', 'de'],
     defaultLocale: 'es',
-    fallbacks: { 'en': 'es' },
+    fallbacks: { 'en': 'es', 'fr': 'es', 'it': 'es', 'pt': 'es', 'de': 'es' },
     directory: path.join(__dirname, 'locales'),
     objectNotation: false,
     autoReload: true,

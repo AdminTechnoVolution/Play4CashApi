@@ -166,7 +166,7 @@ module.exports = (socket, namespace) => {
                     yourTurn: false,
                     gameEnded: true,
                     isPlayerOne: playerNum === 1,
-                }, [i18n.__('ws.games.winLastShip') || 'You win!']));
+                }, [i18n.__('ws.games.win')]));
 
                 if (opponentSocket) {
                     opponentSocket.emit(EVENT, WsBaseResponse.success({
@@ -175,7 +175,7 @@ module.exports = (socket, namespace) => {
                         yourTurn: false,
                         gameEnded: true,
                         isPlayerOne: opponentSocket.data.playerNum === 1,
-                    }, [i18n.__('ws.games.loseLastShip') || 'You lose!']));
+                    }, [i18n.__('ws.games.lose')]));
                 }
 
                 const { getIo } = require('../../../../shared/config/ws');
@@ -201,7 +201,7 @@ module.exports = (socket, namespace) => {
                     turnTimerSeconds: timerSeconds,
                     outcome: '',
                     isPlayerOne: opponentSocket?.data?.playerNum === 1,
-                }, ['Opponent is continuing their jump chain.']));
+                }, [i18n.__('ws.games.opponentContinuingJump')]));
 
                 socket.emit(EVENT, WsBaseResponse.success({
                     board,
@@ -211,7 +211,7 @@ module.exports = (socket, namespace) => {
                     isPlayerOne: playerNum === 1,
                     continuingJump: true,
                     jumpingPiece: { row: tr, col: tc },
-                }, ['Jump successful! You may continue jumping with the same piece, or press End Turn.']));
+                }, [i18n.__('ws.games.continuingJump')]));
 
                 return;
             }
@@ -231,7 +231,7 @@ module.exports = (socket, namespace) => {
                 turnTimerSeconds: timerSeconds,
                 outcome: '',
                 isPlayerOne: opponentSocket?.data?.playerNum === 1,
-            }, ['Opponent made a move.']));
+            }, [i18n.__('ws.games.opponentMoved')]));
 
             // Tell current player: move accepted, press End Turn when ready
             socket.emit(EVENT, WsBaseResponse.success({
@@ -241,7 +241,7 @@ module.exports = (socket, namespace) => {
                 outcome: '',
                 isPlayerOne: playerNum === 1,
                 mustEndTurn: true,
-            }, ['Move accepted. Press End Turn when you are done.']));
+            }, [i18n.__('ws.games.mustEndTurn')]));
 
             logger.info(`Halma move: P${playerNum} [${fr},${fc}]→[${tr},${tc}] (${isJump ? 'jump' : 'step'}) in room ${room_id}`, { className: filename });
 

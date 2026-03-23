@@ -466,7 +466,7 @@ const leaveRoom = async (req) => {
                         s.emit('halma', JSON.stringify({
                             success: false,
                             data: { outcome: 'opponent_disconnected', gameEnded: true },
-                            messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage}) || 'Your opponent left. You win by forfeit!']
+                            messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage})]
                         }));
                     }
                 }
@@ -478,7 +478,7 @@ const leaveRoom = async (req) => {
                         s.emit('chess', JSON.stringify({
                             success: false,
                             data: { outcome: 'opponent_disconnected', gameEnded: true },
-                            messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage}) || 'Your opponent disconnected. You win by forfeit!']
+                            messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage})]
                         }));
                     }
                 }

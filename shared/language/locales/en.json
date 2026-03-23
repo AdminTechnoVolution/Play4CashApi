@@ -110,5 +110,17 @@
     "mailer.verifyAccount.subject": "Verify your account",
     "mailer.verifyAccount.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Welcome to Play4Cash [username]!</h2><p>Your verification code</p><h3>[code]</h3><p>The verification code will be valid for [verificationExpireMins] minutes. Please do not share this code with anyone</p><p style='font-size: 12px; color: #888;'>This is an automated message. If you did not request this, please ignore it and do not reply.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
     "mailer.verifyWithdrawal.subject": "Withdrawal Verification",
-    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Withdrawal request at Play4Cash</h2><p>Hello <strong>[username]</strong></p><p>We received your request to make a withdrawal. To proceed, please use the following verification code:</p><h3>[code]</h3><p>The verification code will be valid for [verificationExpireMins] minutes. Please do not share this code with anyone</p><p style='font-size: 12px; color: #888;'>This is an automated message. If you did not request this, please ignore it and do not reply.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>"
+    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Withdrawal request at Play4Cash</h2><p>Hello <strong>[username]</strong></p><p>We received your request to make a withdrawal. To proceed, please use the following verification code:</p><h3>[code]</h3><p>The verification code will be valid for [verificationExpireMins] minutes. Please do not share this code with anyone</p><p style='font-size: 12px; color: #888;'>This is an automated message. If you did not request this, please ignore it and do not reply.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
+    "ws.games.checkmate": "Checkmate!",
+    "ws.games.stalemate": "Draw: Stalemate",
+    "ws.games.insufficientMaterial": "Draw: Insufficient Material",
+    "ws.games.win": "You win!",
+    "ws.games.lose": "You lose!",
+    "ws.games.draw": "Draw!",
+    "ws.games.moveAccepted": "Move accepted. Press End Turn when ready.",
+    "ws.games.check": "Check! Move accepted. Press End Turn when ready.",
+    "ws.games.opponentMoved": "Opponent moved.",
+    "ws.games.mustEndTurn": "Move accepted. Press End Turn when you are done.",
+    "ws.games.continuingJump": "Jump successful! You may continue jumping with the same piece, or press End Turn.",
+    "ws.games.opponentContinuingJump": "Opponent is continuing their jump chain."
 }

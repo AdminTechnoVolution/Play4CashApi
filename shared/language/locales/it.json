@@ -110,5 +110,17 @@
     "mailer.verifyAccount.subject": "Verifica il tuo account",
     "mailer.verifyAccount.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Benvenuto in Play4Cash [username]!</h2><p>Il tuo codice di verifica</p><h3>[code]</h3><p>Il codice di verifica sarà valido per [verificationExpireMins] minuti. Non condividere questo codice con nessuno</p><p style='font-size: 12px; color: #888;'>Questo è un messaggio automatico. Se non l'hai richiesto, ignoralo e non rispondere.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Il Team di Play4Cash</p></div>",
     "mailer.verifyWithdrawal.subject": "Verifica del prelievo",
-    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Richiesta di prelievo su Play4Cash</h2><p>Ciao <strong>[username]</strong></p><p>Abbiamo ricevuto la tua richiesta per effettuare un prelievo. Per procedere, utilizza il seguente codice di verifica:</p><h3>[code]</h3><p>Il codice di verifica sarà valido per [verificationExpireMins] minuti. Non condividere questo codice con nessuno</p><p style='font-size: 12px; color: #888;'>Questo è un messaggio automatico. Se non l'hai richiesto, ignoralo e non rispondere.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Il Team di Play4Cash</p></div>"
+    "mailer.verifyWithdrawal.template.body": "<div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'><h2 style='color: #4CAF50;'>Richiesta di prelievo su Play4Cash</h2><p>Ciao <strong>[username]</strong></p><p>Abbiamo ricevuto la tua richiesta di effettuare un prelievo. Per procedere, utilizza il seguente codice di verifica:</p><h3>[code]</h3><p>Il codice di verifica sarà valido per [verificationExpireMins] minuti. Ti preghiamo di non condividere questo codice con nessuno</p><p style='font-size: 12px; color: #888;'>Questo è un messaggio automatico. Se non lo hai richiesto, ignoralo e non rispondere.</p><hr style='margin: 30px 0;'><p style='font-size: 12px; color: #888;'>Play4Cash Team</p></div>",
+    "ws.games.checkmate": "Scacco matto!",
+    "ws.games.stalemate": "Pareggio: Stallo",
+    "ws.games.insufficientMaterial": "Pareggio: Materiale insufficiente",
+    "ws.games.win": "¡Hai vinto!",
+    "ws.games.lose": "¡Hai perso!",
+    "ws.games.draw": "¡Pareggio!",
+    "ws.games.moveAccepted": "Mossa accettata. Premi Fine turno quando sei pronto.",
+    "ws.games.check": "Scacco! Mossa accettata. Premi Fine turno quando sei pronto.",
+    "ws.games.opponentMoved": "L'avversario ha mosso.",
+    "ws.games.mustEndTurn": "Mossa accettata. Premi Fine turno quando hai finito.",
+    "ws.games.continuingJump": "Salto riuscito! Puoi continuare a saltare con lo stesso pezzo o premere Fine turno.",
+    "ws.games.opponentContinuingJump": "L'avversario continua la sua catena di salti."
 }
