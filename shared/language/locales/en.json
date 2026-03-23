@@ -119,10 +119,8 @@
     "ws.games.draw": "Draw!",
     "ws.games.moveAccepted": "Move accepted. Press End Turn when ready.",
     "ws.games.check": "Check! Move accepted. Press End Turn when ready.",
-    "ws.games.opponentMoved": "Opponent moved.",
-    "ws.games.mustEndTurn": "Move accepted. Press End Turn when you are done.",
-    "ws.games.continuingJump": "Jump successful! You may continue jumping with the same piece, or press End Turn.",
-    "ws.games.opponentContinuingJump": "Opponent is continuing their jump chain.",
+    "ws.games.opponentDrawn": "Opponent drew a tile.",
+    "ws.games.mustMoveBeforeDraw": "You must play if you have a valid move.",
     "ws.games.forfeit": "Forfeit",
     "ws.games.timeout": "Timeout"
 }

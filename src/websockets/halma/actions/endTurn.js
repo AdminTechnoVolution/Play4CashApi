@@ -52,6 +52,11 @@ module.exports = (socket, namespace) => {
                 await game.save();
             }
 
+            // Record move in Room players history
+            await Room.updateOne(
+                { _id: room_id, 'players.playerId': player_id },
+                { $push: { 'players.$.moves': { data: { type: 'end_turn' } } } }
+            );
 
             socket.data.myTurn = false;
 

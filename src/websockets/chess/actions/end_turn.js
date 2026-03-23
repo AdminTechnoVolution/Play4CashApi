@@ -47,6 +47,12 @@ module.exports = (socket, namespace) => {
             game.turn_start_time = new Date();
             await game.save();
 
+            // Record move in Room players history
+            await Room.updateOne(
+                { _id: room_id, 'players.playerId': player_id },
+                { $push: { 'players.$.moves': { data: { type: 'end_turn' } } } }
+            );
+
             const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
 
             // 4. Notify everyone in the room and sync state

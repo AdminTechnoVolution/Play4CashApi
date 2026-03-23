@@ -117,10 +117,8 @@
     "ws.games.draw": "¡Empate!",
     "ws.games.moveAccepted": "Movimiento aceptado. Presiona Finalizar Turno cuando estés listo.",
     "ws.games.check": "¡Jaque! Movimiento aceptado. Presiona Finalizar Turno cuando estés listo.",
-    "ws.games.opponentMoved": "El oponente ha movido.",
-    "ws.games.mustEndTurn": "Movimiento aceptado. Presiona Finalizar Turno cuando hayas terminado.",
-    "ws.games.continuingJump": "¡Salto exitoso! Puedes continuar saltando con la misma pieza o presionar Terminar turno.",
-    "ws.games.opponentContinuingJump": "El oponente continúa su cadena de saltos.",
+    "ws.games.opponentDrawn": "El oponente robó una ficha.",
+    "ws.games.mustMoveBeforeDraw": "Debes jugar si tienes un movimiento válido.",
     "ws.games.forfeit": "Abandono",
     "ws.games.timeout": "Tiempo agotado"
 }

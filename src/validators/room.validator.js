@@ -40,6 +40,7 @@ const createRoomSchema = Joi.object({
     public: Joi.boolean().required()
         .messages({ 'any.required': 'public.required' }),
     name: Joi.string().trim().max(64).optional(),
+    player_limit: Joi.number().min(2).max(100).optional(), // New field
 });
 
 /**

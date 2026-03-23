@@ -140,6 +140,12 @@ const savePlacement = async (req) => {
             }
         }
 
+        // Record placement in Room players history (persistent across games)
+        await Room.updateOne(
+            { _id: roomId, 'players.playerId': player_id },
+            { $push: { 'players.$.moves': { data: { type: 'placement' } } } }
+        );
+
         if (roomFull && allReady && updatedRoom.status !== 'finished') {
             const io = getIo();
             if (io) {

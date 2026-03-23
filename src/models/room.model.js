@@ -18,6 +18,7 @@ const roomSchema = new mongoose.Schema({
     bet_amount: { type: Number, required: true, min: 1 },
     house_edge: { type: Number, required: true, min: 1, max: 100 },
     public: { type: Boolean, required: true },
+    player_limit: { type: Number }, // Chosen limit for this specific room
     status: { type: String, enum: ['waiting', 'started', 'finished'], default: 'waiting', lowercase: true },
     created_at: { type: Date, default: Date.now },
     finished_at: { type: Date },

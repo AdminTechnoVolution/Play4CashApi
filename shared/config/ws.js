@@ -7,6 +7,7 @@ const namespaces = [
     { path: '/naval-battle', handler: require('../../src/websockets/naval-battle') },
     { path: '/halma', handler: require('../../src/websockets/halma') },
     { path: '/chess', handler: require('../../src/websockets/chess') },
+    { path: '/domino', handler: require('../../src/websockets/domino') },
     { path: '/rooms', handler: require('../../src/websockets/rooms') }
 ];
 

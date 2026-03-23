@@ -100,7 +100,7 @@ const createRoom = async (req) => {
         const auth = req.headers['authorization'];
         const user_id = getValueFromJwtToken(auth, 'id');
 
-        const { game_id, bet_amount, public: isPublic, name } = req.body;
+        const { game_id, bet_amount, public: isPublic, name, player_limit } = req.body;
 
         // Validate game exists and bet is valid
         const game = await Game.findById(game_id);
@@ -123,6 +123,7 @@ const createRoom = async (req) => {
             bet_amount,
             house_edge: game.house_edge,
             public: isPublic,
+            player_limit: player_limit || game.max_players,
             players: [{ playerId: user_id, ready: false }],
         });
 
@@ -159,7 +160,7 @@ const joinRoom = async (req) => {
         if (!roomInfo) throw new BusinessException('ERROR_NOT_FOUND', 404);
         if (roomInfo.status !== 'waiting') throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
 
-        const maxPlayers = roomInfo.game_id.max_players;
+        const maxPlayers = roomInfo.player_limit || roomInfo.game_id.max_players;
 
         // Check if user is already in the room
         const alreadyIn = roomInfo.players.some(p => p.playerId.toString() === user_id);
@@ -242,7 +243,7 @@ const setReady = async (req) => {
         player.ready = ready;
 
         // Auto-start: room is full AND every player is ready
-        const maxPlayers = room.game_id?.max_players;
+        const maxPlayers = room.player_limit || room.game_id?.max_players;
         const roomFull = maxPlayers && room.players.length >= maxPlayers;
         const allReady = room.players.every(p => p.ready);
 
@@ -303,6 +304,11 @@ const localizeRooms = (req, rooms) => {
                 name: language === LANGUAGE_ES ? room.game_id.name.es : room.game_id.name.en,
                 description: language === LANGUAGE_ES ? room.game_id.description.es : room.game_id.description.en,
             };
+
+            // Override global game max_players with room-specific limit if set
+            if (room.player_limit) {
+                room.game_id.max_players = room.player_limit;
+            }
         }
         return room;
     });
