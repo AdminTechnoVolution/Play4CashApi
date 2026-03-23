@@ -27,6 +27,7 @@ const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, second
             const winner_id = opponentSocket.data.player_id;
             room.status = 'finished';
             room.winner = winner_id;
+            room.winner_reason = 'timeout';
             room.finished_at = new Date();
             await room.save();
 

@@ -6,56 +6,53 @@ const Room = require('../../../models/room.model');
 const User = require('../../../models/user.model');
 const i18n = require('../../../../shared/language/i18n');
 
-const EVENT = 'naval-battle';
+const EVENT = 'chess';
 
-/**
- * Starts the turn timer for the active player.
- * If the timer fires, the active player loses by timeout.
- *
- * @param {Socket} activeSocket   - The socket whose turn it currently is
- * @param {Socket} opponentSocket - The opponent's socket
- * @param {SocketNamespace} namespace
- * @param {string} room_id
- * @param {number} seconds        - Seconds from game.turn_timer_seconds
- */
 const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, seconds) => {
-    // Clear any existing timer on the active socket first (safety net)
     clearTurnTimer(activeSocket);
 
+    activeSocket.data.turnStartTime = Date.now();
+    activeSocket.data.turnTimerSeconds = seconds;
     activeSocket.data.turnTimer = setTimeout(async () => {
         try {
-            logger.info(
-                `Turn timeout: player ${activeSocket.data.player_id} in room ${room_id}`,
-                { className: filename }
-            );
+            logger.info(`Chess turn timeout: player ${activeSocket.data.player_id} in room ${room_id}`, { className: filename });
 
-            // Mark room finished — opponent wins by timeout
             const room = await Room.findById(room_id);
-            if (!room || room.status !== 'started') return;
+            if (!room || room.status !== 'started') {
+                logger.info(`Chess turn timeout: Room ${room_id} not found or already finished. Status: ${room?.status}`, { className: filename });
+                return;
+            }
 
-            const winner_id = opponentSocket.data.player_id;
+            // Fix: Fetch winner_id from room document to avoid stale socket data
+            const winner_id = room.players.find(p => p.playerId.toString() !== activeSocket.data.player_id.toString())?.playerId;
+            
+            if (!winner_id) {
+                logger.error(`Chess turn timeout: winner_id not found for p:${activeSocket.data.player_id} in room ${room_id}`, { className: filename });
+                return;
+            }
+
             room.status = 'finished';
             room.winner = winner_id;
             room.winner_reason = 'timeout';
             room.finished_at = new Date();
             await room.save();
 
-            // Credit winner with prize
             const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
+            logger.info(`Chess turn timeout: awarding prize ${prize} to winner ${winner_id}`, { className: filename });
             await User.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
 
-            // Notify both players
             activeSocket.emit(EVENT, WsBaseResponse.error(
                 { outcome: 'timeout_loss', gameEnded: true },
                 [i18n.__('ws.games.timeoutLoss') || 'You ran out of time! You lose.']
             ));
 
-            opponentSocket.emit(EVENT, WsBaseResponse.success(
-                { outcome: 'win', reason: 'timeout', prize, gameEnded: true },
-                [i18n.__('ws.games.timeoutWin') || 'Opponent ran out of time! You win!']
-            ));
-            
-            // Notify the global lobby that this room is gone
+            if (opponentSocket && opponentSocket.connected) {
+                opponentSocket.emit(EVENT, WsBaseResponse.success(
+                    { outcome: 'win', reason: 'timeout', prize, gameEnded: true },
+                    [i18n.__('ws.games.timeoutWin') || 'Opponent ran out of time! You win!']
+                ));
+            }
+
             const { getIo } = require('../../../../shared/config/ws');
             const io = getIo();
             if (io) {
@@ -63,17 +60,13 @@ const startTurnTimer = (activeSocket, opponentSocket, namespace, room_id, second
             }
 
         } catch (err) {
-            logger.error(`Error processing turn timeout: ${err}`, { className: filename });
+            logger.error(`Error processing chess turn timeout: ${err}`, { className: filename });
         }
     }, seconds * 1000);
 };
 
-/**
- * Clears the turn timer stored on a socket, if any.
- * @param {Socket} socket
- */
 const clearTurnTimer = (socket) => {
-    if (socket.data.turnTimer) {
+    if (socket.data && socket.data.turnTimer) {
         clearTimeout(socket.data.turnTimer);
         socket.data.turnTimer = null;
     }

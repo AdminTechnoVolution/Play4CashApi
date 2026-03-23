@@ -71,6 +71,8 @@ const getRoomStatus = async (req) => {
             status: room.status,
             playerCount: room.players.length,
             bet_amount: room.bet_amount,
+            winner: room.winner || null,
+            winner_reason: room.winner_reason || (room.status === 'started' ? 'playing' : null),
         };
 
         // If it's started and we have a Halma game, include current player
@@ -408,6 +410,19 @@ const leaveRoom = async (req) => {
                             data: { opponentLeft: true, waitingForOpponent: true },
                             messages: [i18n.__({phrase: 'ws.games.opponentLeft', locale: language}) || 'Opponent left the lobby.']
                         }));
+
+                        // Notify chess namespace too
+                        const socketsChess = await io.of('/chess').in(id).fetchSockets();
+                        for (const s of socketsChess) {
+                            if (s.data && s.data.player_id !== user_id) {
+                                const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
+                                s.emit('chess', JSON.stringify({
+                                    success: true,
+                                    data: { opponentLeft: true, waitingForOpponent: true },
+                                    messages: [i18n.__({phrase: 'ws.games.opponentLeft', locale: playerLanguage}) || 'Opponent abandoned the lobby.']
+                                }));
+                            }
+                        }
                     }
                     return new BaseResponse(true, [], updatedRoom);
                 }
@@ -422,6 +437,7 @@ const leaveRoom = async (req) => {
 
             roomInfo.status = 'finished';
             roomInfo.winner = winner_id;
+            roomInfo.winner_reason = 'forfeit';
             roomInfo.finished_at = new Date();
             await roomInfo.save();
 
@@ -451,6 +467,18 @@ const leaveRoom = async (req) => {
                             success: false,
                             data: { outcome: 'opponent_disconnected', gameEnded: true },
                             messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage}) || 'Your opponent left. You win by forfeit!']
+                        }));
+                    }
+                }
+
+                const socketsChess = await io.of('/chess').in(id).fetchSockets();
+                for (const s of socketsChess) {
+                    if (s.data && s.data.player_id !== user_id) {
+                        const playerLanguage = s.handshake?.headers?.['accept-language'] || language;
+                        s.emit('chess', JSON.stringify({
+                            success: false,
+                            data: { outcome: 'opponent_disconnected', gameEnded: true },
+                            messages: [i18n.__({phrase: 'ws.games.playerDisconnected', locale: playerLanguage}) || 'Your opponent disconnected. You win by forfeit!']
                         }));
                     }
                 }

@@ -92,6 +92,7 @@ module.exports = (socket, namespace) => {
 
             room.status = 'finished';
             room.winner = winner_id;
+            room.winner_reason = 'forfeit';
             room.finished_at = new Date();
             await room.save();
 

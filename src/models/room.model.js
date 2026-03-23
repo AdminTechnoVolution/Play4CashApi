@@ -22,6 +22,7 @@ const roomSchema = new mongoose.Schema({
     created_at: { type: Date, default: Date.now },
     finished_at: { type: Date },
     winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    winner_reason: { type: String, lowercase: true },
 }, {
     versionKey: false,
     timestamps: false,

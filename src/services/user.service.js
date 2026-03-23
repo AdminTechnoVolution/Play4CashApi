@@ -13,7 +13,7 @@ const getUserAccount = async (req) => {
     const auth = req.headers['authorization'];
     const user_id = getValueFromJwtToken(auth, 'id');
 
-    const user = await User.findById(user_id).select('-_id -created_at').lean();
+    const user = await User.findById(user_id).select('-created_at').lean();
 
     if (!user) throw new BusinessException('ERROR_USER_NOTFOUND');
 
