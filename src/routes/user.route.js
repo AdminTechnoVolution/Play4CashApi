@@ -3,7 +3,47 @@ const router = express.Router();
 const { registerUserSchema, verifyCodeUserSchema, registerWalletToUserSchema } = require('../validators/user.validator');
 const validateBody = require('../../shared/middlewares/validateBody');
 const validateToken = require('../../shared/middlewares/validateToken');
-const { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory } = require('../controllers/user.controller');
+const validateAdmin = require('../../shared/middlewares/validateAdmin');
+const { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory, getTotalBalances } = require('../controllers/user.controller');
+
+/**
+ * @swagger
+ * /api/user/admin/total-balances:
+ *   get:
+ *     summary: Get total balance held by all users (Admin only)
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - Bearer: []
+ *     responses:
+ *       200:
+ *         description: Success
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     total_balances:
+ *                       type: number
+ *                     total_deposited:
+ *                       type: number
+ *                     total_withdrawn:
+ *                       type: number
+ *                     total_users:
+ *                       type: number
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden (Non-admin)
+ *       500:
+ *         description: Internal Server Error
+ */
+router.get('/admin/total-balances', validateToken, validateAdmin, getTotalBalances);
 
 /**
  * @swagger

@@ -147,4 +147,21 @@ const getUserHistory = async (req) => {
     return new BaseResponse(true, [], history);
 };
 
-module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory };
+const getTotalBalances = async () => {
+    const result = await User.aggregate([
+        { 
+            $group: { 
+                _id: null, 
+                total_balances: { $sum: '$balance' },
+                total_deposited: { $sum: '$total_recharged' },
+                total_withdrawn: { $sum: '$total_witdrawal' }, // Note: existing typo in model
+                total_users: { $sum: 1 }
+            } 
+        }
+    ]);
+    const data = result.length > 0 ? result[0] : { total_balances: 0, total_deposited: 0, total_withdrawn: 0, total_users: 0 };
+    delete data._id;
+    return new BaseResponse(true, [], data);
+};
+
+module.exports = { registerUser, verifyCodeUser, registerWalletToUser, getUserAccount, getUserHistory, getTotalBalances };
