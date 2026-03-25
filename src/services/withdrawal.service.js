@@ -41,12 +41,20 @@ const processWithdrawalAndCallBinance = async (req, user, withdrawal) => {
     const verification_code = withdrawal.verification_code;
     const verification_expires_at = withdrawal.verification_expires_at;
     try {
-        user.balance = new Decimal(user.balance).minus(withdrawal.amount).toNumber();
+        // Atomic balance deduction: only succeeds if the user still has enough funds.
+        // This prevents double-spend race conditions where two concurrent requests
+        // both pass the balance check but both proceed to deduct.
+        const updatedUser = await User.findOneAndUpdate(
+            { _id: user._id, balance: { $gte: withdrawal.amount } },
+            { $inc: { balance: -withdrawal.amount } },
+            { new: true }
+        );
+        if (!updatedUser) {
+            throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE');
+        }
 
         withdrawal.verification_code = undefined;
         withdrawal.verification_expires_at = undefined;
-
-        await user.save();
         await withdrawal.save();
 
         const withdrawalResponse = await sendWithdrawalRequest(
@@ -59,16 +67,22 @@ const processWithdrawalAndCallBinance = async (req, user, withdrawal) => {
         await saveTxMessage(withdrawal.user_id, withdrawal.amount, withdrawal.coin, withdrawal.wallet, req.__("message_tx.processing.ok"));
     } catch (err) {
         logger.error(`Error processing withdrawal: ${err}`, { className: filename });
-        user.balance = new Decimal(user.balance).plus(withdrawal.amount).toNumber();
+        // Only restore balance if we actually deducted it (i.e. not an insufficient-balance error)
+        if (err.message !== 'ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE') {
+            await User.findOneAndUpdate(
+                { _id: user._id },
+                { $inc: { balance: withdrawal.amount } }
+            );
+        }
         withdrawal.status = 'pending_verify';
         withdrawal.verification_code = verification_code;
         withdrawal.verification_expires_at = verification_expires_at;
-        await user.save();
         await withdrawal.save();
         await saveTxMessage(withdrawal.user_id, withdrawal.amount, withdrawal.coin, withdrawal.wallet, err.message);
         throw new BusinessException('ERROR_GENERIC_RESPONSE');
     }
 }
+
 
 const verifyAmountAndBalance = async (req, user, withdrawal) => {
     try {

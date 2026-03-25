@@ -5,6 +5,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
+    "start:cluster": "node cluster.js",
     "dev": "nodemon server.js"
   },
   "keywords": [],
@@ -13,12 +14,16 @@
   "description": "",
   "dependencies": {
     "@binance/connector": "^3.6.1",
+    "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "decimal.js": "^10.6.0",
     "dotenv": "^17.2.0",
     "express": "^5.1.0",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^8.3.1",
     "google-auth-library": "^10.6.1",
+    "helmet": "^8.1.0",
     "i18n": "^0.15.1",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",

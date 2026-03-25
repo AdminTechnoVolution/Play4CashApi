@@ -19,16 +19,12 @@ function exceptionHandler(err, req, res, next) {
         return res.status(err.statusCode).json(response);
     }
 
-    if (err instanceof DataLayerException) {
-        let message = req.__(err.message)
-        let response = new BaseResponse(false, [message]);
-        return res.status(err.statusCode).json(response);
-    }
 
-    let statusCode = err.statusCode || 500;
-    let message = err.message || req.__(ERROR_GENERIC_RESPONSE);
-
-    let response = new BaseResponse(false, message);
+    // NEVER expose raw error details to the client — log them server-side only
+    logger.error(`Unhandled exception: ${err.stack || err}`, { className: filename });
+    const statusCode = err.statusCode || 500;
+    const message = req.__(ERROR_GENERIC_RESPONSE);
+    const response = new BaseResponse(false, [message]);
     res.status(statusCode).json(response);
 }
 

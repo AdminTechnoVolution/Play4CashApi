@@ -11,13 +11,17 @@ const validateAdmin = require('../../shared/middlewares/validateAdmin');
  *     summary: Get global app configuration (limits, etc.)
  *     tags:
  *       - Config
+ *     security:
+ *       - Bearer: []
  *     responses:
  *       200:
  *         description: Success
+ *       401:
+ *         description: Unauthorized
  *       500:
  *         description: Internal Server Error
  */
-router.get('/config', getConfig);
+router.get('/config', validateToken, getConfig);
 
 /**
  * @swagger

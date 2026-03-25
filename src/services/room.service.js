@@ -137,7 +137,7 @@ const createRoom = async (req) => {
 
         const io = getIo();
         if (io) {
-            io.of('/rooms').emit('roomCreated', enriched);
+            io.of('/rooms').to(`game:${game_id}`).emit('roomCreated', enriched);
         }
 
         return new BaseResponse(true, [], room);
@@ -210,7 +210,7 @@ const joinRoom = async (req) => {
 
         const io = getIo();
         if (io) {
-            io.of('/rooms').emit('roomUpdated', enriched);
+            io.of('/rooms').to(`game:${room.game_id?._id || room.game_id}`).emit('roomUpdated', enriched);
         }
 
         return new BaseResponse(true, [], room);
@@ -261,7 +261,7 @@ const setReady = async (req) => {
 
         const io = getIo();
         if (io) {
-            io.of('/rooms').emit('roomUpdated', enriched);
+            io.of('/rooms').to(`game:${room.game_id?._id || room.game_id}`).emit('roomUpdated', enriched);
         }
 
         return new BaseResponse(true, [], room);
@@ -282,7 +282,8 @@ const deleteRoom = async (req) => {
 
         const io = getIo();
         if (io) {
-            io.of('/rooms').emit('roomDeleted', { id: req.params.id });
+            const gameId = room?.game_id?._id || room?.game_id || req.params.id;
+            io.of('/rooms').to(`game:${gameId}`).emit('roomDeleted', { id: req.params.id });
         }
 
         return new BaseResponse(true, []);

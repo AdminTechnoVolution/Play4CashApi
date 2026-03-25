@@ -5,30 +5,50 @@ const i18n = require('i18n');
 const cron = require('node-cron');
 const { getWithdrawalHistory } = require('../clients/binance');
 const User = require('../../src/models/user.model');
-const { SUCCESS_BINANCE_WITHDRAWAL, REJECTED_BINANCE_WITHDRAWAL, PROCESSING_BINANCE_WITHDRAWAL, EMAIL_SENT_BINANCE_WITHDRAWAL, AWAITING_APPROVAL_BINANCE_WITHDRAWAL } = require('../util/constants');
+const { SUCCESS_BINANCE_WITHDRAWAL, REJECTED_BINANCE_WITHDRAWAL } = require('../util/constants');
 const Withdrawal = require('../../src/models/withdrawal.model');
 const TxMessage = require('../../src/models/tx_message.model');
 const schedule = process.env.JOB_CRON_WITHDRAWAL_IN_PROCESSING;
 const Decimal = require('decimal.js');
+const redisClient = require('../config/redis');
+
+const JOB_LOCK_KEY = 'job:withdrawal-processing';
+const JOB_LOCK_TTL_SECS = 55; // slightly less than the shortest cron interval (1 min)
 
 async function verifyWithdrawalsInProcessing() {
-    const withdrawals = await getWithdrawalHistoryInProcessing();
-    if (withdrawals.length === 0) return;
+    // Distributed lock: only one server instance runs this at a time
+    const lock = await redisClient.set(JOB_LOCK_KEY, '1', { NX: true, EX: JOB_LOCK_TTL_SECS });
+    if (!lock) {
+        logger.info('JOB withdrawal-processing: skipped (another instance holds the lock)', { className: filename });
+        return;
+    }
 
-    logger.info(`JOB Running: withdrawal in processing at ${new Date().toISOString()}`, { className: filename });
+    try {
+        const withdrawals = await getWithdrawalHistoryInProcessing();
+        if (withdrawals.length === 0) return;
 
-    const inputParam = await getInputParam(withdrawals);
-    if (!inputParam) return;
+        logger.info(`JOB Running: withdrawal in processing at ${new Date().toISOString()}`, { className: filename });
 
-    const binanceWithdrawals = await getWithdrawalHistory(inputParam);
+        const inputParam = await getInputParam(withdrawals);
+        if (!inputParam) return;
 
-    await processBinanceWithdrawals(withdrawals, binanceWithdrawals);
+        const binanceWithdrawals = await getWithdrawalHistory(inputParam);
+        await processBinanceWithdrawals(withdrawals, binanceWithdrawals);
+    } finally {
+        await redisClient.del(JOB_LOCK_KEY);
+    }
 }
 
 async function processBinanceWithdrawals(withdrawals, binanceWithdrawals) {
     for (const withdrawal of withdrawals) {
         try {
             const binanceWithdrawal = binanceWithdrawals.find(bw => bw.id === withdrawal.id_binance);
+
+            // Guard: Binance may not return data for every ID in the batch
+            if (!binanceWithdrawal) {
+                logger.warn(`JOB: withdrawal ${withdrawal.id_binance} not found in Binance response — skipping`, { className: filename });
+                continue;
+            }
 
             switch (binanceWithdrawal.status) {
                 case SUCCESS_BINANCE_WITHDRAWAL:

@@ -17,7 +17,6 @@ const logoutUser = async (req) => {
     try {
         let { refreshToken } = req.body;
         let token = req.headers['authorization'];
-        console.log(token);
         token = jwt.verifyJwtToken(token);
 
         await redisClient.del(`${REDIS_KEY_REFRESH_TOKEN}${refreshToken}`);
@@ -120,7 +119,6 @@ const loginUser = async (req) => {
     };
     const accessToken = await generateTokenAndSaveToken(userPayload, JWT_ACCESS_TOKEN_TTL_SECS, REDIS_KEY_ACCESS_TOKEN);
     const refreshToken = await generateTokenAndSaveToken(payloadRefresh, JWT_REFRESH_TOKEN_TTL_SECS, REDIS_KEY_REFRESH_TOKEN);
-    console.log(accessToken);
     return new BaseResponse(true, [], { token: accessToken, refreshToken });
 };
 
