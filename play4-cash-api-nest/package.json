@@ -1,10 +1,10 @@
 {
-  "name": "play4-cash-api-nest",
-  "version": "0.0.1",
+  "name": "play4-cash",
+  "version": "1.0.0",
   "description": "",
-  "author": "",
+  "author": "Darri Cordoba",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "TECHNO VOLUTION",
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",

@@ -7,6 +7,7 @@ import { RoomsGateway } from '../websockets/rooms/rooms.gateway';
 import { NavalBattleGateway } from '../websockets/naval-battle/naval-battle.gateway';
 import { HalmaGateway } from '../websockets/halma/halma.gateway';
 import { ChessGateway } from '../websockets/chess/chess.gateway';
+import { DominoGateway } from '../websockets/domino/domino.gateway';
 
 @Injectable()
 export class RoomService {
@@ -21,6 +22,7 @@ export class RoomService {
     private readonly navalBattleGateway: NavalBattleGateway,
     private readonly halmaGateway: HalmaGateway,
     private readonly chessGateway: ChessGateway,
+    private readonly dominoGateway: DominoGateway,
   ) {}
 
   // ── GET ROOMS ───────────────────────────────────────────────────────────────
@@ -226,6 +228,7 @@ export class RoomService {
         this.navalBattleGateway.server.to(roomId).emit('naval-battle', commonPayload);
         this.halmaGateway.server.to(roomId).emit('halma', commonPayload);
         this.chessGateway.server.to(roomId).emit('chess', commonPayload);
+        this.dominoGateway.server.to(roomId).emit('domino', commonPayload);
       }
       return updated;
     }
@@ -251,6 +254,7 @@ export class RoomService {
         this.navalBattleGateway.server.to(roomId).emit('naval-battle', forfeitPayload);
         this.halmaGateway.server.to(roomId).emit('halma', forfeitPayload);
         this.chessGateway.server.to(roomId).emit('chess', forfeitPayload);
+        this.dominoGateway.server.to(roomId).emit('domino', forfeitPayload);
       }
     }
 
