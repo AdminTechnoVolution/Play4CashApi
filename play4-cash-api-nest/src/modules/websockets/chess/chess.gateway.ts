@@ -68,7 +68,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
         this.server.serverSideEmit?.('roomDeleted', { id: room_id });
       } else {
-        this.server.to(room_id).emit('chess', { success: true, messages: ['Opponent left the lobby.'], data: { opponentLeft: true, waitingForOpponent: true } });
+        client.to(room_id).emit('chess', { success: true, messages: ['Opponent left the lobby.'], data: { opponentLeft: true, waitingForOpponent: true } });
       }
       return;
     }
@@ -80,10 +80,10 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       await room.save();
       const prize = room.bet_amount * (2 - room.house_edge / 100);
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      this.server.to(room_id).emit('chess', {
-        success: false, messages: ['Your opponent disconnected. You win!'],
-        data: { outcome: 'opponent_disconnected', gameEnded: true },
-      });
+      client.to(room_id).emit('chess', {
+    success: false, messages: ['Your opponent disconnected. You win!'],
+    data: { outcome: 'opponent_disconnected', gameEnded: true },
+});
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
@@ -202,8 +202,10 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       { $push: { 'players.$.moves': { data: { from, to, type: 'move' } } } }
     );
 
+    const room = await this.roomModel.findById(room_id);
+    if (!room) return client.emit('chess', { success: false, messages: ['Room not found'] });
+
     if (result.finished) {
-      const room = await this.roomModel.findById(room_id);
       room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
       if (result.winner) {
         const winner_id = result.winner === 1 ? game.player1_id : game.player2_id;
@@ -222,8 +224,8 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const timerSec = 30;
     const inCheck = isCheck(playerNum === 1 ? COLORS.WHITE : COLORS.BLACK, nextBoard, nextState);
 
-    client.emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: true, turnTimerSeconds: timerSec, mustEndTurn: !result.finished, outcome: result.finished ? (result.winner ? (result.winner === playerNum ? 'win' : 'lose') : 'draw') : '', gameEnded: result.finished, winner: result.winner, youWon: result.finished ? (result.winner === playerNum) : undefined, reason: result.reason, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1 }, messages: [inCheck ? 'Check!' : 'Move accepted.'] });
-    client.to(room_id).emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, outcome: result.finished ? (result.winner ? (result.winner !== playerNum ? 'win' : 'lose') : 'draw') : '', gameEnded: result.finished, winner: result.winner, youWon: result.finished ? (result.winner !== playerNum) : undefined, reason: result.reason, isPlayerOne: playerNum !== 1, playingWhite: playerNum !== 1 }, messages: [result.finished ? 'Game over!' : 'Opponent moved.'] });
+    client.emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: true, turnTimerSeconds: timerSec, mustEndTurn: !result.finished, outcome: result.finished ? (result.winner ? (result.winner === playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner === playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, prize: (result.finished && result.winner === playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0 }, messages: [inCheck ? 'Check!' : 'Move accepted.'] });
+    client.to(room_id).emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, outcome: result.finished ? (result.winner ? (result.winner !== playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner !== playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum !== 1, playingWhite: playerNum !== 1, prize: (result.finished && result.winner && result.winner !== playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0 }, messages: [result.finished ? 'Game over!' : 'Opponent moved.'] });
   }
 
   @SubscribeMessage('end_turn')

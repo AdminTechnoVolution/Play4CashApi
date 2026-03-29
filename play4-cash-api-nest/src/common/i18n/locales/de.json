@@ -9,6 +9,7 @@
     "ERROR_USER_WALLET_NOTFOUND": "Der Benutzer hat kein Wallet konfiguriert. Bitte konfigurieren Sie ein Wallet, bevor Sie fortfahren",
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "Der Benutzer hat bereits eine Abhebung, die auf Verifizierung wartet.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Sie haben kein ausreichendes Guthaben, um diese Abhebung vorzunehmen",
+    "ERROR_GAME_INSUFFICIENT_BALANCE": "Sie haben nicht genügend Guthaben, um diese Wette zu platzieren",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Erreicht nicht den Mindestbetrag für eine Abhebung",
     "ERROR_WITHDRAWAL_CODE_INVALID": "Der Verifizierungscode ist ungültig oder abgelaufen",
     "SUCCESS_REGISTER_USER": "Registrierung erfolgreich! Wir haben einen Verifizierungscode an Ihre E-Mail gesendet. Bitte überprüfen Sie Ihren Posteingang und Ihren Spam-Ordner, um den Vorgang abzuschließen",

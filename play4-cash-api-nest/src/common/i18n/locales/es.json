@@ -9,6 +9,7 @@
     "ERROR_USER_WALLET_NOTFOUND": "El usuario no tiene billetera configurada. Por favor, configura una billetera antes de continuar",
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "El usuario ya tiene un retiro en proceso de verificación.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "No cuentas con saldo suficiente para realizar este retiro",
+    "ERROR_GAME_INSUFFICIENT_BALANCE": "No cuentas con el saldo suficiente para realizar esta apuesta",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "No cumple con el monto mínimo de retiro",
     "ERROR_WITHDRAWAL_CODE_INVALID": "El código de verificación es inválido o ha expirado",
     "SUCCESS_REGISTER_USER": "¡Registro exitoso! Hemos enviado un código de verificación a tu correo electrónico. Por favor, revisa tu bandeja de entrada y la carpeta de spam o correo no deseado para completar el proceso",

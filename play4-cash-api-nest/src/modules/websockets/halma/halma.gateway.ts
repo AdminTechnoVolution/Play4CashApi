@@ -48,7 +48,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate({ _id: roomObjId, 'players.playerId': playerObjId }, { $pull: { players: { playerId: playerObjId } } }, { returnDocument: 'after' });
       if (updated?.players.length === 0) await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
-      else this.server.to(room_id).emit('halma', { success: true, data: { opponentLeft: true }, messages: ['Opponent left.'] });
+      else client.to(room_id).emit('halma', { success: true, data: { opponentLeft: true }, messages: ['Opponent left.'] });
       return;
     }
     if (room.status === 'started') {
@@ -58,7 +58,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       await room.save();
       const prize = room.bet_amount * (2 - room.house_edge / 100);
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      this.server.to(room_id).emit('halma', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Opponent disconnected. You win!'] });
+      client.to(room_id).emit('halma', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Opponent disconnected. You win!'] });
 
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
@@ -192,7 +192,21 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const sockets = await this.server.in(room_id).fetchSockets();
       for (const s of sockets) {
         const pNum = (s as any).data.playerNum;
-        s.emit('halma', { success: true, data: { board, gameEnded: true, winner: winner_id, prize: pNum === playerNum ? prize : 0, outcome: pNum === playerNum ? 'win' : 'lose', isPlayerOne: pNum === 1, yourTurn: false }, messages: [pNum === playerNum ? 'You win!' : 'You lose!'] });
+        s.emit('halma', { 
+          success: true, 
+          data: { 
+            board, 
+            gameEnded: true, 
+            outcome: pNum === playerNum ? 'win' : 'lose',
+            youWon: pNum === playerNum,
+            winner: winner_id, 
+            reason: 'normal',
+            prize: pNum === playerNum ? prize : 0, 
+            isPlayerOne: pNum === 1, 
+            yourTurn: false 
+          }, 
+          messages: [pNum === playerNum ? 'You win!' : 'You lose!'] 
+        });
       }
 
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();

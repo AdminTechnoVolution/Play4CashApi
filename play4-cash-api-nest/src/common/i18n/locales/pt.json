@@ -9,6 +9,7 @@
     "ERROR_USER_WALLET_NOTFOUND": "O usuário não possui uma carteira configurada. Configure uma carteira antes de prosseguir",
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "O usuário já possui um saque aguardando verificação.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Você não tem saldo suficiente para realizar este saque",
+    "ERROR_GAME_INSUFFICIENT_BALANCE": "Você não tem saldo suficiente para fazer esta aposta",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Não atinge o valor mínimo de saque",
     "ERROR_WITHDRAWAL_CODE_INVALID": "O código de verificação é inválido ou expirou",
     "SUCCESS_REGISTER_USER": "Cadastro realizado com sucesso! Enviamos um código de verificação para o seu e-mail. Verifique sua caixa de entrada e a pasta de spam para concluir o processo",

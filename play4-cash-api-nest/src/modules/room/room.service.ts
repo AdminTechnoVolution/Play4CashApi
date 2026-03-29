@@ -84,7 +84,7 @@ export class RoomService {
     if (betAmount < game.min_bet) throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
 
     const user = await this.userModel.findById(userId);
-    if (!user || user.balance < betAmount) throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE', 400);
+    if (!user || user.balance < betAmount) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
 
     const { randomBytes } = await import('crypto');
     const code = randomBytes(8).toString('hex');
@@ -122,7 +122,7 @@ export class RoomService {
     if (roomInfo.players.some((p: any) => p.playerId.toString() === userId)) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
 
     const user = await this.userModel.findById(userId);
-    if (!user || user.balance < roomInfo.bet_amount) throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE', 400);
+    if (!user || user.balance < roomInfo.bet_amount) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
 
     const room = await this.roomModel.findOneAndUpdate(
       {
@@ -188,7 +188,7 @@ export class RoomService {
   // ── LEAVE ROOM ──────────────────────────────────────────────────────────────
 
   async leaveRoom(userId: string, roomId: string, lang = 'en'): Promise<any> {
-    const roomInfo = await this.roomModel.findOne({ _id: new Types.ObjectId(roomId), 'players.playerId': new Types.ObjectId(userId) });
+    const roomInfo = await this.roomModel.findOne({ _id: new Types.ObjectId(roomId), 'players.playerId': new Types.ObjectId(userId) }).populate('game_id');
     if (!roomInfo) throw new BusinessException('ERROR_AUTH', 403);
     if (roomInfo.status === RoomStatus.FINISHED) return roomInfo;
 
@@ -200,14 +200,34 @@ export class RoomService {
       );
       if (!updated) throw new BusinessException('ERROR_AUTH', 403);
 
-      // Refund ship placement bet if applicable
-      const placement = await this.placementModel.findOne({ room_id: roomId, player_id: userId });
-      if (placement) {
-        await this.userModel.updateOne({ _id: userId }, { $inc: { balance: updated.bet_amount } });
-        await this.placementModel.findByIdAndDelete(placement._id);
+      // Identify Naval Battle room - more robust ID-based check
+      const navalBattleGame = await this.gameModel.findOne({ 
+        $or: [{ socket_code: 'naval-battle' }, { socket_code: 'battleship' }, { 'name.en': 'Naval Battle' }] 
+      });
+      const roomGameId = (roomInfo.game_id as any)?._id?.toString() || roomInfo.game_id?.toString();
+      const isNavalBattle = !!navalBattleGame && roomGameId === navalBattleGame._id.toString();
+      
+      this.logger.debug(`Leaving room ${roomId}: isNavalBattle=${isNavalBattle}, roomGameId=${roomGameId}, targetGameId=${navalBattleGame?._id?.toString()}`);
+
+      if (isNavalBattle) {
+        const roomOid = new Types.ObjectId(roomId);
+        const allPlacements = await this.placementModel.find({ room_id: roomOid });
+        const refundAmount = Number(roomInfo.bet_amount);
+        
+        this.logger.debug(`Naval battle cleanup for room ${roomId}: found ${allPlacements.length} placements to refund.`);
+
+        for (const p of allPlacements) {
+          if (refundAmount > 0) {
+            await this.userModel.updateOne({ _id: p.player_id }, { $inc: { balance: refundAmount } });
+          }
+        }
+        await this.placementModel.deleteMany({ room_id: roomOid });
+        
+        // Reset ready status for anyone staying
+        await this.roomModel.updateOne({ _id: roomOid }, { $set: { 'players.$[].ready': false } });
       }
 
-      const gameId = (roomInfo.game_id as any)?.toString();
+      const gameId = (roomInfo.game_id as any)?._id?.toString() || roomInfo.game_id?.toString();
       if (updated.players.length === 0) {
         await this.roomModel.findOneAndDelete({ _id: roomId, players: { $size: 0 } });
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
@@ -223,12 +243,13 @@ export class RoomService {
         const [enriched] = this.localizeRooms([populated], lang);
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomUpdated', enriched);
 
-        // Notify game namespaces of opponent leaving
-        const commonPayload = { success: true, data: { opponentLeft: true, waitingForOpponent: true }, messages: ['Opponent left the lobby.'] };
-        this.navalBattleGateway.server.to(roomId).emit('naval-battle', commonPayload);
-        this.halmaGateway.server.to(roomId).emit('halma', commonPayload);
-        this.chessGateway.server.to(roomId).emit('chess', commonPayload);
-        this.dominoGateway.server.to(roomId).emit('domino', commonPayload);
+        // Notify game namespaces of opponent leaving - only notify others!
+        const commonPayload = { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: isNavalBattle }, messages: ['Opponent left the lobby.'] };
+        
+        await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', commonPayload);
+        await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload);
+        await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload);
+        await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload);
       }
       return updated;
     }
@@ -249,12 +270,14 @@ export class RoomService {
         const gameId = (roomInfo.game_id as any)?.toString();
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
 
-        // Notify game namespaces of forfeit
-        const forfeitPayload = { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Your opponent disconnected. You win by forfeit!'] };
-        this.navalBattleGateway.server.to(roomId).emit('naval-battle', forfeitPayload);
-        this.halmaGateway.server.to(roomId).emit('halma', forfeitPayload);
-        this.chessGateway.server.to(roomId).emit('chess', forfeitPayload);
-        this.dominoGateway.server.to(roomId).emit('domino', forfeitPayload);
+        // Notify game namespaces of forfeit - only notify others!
+        const commonData = { gameEnded: true, outcome: 'forfeit', youWon: true, winner: winner_id, reason: 'forfeit', prize };
+        const commonPayload = { success: true, data: commonData, messages: ['Opponent disconnected. You win by forfeit!'] };
+        
+        await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', commonPayload);
+        await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload);
+        await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload);
+        await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload);
       }
     }
 
@@ -317,7 +340,7 @@ export class RoomService {
         { $inc: { balance: -room.bet_amount } },
         { returnDocument: 'after' },
       );
-      if (!user) throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE', 400);
+      if (!user) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
       placement = await this.placementModel.create({ room_id: roomId, player_id: userId, ships, status: 'placed' });
     }
 
@@ -351,6 +374,10 @@ export class RoomService {
             data: { yourTurn: isP1, turnTimerSeconds: timerSeconds, waitingForOpponent: false, gameStarted: true },
             messages: [isP1 ? 'Opponent is ready. Your turn — fire!' : 'Enemy ships detected. Waiting for opponent to fire.']
           });
+          
+          if (isP1) {
+            this.navalBattleGateway.startTimer(s as unknown as any, roomId, timerSeconds);
+          }
         }
         
         // Lobby update
@@ -376,5 +403,16 @@ export class RoomService {
       }
       return room;
     });
+  }
+
+  /** Helper to emit to all sockets in a room except those belonging to specific user */
+  private async emitToOthers(gateway: any, roomId: string, excludeUserId: string, eventName: string, payload: any) {
+    if (!gateway?.server) return;
+    const sockets = await gateway.server.in(roomId).fetchSockets();
+    for (const s of sockets) {
+      if (s.data?.player_id !== excludeUserId) {
+        s.emit(eventName, payload);
+      }
+    }
   }
 }

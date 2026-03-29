@@ -47,7 +47,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate({ _id: roomObjId, 'players.playerId': playerObjId }, { $pull: { players: { playerId: playerObjId } } }, { returnDocument: 'after' });
       if (updated?.players.length === 0) await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
-      else this.server.to(room_id).emit('domino', { success: true, data: { opponentLeft: true, waitingForOpponent: true }, messages: ['Opponent left.'] });
+      else client.to(room_id).emit('domino', { success: true, data: { opponentLeft: true, waitingForOpponent: true }, messages: ['Opponent left.'] });
       return;
     }
     if (room.status === 'started') {
@@ -57,7 +57,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       await room.save();
       const prize = room.bet_amount * (2 - room.house_edge / 100);
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      this.server.to(room_id).emit('domino', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Opponent disconnected. You win!'] });
+      client.to(room_id).emit('domino', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Opponent disconnected. You win!'] });
       
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
@@ -186,8 +186,10 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const handsObj = Object.fromEntries(game.hands);
     const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, game.player_ids.map((p: any) => p.toString()));
 
+    const room = await this.roomModel.findById(room_id);
+    if (!room) return client.emit('domino', { success: false, messages: ['Room not found'] });
+
     if (result.finished) {
-      const room = await this.roomModel.findById(room_id);
       room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
       if (result.winner) {
         room.winner = new Types.ObjectId(result.winner);
@@ -213,7 +215,31 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       const pid = (s as any).data.player_id;
       const myHand = game.hands.get(pid) || [];
       const isMyTurn = pid === nextPlayerId;
-      (s as unknown as Socket).emit('domino', { success: true, data: { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: flippedTile, lastSide: side, lastPlayer: player_id, yourTurn: isMyTurn, turnTimerSeconds: timerSec, gameEnded: result.finished, winner: result.winner, reason: result.reason, handCount }, messages: [result.finished ? 'Game over!' : isMyTurn ? 'Your turn!' : 'Opponent moved.'] });
+      const isWinner = result.winner === pid;
+      const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
+      const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+      
+      (s as unknown as Socket).emit('domino', { 
+        success: true, 
+        data: { 
+          board: game.board, 
+          hand: myHand, 
+          boneyardCount: game.boneyard.length, 
+          lastTile: flippedTile, 
+          lastSide: side, 
+          lastPlayer: player_id, 
+          yourTurn: isMyTurn, 
+          turnTimerSeconds: timerSec, 
+          gameEnded: result.finished, 
+          outcome,
+          youWon: isWinner,
+          winner: result.winner, 
+          reason: result.reason, 
+          prize,
+          handCount 
+        }, 
+        messages: [result.finished ? 'Game over!' : isMyTurn ? 'Your turn!' : 'Opponent moved.'] 
+      });
     }
   }
 
@@ -265,8 +291,10 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const handsObj = Object.fromEntries(game.hands);
     const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, game.player_ids.map((p: any) => p.toString()));
 
+    const room = await this.roomModel.findById(room_id);
+    if (!room) return client.emit('domino', { success: false, messages: ['Room not found'] });
+
     if (result.finished) {
-      const room = await this.roomModel.findById(room_id);
       room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
       if (result.winner) { room.winner = new Types.ObjectId(result.winner); const prize = room.bet_amount * (2 - room.house_edge / 100); await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } }); }
       await room.save();
@@ -287,7 +315,32 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       const pid = (s as any).data.player_id;
       const myHand = game.hands.get(pid) || [];
       const isMyTurn = pid === nextPlayerId;
-      (s as unknown as Socket).emit('domino', { success: true, data: { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, passed: true, gameEnded: result.finished, winner: result.winner, reason: result.reason, yourTurn: isMyTurn, turnTimerSeconds: timerSec, handCount }, messages: [result.finished ? 'Game over!' : isMyTurn ? 'Opponent passed, your turn!' : 'Opponent passed.'] });
+      const isWinner = result.winner === pid;
+      const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
+      const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+
+      (s as unknown as Socket).emit('domino', { 
+        success: true, 
+        data: { 
+          board: game.board, 
+          hand: myHand, 
+          boneyardCount: game.boneyard.length, 
+          lastTile: null, 
+          lastSide: null, 
+          lastPlayer: player_id, 
+          passed: true, 
+          gameEnded: result.finished, 
+          outcome,
+          youWon: isWinner,
+          winner: result.winner, 
+          reason: result.reason, 
+          prize,
+          yourTurn: isMyTurn, 
+          turnTimerSeconds: timerSec, 
+          handCount 
+        }, 
+        messages: [result.finished ? 'Game over!' : isMyTurn ? 'Opponent passed, your turn!' : 'Opponent passed.'] 
+      });
     }
   }
 
@@ -316,6 +369,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
             success: true,
             data: {
               gameEnded: true,
+              outcome: isWinner ? 'win' : 'timeout_loss',
+              youWon: isWinner,
               winner: winnerId,
               reason: 'timeout',
               prize: isWinner ? prize : 0,

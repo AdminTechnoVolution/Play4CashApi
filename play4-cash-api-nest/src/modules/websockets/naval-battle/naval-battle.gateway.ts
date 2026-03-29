@@ -41,11 +41,26 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!room || room.status === 'finished') return;
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate({ _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) }, { $pull: { players: { playerId: new Types.ObjectId(player_id) } } }, { returnDocument: 'after' });
-      // Refund if player placed ships
-      const placement = await this.placementModel.findOne({ room_id, player_id });
-      if (placement) { await this.userModel.updateOne({ _id: player_id }, { $inc: { balance: room.bet_amount } }); await this.placementModel.findByIdAndDelete(placement._id); }
+      
+      // Cleanup ALL placements for this room
+      const roomOid = new Types.ObjectId(room_id);
+      const allPlacements = await this.placementModel.find({ room_id: roomOid });
+      const refundAmount = Number(room.bet_amount);
+      
+      for (const p of allPlacements) {
+        if (refundAmount > 0) {
+          await this.userModel.updateOne({ _id: p.player_id }, { $inc: { balance: refundAmount } });
+        }
+      }
+      await this.placementModel.deleteMany({ room_id: roomOid });
+
+      // Reset ready status for remaining players
+      if (updated && updated.players.length > 0) {
+        await this.roomModel.updateOne({ _id: roomOid }, { $set: { 'players.$[].ready': false } });
+      }
+
       if (updated?.players.length === 0) await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
-      else this.server.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true }, messages: ['Opponent left.'] });
+      else client.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: true }, messages: ['Opponent left. Placement reset.'] });
       return;
     }
     if (room.status === 'started') {
@@ -55,7 +70,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       await room.save();
       const prize = room.bet_amount * (2 - room.house_edge / 100);
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      this.server.to(room_id).emit('naval-battle', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Opponent disconnected. You win!'] });
+      client.to(room_id).emit('naval-battle', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Opponent disconnected. You win!'] });
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
@@ -117,20 +132,41 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     client.emit('naval-battle', { success: true, data: { shipsPlaced: true }, messages: ['Ships placed! Waiting for opponent.'] });
 
     // Check if both players have placed
-    const allPlacements = await this.placementModel.find({ room_id });
+    const allPlacements = await this.placementModel.find({ room_id: new Types.ObjectId(room_id) });
     if (allPlacements.length === 2) {
-      await this.roomModel.findByIdAndUpdate(room_id, { status: 'started' });
+      const startedRoom = await this.roomModel.findById(room_id).populate('game_id');
+      if (!startedRoom) return;
+      
+      await this.roomModel.updateOne({ _id: room_id }, { $set: { status: 'started' } });
       await this.placementModel.updateMany({ room_id }, { status: 'ready' });
-      this.server.to(room_id).emit('naval-battle', { success: true, data: { gameStarted: true, yourTurn: false, turnTimerSeconds: 30 }, messages: ['Both players ready! Game starts.'] });
+      
+      const timerSeconds = (startedRoom.game_id as any)?.turn_timer_seconds ?? 30;
+      this.logger.debug(`Game started in room ${room_id}. Timer: ${timerSeconds}s`);
+
       // Player 1 goes first
-      const p1Sockets = await this.server.in(room_id).fetchSockets();
-      const p1Player = room.players[0].playerId.toString();
-      const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
-      for (const s of p1Sockets) {
+      const p1Player = startedRoom.players[0].playerId.toString();
+      const allSockets = await this.server.in(room_id).fetchSockets();
+      
+      for (const s of allSockets) {
         const pid = (s as any).data.player_id;
         const isTurn = pid === p1Player;
-        (s as unknown as Socket).emit('naval-battle', { success: true, data: { yourTurn: isTurn, turnTimerSeconds: timerSeconds }, messages: [isTurn ? 'Your turn to fire!' : 'Both players ready! Game starts.'] });
-        if (isTurn) this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+        this.logger.debug(`Socket ${s.id} for player ${pid}: isTurn=${isTurn}`);
+        
+        (s as unknown as Socket).emit('naval-battle', { 
+          success: true, 
+          data: { 
+            gameStarted: true,
+            yourTurn: isTurn, 
+            turnTimerSeconds: timerSeconds,
+            waitingForOpponent: false
+          }, 
+          messages: [isTurn ? 'Your turn to fire!' : 'Both players ready! Game starts.'] 
+        });
+        
+        if (isTurn) {
+          this.logger.debug(`Starting timer for socket ${s.id} (${pid})`);
+          this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+        }
       }
     }
   }
@@ -201,13 +237,13 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100)); // Win original bet + opponent minus house edge
       await this.userModel.updateOne({ _id: player_id }, { $inc: { balance: prize } });
       
-      client.emit('naval-battle', { success: true, data: { outcome: 'win', row, col, shipType: sunkShipType, prize, yourTurn: false, gameEnded: true }, messages: ['You win!'] });
+      client.emit('naval-battle', { success: true, data: { outcome: 'win', youWon: true, winner: player_id, reason: 'normal', row, col, shipType: sunkShipType, prize, yourTurn: false, gameEnded: true }, messages: ['You win!'] });
       
       const opponentSocketId = opponent?.playerId.toString();
       const sockets = await this.server.in(room_id).fetchSockets();
       for (const s of sockets) {
         if ((s as any).data.player_id === opponentSocketId) {
-          (s as unknown as Socket).emit('naval-battle', { success: true, data: { outcome: 'lose', row, col, shipType: sunkShipType, yourTurn: false, gameEnded: true }, messages: ['You lose!'] });
+          (s as unknown as Socket).emit('naval-battle', { success: true, data: { outcome: 'lose', youWon: false, winner: player_id, reason: 'normal', row, col, shipType: sunkShipType, yourTurn: false, gameEnded: true }, messages: ['You lose!'] });
         }
       }
       
@@ -233,9 +269,11 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     }
   }
 
-  private startTimer(socket: Socket, room_id: string, seconds: number) {
+  public startTimer(socket: Socket, room_id: string, seconds: number) {
+    this.logger.debug(`[TIMER] startTimer called for socket ${socket.id} in room ${room_id} for ${seconds}s`);
     clearTimer(socket.id);
     const t = setTimeout(async () => {
+      this.logger.debug(`[TIMER] Timeout reached for socket ${socket.id} in room ${room_id}`);
       const room = await this.roomModel.findById(room_id);
       if (!room || room.status !== 'started') return;
       

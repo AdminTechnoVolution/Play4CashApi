@@ -9,6 +9,7 @@
     "ERROR_USER_WALLET_NOTFOUND": "The user does not have a configured wallet. Please configure a wallet before proceeding",
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "The user already has a withdrawal pending verification.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "You do not have sufficient balance to make this withdrawal",
+    "ERROR_GAME_INSUFFICIENT_BALANCE": "You do not have sufficient balance to place this bet",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Does not meet the minimum withdrawal amount",
     "ERROR_WITHDRAWAL_CODE_INVALID": "The verification code is invalid or has expired",
     "SUCCESS_REGISTER_USER": "Registration successful! We have sent a verification code to your email. Please check your inbox and spam folder to complete the process",

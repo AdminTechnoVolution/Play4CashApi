@@ -9,6 +9,7 @@
     "ERROR_USER_WALLET_NOTFOUND": "L'utilisateur n'a pas de portefeuille configuré. Veuillez configurer un portefeuille avant de continuer",
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "L'utilisateur a déjà un retrait en attente de vérification.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Vous n'avez pas un solde suffisant pour effectuer ce retrait",
+    "ERROR_GAME_INSUFFICIENT_BALANCE": "Vous n'avez pas un solde suffisant pour placer ce pari",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Ne respecte pas le montant minimum de retrait",
     "ERROR_WITHDRAWAL_CODE_INVALID": "Le code de vérification est invalide ou a expiré",
     "SUCCESS_REGISTER_USER": "Inscription réussie ! Nous avons envoyé un code de vérification à votre e-mail. Veuillez vérifier votre boîte de réception et vos spams pour terminer le processus",
