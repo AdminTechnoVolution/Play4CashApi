@@ -17,7 +17,10 @@ import {
   applyMove,
   getGameResult,
   isCheck,
+  isCastlingLegal,
   COLORS,
+  Board,
+  GameState,
 } from './chess-game.logic';
 
 // Timer map stored in-memory per pod (acceptable for single-instance deployments)
@@ -43,6 +46,15 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   ) {}
 
   afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
+
+  /** Compute castling availability for a given player */
+  private getCastlingAvailable(board: Board, state: GameState, playerNum: 1 | 2) {
+    const playerState: GameState = { ...state, current_player: playerNum };
+    return {
+      kingSide: isCastlingLegal(board, playerState, 'K').legal,
+      queenSide: isCastlingLegal(board, playerState, 'Q').legal,
+    };
+  }
 
   handleConnection(client: Socket) { this.logger.log(`[Chess] Connected: ${client.id}`); }
 
@@ -112,10 +124,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const game = await this.chessGameModel.findOne({ room_id });
       const timerSeconds = (game && room.game_id?.turn_timer_seconds) ? room.game_id.turn_timer_seconds : 30;
       const isMyTurn = game ? game.current_player === playerNum : playerNum === 1;
+      const currentBoard = game ? game.board : createInitialBoard();
+      const currentState = game ? game.toObject() as any : { current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null };
       return client.emit('chess', { success: true, messages: [], data: {
-        board: game ? game.board : createInitialBoard(),
+        board: currentBoard,
         yourTurn: isMyTurn, turnTimerSeconds: timerSeconds,
-        waitingForOpponent: false, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, gameStarted: true, youWon: false
+        waitingForOpponent: false, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, gameStarted: true, youWon: false,
+        castlingAvailable: this.getCastlingAvailable(currentBoard, currentState, playerNum as 1 | 2),
       }});
     }
 
@@ -149,10 +164,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       await this.chessGameModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null, turn_start_time: new Date() });
       const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
 
+      const initialState: GameState = { current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null };
       for (const s of socketsInRoom) {
         const pNum = (s as any).data.playerNum;
         const isFirst = pNum === 1;
-        (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false },
+        (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false,
+          castlingAvailable: this.getCastlingAvailable(board, initialState, pNum as 1 | 2) },
           messages: [isFirst ? 'Game started! Your turn.' : 'Game started! Waiting for opponent.'] });
         if (isFirst) this.startTimer(s as unknown as Socket, room_id, timerSeconds);
       }
@@ -223,9 +240,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const timerSec = 30;
     const inCheck = isCheck(playerNum === 1 ? COLORS.WHITE : COLORS.BLACK, nextBoard, nextState);
+    const opponentNum = playerNum === 1 ? 2 : 1;
+    const myCastling = this.getCastlingAvailable(nextBoard, nextState, playerNum as 1 | 2);
+    const oppCastling = this.getCastlingAvailable(nextBoard, nextState, opponentNum as 1 | 2);
 
-    client.emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: true, turnTimerSeconds: timerSec, mustEndTurn: !result.finished, outcome: result.finished ? (result.winner ? (result.winner === playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner === playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, prize: (result.finished && result.winner === playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0 }, messages: [inCheck ? 'Check!' : 'Move accepted.'] });
-    client.to(room_id).emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, outcome: result.finished ? (result.winner ? (result.winner !== playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner !== playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum !== 1, playingWhite: playerNum !== 1, prize: (result.finished && result.winner && result.winner !== playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0 }, messages: [result.finished ? 'Game over!' : 'Opponent moved.'] });
+    client.emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: true, turnTimerSeconds: timerSec, mustEndTurn: !result.finished, outcome: result.finished ? (result.winner ? (result.winner === playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner === playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, prize: (result.finished && result.winner === playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0, castlingAvailable: myCastling }, messages: [inCheck ? 'Check!' : 'Move accepted.'] });
+    client.to(room_id).emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, outcome: result.finished ? (result.winner ? (result.winner !== playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner !== playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum !== 1, playingWhite: playerNum !== 1, prize: (result.finished && result.winner && result.winner !== playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0, castlingAvailable: oppCastling }, messages: [result.finished ? 'Game over!' : 'Opponent moved.'] });
   }
 
   @SubscribeMessage('end_turn')
@@ -251,8 +271,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const timerSec = 30;
     if (opponent) this.startTimer(opponent as unknown as Socket, room_id, timerSec);
 
-    client.emit('chess', { success: true, data: { board: game.board, yourTurn: false, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1 }, messages: ['Turn ended.'] });
-    client.to(room_id).emit('chess', { success: true, data: { board: game.board, yourTurn: true, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: nextPlayer === 1, playingWhite: nextPlayer === 1 }, messages: ['Opponent ended their turn. Your turn!'] });
+    const endTurnState = game.toObject() as any;
+    const myEndCastling = this.getCastlingAvailable(game.board, endTurnState, playerNum as 1 | 2);
+    const oppEndCastling = this.getCastlingAvailable(game.board, endTurnState, nextPlayer as 1 | 2);
+
+    client.emit('chess', { success: true, data: { board: game.board, yourTurn: false, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, castlingAvailable: myEndCastling }, messages: ['Turn ended.'] });
+    client.to(room_id).emit('chess', { success: true, data: { board: game.board, yourTurn: true, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: nextPlayer === 1, playingWhite: nextPlayer === 1, castlingAvailable: oppEndCastling }, messages: ['Opponent ended their turn. Your turn!'] });
   }
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {

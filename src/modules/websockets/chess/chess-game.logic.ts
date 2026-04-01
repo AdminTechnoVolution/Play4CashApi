@@ -75,11 +75,15 @@ const getPseudoLegalMoves = (row: number, col: number, board: Board, state: Game
       for (const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]) addMove(row+dr,col+dc);
       const r = state.castling_rights;
       if (color === COLORS.WHITE) {
-        if (r.wK && !board[7][5] && !board[7][6]) moves.push({ from:{row,col}, to:{row:7,col:6}, castle:'K' });
-        if (r.wQ && !board[7][1] && !board[7][2] && !board[7][3]) moves.push({ from:{row,col}, to:{row:7,col:2}, castle:'Q' });
+        if (r.wK && !board[7][5] && !board[7][6] && board[7][7]?.type === PIECES.ROOK && board[7][7]?.color === COLORS.WHITE)
+          moves.push({ from:{row,col}, to:{row:7,col:6}, castle:'K' });
+        if (r.wQ && !board[7][1] && !board[7][2] && !board[7][3] && board[7][0]?.type === PIECES.ROOK && board[7][0]?.color === COLORS.WHITE)
+          moves.push({ from:{row,col}, to:{row:7,col:2}, castle:'Q' });
       } else {
-        if (r.bK && !board[0][5] && !board[0][6]) moves.push({ from:{row,col}, to:{row:0,col:6}, castle:'k' });
-        if (r.bQ && !board[0][1] && !board[0][2] && !board[0][3]) moves.push({ from:{row,col}, to:{row:0,col:2}, castle:'q' });
+        if (r.bK && !board[0][5] && !board[0][6] && board[0][7]?.type === PIECES.ROOK && board[0][7]?.color === COLORS.BLACK)
+          moves.push({ from:{row,col}, to:{row:0,col:6}, castle:'k' });
+        if (r.bQ && !board[0][1] && !board[0][2] && !board[0][3] && board[0][0]?.type === PIECES.ROOK && board[0][0]?.color === COLORS.BLACK)
+          moves.push({ from:{row,col}, to:{row:0,col:2}, castle:'q' });
       }
       break;
     }
@@ -170,4 +174,69 @@ export const getGameResult = (board: Board, state: GameState): { finished: boole
   }
   if (board.flat().filter(p => p !== null).length === 2) return { finished: true, winner: null, reason: 'insufficient_material' };
   return { finished: false };
+};
+
+/* ─────────────────────────────────────────────
+ * Explicit castling validation — returns { legal, reason? }
+ * castlingSide: 'K' | 'Q' (king-side / queen-side)
+ * ───────────────────────────────────────────── */
+export const isCastlingLegal = (
+  board: Board,
+  state: GameState,
+  castlingSide: 'K' | 'Q',
+): { legal: boolean; reason?: string } => {
+  const color = state.current_player === 1 ? COLORS.WHITE : COLORS.BLACK;
+  const rank = color === COLORS.WHITE ? 7 : 0;
+
+  // ── 1. Locate the king on its starting square ──
+  const king = board[rank][4];
+  if (!king || king.type !== PIECES.KING || king.color !== color) {
+    return { legal: false, reason: 'King is not on its starting square' };
+  }
+
+  // ── 2. Castling rights (king/rook have not moved) ──
+  const rightsKey = `${color === COLORS.WHITE ? 'w' : 'b'}${castlingSide}` as keyof typeof state.castling_rights;
+  if (!state.castling_rights[rightsKey]) {
+    return { legal: false, reason: 'King or rook has already moved' };
+  }
+
+  // ── 3. Rook must be present at its starting square ──
+  const rookCol = castlingSide === 'K' ? 7 : 0;
+  const rook = board[rank][rookCol];
+  if (!rook || rook.type !== PIECES.ROOK || rook.color !== color) {
+    return { legal: false, reason: 'Rook is not present on its starting square' };
+  }
+
+  // ── 4. No pieces between king and rook ──
+  const [startCol, endCol] = castlingSide === 'K' ? [5, 6] : [1, 3];
+  for (let c = startCol; c <= endCol; c++) {
+    if (board[rank][c] !== null) {
+      return { legal: false, reason: 'There are pieces between the king and the rook' };
+    }
+  }
+
+  // ── 5. King is not currently in check ──
+  if (isCheck(color, board, state)) {
+    return { legal: false, reason: 'Cannot castle while in check' };
+  }
+
+  // ── 6. King does not pass through an attacked square ──
+  const passThroughCol = castlingSide === 'K' ? 5 : 3;
+  const transitBoard = board.map(r => [...r]) as Board;
+  transitBoard[rank][passThroughCol] = transitBoard[rank][4];
+  transitBoard[rank][4] = null;
+  if (isCheck(color, transitBoard, state)) {
+    return { legal: false, reason: 'King would pass through a square under attack' };
+  }
+
+  // ── 7. King does not end on an attacked square ──
+  const destCol = castlingSide === 'K' ? 6 : 2;
+  const destBoard = board.map(r => [...r]) as Board;
+  destBoard[rank][destCol] = destBoard[rank][4];
+  destBoard[rank][4] = null;
+  if (isCheck(color, destBoard, state)) {
+    return { legal: false, reason: 'King would end on a square under attack' };
+  }
+
+  return { legal: true };
 };
