@@ -72,7 +72,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       }
 
       if (updated?.players.length === 0) await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
-      else client.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: true }, messages: [this.i18n.translate('ws.games.opponentLeft', lang)] });
+      else client.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: true }, messages: ['ws.games.opponentLeft'] });
       return;
     }
     if (room.status === 'started') {
@@ -82,7 +82,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       await room.save();
       const prize = room.bet_amount * (2 - room.house_edge / 100);
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      client.to(room_id).emit('naval-battle', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: [this.i18n.translate('ws.games.playerDisconnected', lang)] });
+      client.to(room_id).emit('naval-battle', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['ws.games.playerDisconnected'] });
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
@@ -91,15 +91,15 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    if (!payload?.room_id) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    if (!payload?.room_id) return client.emit('naval-battle', { success: false, messages: ['ws.invalidMessageFormat'] });
     const { room_id } = payload;
     const player_id = client.data.player_id;
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (!room) return client.emit('naval-battle', { success: false, messages: ['ws.games.gameNotFound'] });
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
-    if (!isMember) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.notInRoom', lang)] });
+    if (!isMember) return client.emit('naval-battle', { success: false, messages: ['ws.games.notInRoom'] });
 
     await client.join(room_id);
     client.data.room_id = room_id;
@@ -118,10 +118,10 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         ships: myPlacement.ships, shotsFired: myPlacement.shotsFired, status: myPlacement.status,
         waitingForOpponent: room.status === 'waiting', gameStarted: room.status === 'started',
         yourTurn: isMyTurn, turnTimerSeconds: 30
-      }, messages: [this.i18n.translate('ws.games.roomReconnected', lang) || 'Reconnected.'] });
+      }, messages: ['ws.games.roomReconnected'] });
     }
 
-    client.emit('naval-battle', { success: true, data: { waitingForOpponent: true }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
+    client.emit('naval-battle', { success: true, data: { waitingForOpponent: true }, messages: ['ws.games.waitingOpponent'] });
   }
 
   @SubscribeMessage('place_ships')
@@ -129,21 +129,21 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     const lang = this.getLang(client);
     const { room_id, ships } = payload;
     const player_id = client.data.player_id;
-    if (!room_id || !ships?.length) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    if (!room_id || !ships?.length) return client.emit('naval-battle', { success: false, messages: ['ws.invalidMessageFormat'] });
 
     const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (!room) return client.emit('naval-battle', { success: false, messages: ['ws.games.gameNotFound'] });
 
     const existing = await this.placementModel.findOne({ room_id, player_id });
-    if (existing) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.shipsAlreadyPlaced', lang)] });
+    if (existing) return client.emit('naval-battle', { success: false, messages: ['ws.games.shipsAlreadyPlaced'] });
 
     // Deduct bet when ships are placed (per original ship placement balance logic)
     const deducted = await this.userModel.findOneAndUpdate({ _id: player_id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } });
-    if (!deducted) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.insufficientBalance', lang)] });
+    if (!deducted) return client.emit('naval-battle', { success: false, messages: ['ws.games.insufficientBalance'] });
 
     await this.placementModel.create({ room_id, player_id, ships, status: 'placed' });
 
-    client.emit('naval-battle', { success: true, data: { shipsPlaced: true }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
+    client.emit('naval-battle', { success: true, data: { shipsPlaced: true }, messages: ['ws.games.waitingOpponent'] });
 
     // Check if both players have placed
     const allPlacements = await this.placementModel.find({ room_id: new Types.ObjectId(room_id) });
@@ -175,7 +175,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
             turnTimerSeconds: timerSeconds,
             waitingForOpponent: false
           }, 
-          messages: [this.i18n.translate(isTurn ? 'ws.games.opponentReady' : 'ws.games.opponentReadyWait', sLang)] 
+          messages: [isTurn ? 'ws.games.opponentReady' : 'ws.games.opponentReadyWait'] 
         });
         
         if (isTurn) {
@@ -191,10 +191,10 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     const lang = this.getLang(client);
     const { room_id, row, col } = payload;
     const player_id = client.data.player_id;
-    if (!room_id || row === undefined || col === undefined) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    if (!room_id || row === undefined || col === undefined) return client.emit('naval-battle', { success: false, messages: ['ws.invalidMessageFormat'] });
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room || room.status !== 'started') return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+    if (!room || room.status !== 'started') return client.emit('naval-battle', { success: false, messages: ['ws.games.roomInactive'] });
 
     const timerSeconds = (room.game_id as any)?.turn_timer_seconds ?? 30;
 
@@ -204,11 +204,11 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     const opponent = room.players.find((p: any) => p.playerId.toString() !== player_id);
     const opponentPlacement = await this.placementModel.findOne({ room_id: roomObjId, player_id: new Types.ObjectId(opponent?.playerId.toString()) });
 
-    if (!myPlacement || !opponentPlacement) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.placementNotFound', lang)] });
+    if (!myPlacement || !opponentPlacement) return client.emit('naval-battle', { success: false, messages: ['ws.games.placementNotFound'] });
 
     // Check if already fired here
     const alreadyFired = myPlacement.shotsFired.some(s => s[0] === row && s[1] === col);
-    if (alreadyFired) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.alreadyFiredCell', lang)] });
+    if (alreadyFired) return client.emit('naval-battle', { success: false, messages: ['ws.games.alreadyFiredCell'] });
 
     // Check for hit
     let hit = false, shipType: string | null = null;
@@ -277,10 +277,10 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
 
     const keepTurn = outcome === 'hit';
     const shooterMsg = outcome === 'miss' 
-      ? this.i18n.translate('ws.games.shotMiss', lang) 
+      ? 'ws.games.shotMiss' 
       : outcome === 'sunk' 
         ? this.i18n.translate('ws.games.shotSunk', lang, { shipType: shipType || '' }) 
-        : this.i18n.translate('ws.games.shotHit', lang);
+        : 'ws.games.shotHit';
     client.emit('naval-battle', { success: true, data: { outcome, row, col, shipType: (outcome === 'sunk' ? shipType : null), yourTurn: keepTurn, turnTimerSeconds: timerSeconds }, messages: [shooterMsg] });
     
     const opponentSocketId = opponent?.playerId.toString();
@@ -289,10 +289,10 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     
     const oppLang = opponentSocket ? this.getLang(opponentSocket as unknown as Socket) : 'en';
     const oppMsg = outcome === 'miss' 
-      ? this.i18n.translate('ws.games.opponentMiss', oppLang) 
+      ? 'ws.games.opponentMiss' 
       : outcome === 'sunk' 
         ? this.i18n.translate('ws.games.opponentSunk', oppLang, { shipType: shipType || '' }) 
-        : this.i18n.translate('ws.games.opponentHit', oppLang);
+        : 'ws.games.opponentHit';
     clearTimer(client.id);
     if (!allSunk) {
       if (keepTurn) {
@@ -342,7 +342,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
               reason: 'timeout',
               prize: isWinner ? prize : 0,
             },
-            messages: [isWinner ? this.i18n.translate('ws.games.timeoutWin', sLang) : this.i18n.translate('ws.games.timeoutLoss', sLang)]
+            messages: [isWinner ? 'ws.games.timeoutWin' : 'ws.games.timeoutLoss']
           });
         }
         
