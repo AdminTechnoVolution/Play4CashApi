@@ -159,13 +159,9 @@ export class RoomService {
 
     const player = room.players.find((p: any) => p.playerId.toString() === userId);
     if (!player) throw new BusinessException('ERROR_AUTH', 403);
-    if (player.ready) throw new BusinessException('ERROR_PLAYER_ALREADY_READY', 400);
+    if (player.ready) return room;
 
     player.ready = ready;
-    const maxPlayers = room.player_limit || (room.game_id as any)?.max_players;
-    if (maxPlayers && room.players.length >= maxPlayers && room.players.every((p: any) => p.ready)) {
-      (room as any).status = RoomStatus.STARTED;
-    }
     await room.save();
 
     const populated = await this.roomModel.findById(room._id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();

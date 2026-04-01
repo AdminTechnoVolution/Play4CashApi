@@ -21,5 +21,6 @@ export class DominoGame {
   @Prop({ type: Date, default: Date.now }) turn_start_time: Date;
   @Prop({ type: String, enum: ['active', 'blocked', 'finished'], default: 'active' }) status: string;
   @Prop({ type: Number, default: 0 }) consecutive_passes: number;
+  @Prop({ type: [String], default: [] }) eliminated_players: string[];
 }
 export const DominoGameSchema = SchemaFactory.createForClass(DominoGame);

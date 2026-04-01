@@ -53,17 +53,43 @@ export const validateMove = (tile: Tile, side: 'left' | 'right', openEnds: OpenE
 
 export const calculateHandScore = (hand: Tile[]): number => hand.reduce((s, [v1, v2]) => s + v1 + v2, 0);
 
+/** Returns the next player index that is not eliminated, wrapping around. */
+export const getNextActivePlayerIndex = (
+  currentIndex: number,
+  playerIds: string[],
+  eliminatedPlayers: string[],
+): number => {
+  const total = playerIds.length;
+  let next = (currentIndex + 1) % total;
+  for (let i = 0; i < total; i++) {
+    if (!eliminatedPlayers.includes(playerIds[next].toString())) return next;
+    next = (next + 1) % total;
+  }
+  return next; // fallback — should never happen
+};
+
 export const getDominoGameResult = (
   hands: Map<string, Tile[]>,
   consecutive_passes: number,
   playerIds: string[],
+  eliminatedPlayers: string[] = [],
 ): { finished: boolean; winner?: string | null; reason?: string } => {
-  for (const id of playerIds) {
+  const activePlayers = playerIds.filter(id => !eliminatedPlayers.includes(id.toString()));
+
+  // If only 1 active player remains, they win
+  if (activePlayers.length <= 1 && activePlayers.length > 0) {
+    return { finished: true, winner: activePlayers[0], reason: 'last_standing' };
+  }
+
+  // Check if any active player emptied their hand
+  for (const id of activePlayers) {
     if ((hands.get(id.toString()) || []).length === 0) return { finished: true, winner: id, reason: 'empty_hand' };
   }
-  if (consecutive_passes >= playerIds.length) {
+
+  // Blocked game: all active players passed consecutively
+  if (consecutive_passes >= activePlayers.length) {
     let minScore = Infinity, winners: string[] = [];
-    for (const id of playerIds) {
+    for (const id of activePlayers) {
       const score = calculateHandScore(hands.get(id.toString()) || []);
       if (score < minScore) { minScore = score; winners = [id]; }
       else if (score === minScore) winners.push(id);
