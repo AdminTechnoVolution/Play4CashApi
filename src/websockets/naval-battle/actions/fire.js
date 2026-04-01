@@ -171,13 +171,12 @@ module.exports = (socket, namespace) => {
                 hitShip = newShips.find(s => s.startRow === hitShip.startRow && s.startCol === hitShip.startCol);
 
                 const allCellsHit = hitShip.cells.every(c => c.length === 3 && c[2] === true);
+                result.shipType = hitShip.type;
                 if (allCellsHit) {
                     hitShip.status = 'destroyed';
                     result.outcome = 'sunk';
-                    result.shipType = hitShip.type;
                 } else {
                     result.outcome = 'hit';
-                    result.shipType = hitShip.type;
                 }
 
                 opponentPlacement.markModified('ships');

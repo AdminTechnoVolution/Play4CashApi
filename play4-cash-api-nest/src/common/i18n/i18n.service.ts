@@ -29,23 +29,38 @@ export class I18nService {
     }
   }
 
-  translate(key: string, lang = 'en'): string {
+  translate(key: string, lang = 'en', placeholders?: Record<string, string>): string {
     const language = lang.split('-')[0].toLowerCase();
     const bundle = this.translations[language] || this.translations[this.defaultLang];
     
     if (!bundle) return key;
 
-    // Direct lookup (for flat keys like "message_tx.processing.ok")
-    if (bundle[key] !== undefined) return bundle[key];
+    let message = key;
 
-    // Fallback for nested keys if any
-    const parts = key.split('.');
-    let current: any = bundle;
-    for (const part of parts) {
-      if (current[part] === undefined) return key;
-      current = current[part];
+    // Direct lookup (for flat keys like "message_tx.processing.ok")
+    if (bundle[key] !== undefined) {
+      message = bundle[key];
+    } else {
+      // Fallback for nested keys if any
+      const parts = key.split('.');
+      let current: any = bundle;
+      for (const part of parts) {
+        if (current[part] === undefined) {
+          message = key;
+          break;
+        }
+        current = current[part];
+      }
+      message = typeof current === 'string' ? current : key;
     }
 
-    return typeof current === 'string' ? current : key;
+    // Replace placeholders if provided
+    if (placeholders && message !== key) {
+      Object.entries(placeholders).forEach(([k, v]) => {
+        message = message.replace(new RegExp(`{{${k}}}`, 'g'), v);
+      });
+    }
+
+    return message;
   }
 }
