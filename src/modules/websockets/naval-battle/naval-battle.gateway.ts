@@ -188,6 +188,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
 
   @SubscribeMessage('fire')
   async handleFire(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; row: number; col: number }) {
+    this.logger.log(`[NavalBattle] 💥 Fire received | room=${payload?.room_id} | player=${client.data.player_id} | target=[${payload?.row},${payload?.col}]`);
     const lang = this.getLang(client);
     const { room_id, row, col } = payload;
     const player_id = client.data.player_id;

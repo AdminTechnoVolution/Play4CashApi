@@ -178,6 +178,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
   @SubscribeMessage('move')
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
+    this.logger.log(`[Chess] ♟ Move received | room=${payload?.room_id} | player=${client.data.player_id} | payload=${JSON.stringify(payload)}`);
     const { room_id, promotion } = payload;
     let { from, to } = payload;
 
@@ -198,9 +199,17 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (!game) return client.emit('chess', { success: false, messages: ['Game not found'] });
     if (game.current_player !== playerNum) return client.emit('chess', { success: false, messages: ['Not your turn.'] });
 
+    const playerColor = playerNum === 1 ? COLORS.WHITE : COLORS.BLACK;
     const legalMoves = getLegalMoves(from.row, from.col, game.board, game.toObject() as any);
     const move = legalMoves.find((m: any) => m.to.row === to.row && m.to.col === to.col);
-    if (!move) return client.emit('chess', { success: false, messages: ['Illegal move.'], data: { board: game.board, yourTurn: true } });
+    if (!move) {
+      const inCheck = isCheck(playerColor, game.board, game.toObject() as any);
+      return client.emit('chess', {
+        success: false,
+        messages: [inCheck ? 'ws.chess.illegalMoveInCheck' : 'ws.chess.illegalMove'],
+        data: { board: game.board, yourTurn: true, inCheck },
+      });
+    }
     if (promotion) move.promotion = promotion;
 
     const { nextBoard, nextState } = applyMove(move, game.board, game.toObject() as any);
@@ -250,6 +259,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
   @SubscribeMessage('end_turn')
   async handleEndTurn(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    this.logger.log(`[Chess] ⏭ End turn received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const playerNum = client.data.playerNum;
     if (!room_id) return;

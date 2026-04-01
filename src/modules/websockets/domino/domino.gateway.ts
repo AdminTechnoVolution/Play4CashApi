@@ -145,6 +145,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
   @SubscribeMessage('move')
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; tile: number[]; side: 'left' | 'right' }) {
+    this.logger.log(`[Domino] 🁣 Move received | room=${payload?.room_id} | player=${client.data.player_id} | tile=${JSON.stringify(payload?.tile)} | side=${payload?.side}`);
     const { room_id, tile, side } = payload;
     const player_id = client.data.player_id;
     if (!room_id || !tile || !side) return client.emit('domino', { success: false, messages: ['Invalid payload'] });
@@ -245,6 +246,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
   @SubscribeMessage('draw')
   async handleDraw(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    this.logger.log(`[Domino] 🃏 Draw received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const player_id = client.data.player_id;
     if (!room_id) return;
@@ -277,6 +279,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
   @SubscribeMessage('pass')
   async handlePass(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    this.logger.log(`[Domino] ⏩ Pass received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const player_id = client.data.player_id;
     if (!room_id) return;

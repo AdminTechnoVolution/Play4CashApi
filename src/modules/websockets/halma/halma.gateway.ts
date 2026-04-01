@@ -150,7 +150,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       to = [Number(payload.to_row), Number(payload.to_col)];
     }
 
-    this.logger.debug(`[Halma] handleMove payload: ${JSON.stringify(payload)}`);
+    this.logger.log(`[Halma] ⭐ Move received | room=${payload?.room_id} | player=${client.data.player_id} | payload=${JSON.stringify(payload)}`);
     this.logger.debug(`[Halma] Processed from: ${JSON.stringify(from)}, to: ${JSON.stringify(to)}`);
 
     const playerNum = client.data.playerNum;
@@ -234,6 +234,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
   @SubscribeMessage('end_turn')
   async handleEndTurn(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    this.logger.log(`[Halma] ⏭ End turn received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const playerNum = client.data.playerNum;
     if (!room_id) return;
