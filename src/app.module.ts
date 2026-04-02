@@ -22,6 +22,7 @@ import { WebsocketsModule } from './modules/websockets/websockets.module';
 import { RoomModule } from './modules/room/room.module';
 import { EmailModule } from './common/email/email.module';
 import { I18nModule } from './common/i18n/i18n.module';
+import { GreetingModule } from './modules/greeting/greeting.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -76,6 +77,7 @@ import { I18nModule } from './common/i18n/i18n.module';
     WebsocketsModule,
     EmailModule,
     I18nModule,
+    GreetingModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AuthGuard },

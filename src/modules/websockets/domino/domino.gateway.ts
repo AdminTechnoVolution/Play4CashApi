@@ -67,7 +67,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       return;
     }
     if (room.status === 'started') {
-      await this.eliminatePlayer(room_id, player_id, 'forfeit');
+      const reason = client.data.eliminationReason || 'forfeit';
+      await this.eliminatePlayer(room_id, player_id, reason);
     }
   }
 
@@ -104,16 +105,24 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       }
     }
 
-    client.emit('domino', { success: true, data: { waitingForOpponent: true, isPlayerOne: playerIndex === 0 }, messages: ['Waiting for opponent.'] });
-
+    const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
-    if (socketsInRoom.length > 1) {
+
+    client.emit('domino', {
+      success: true,
+      data: { waitingForOpponent: true, isPlayerOne: playerIndex === 0, playersJoined: socketsInRoom.length, maxPlayers },
+      messages: ['Waiting for opponent.']
+    });
+
+    if (socketsInRoom.length > 1 && room.status === 'waiting' && socketsInRoom.length < maxPlayers) {
       const user = await this.userModel.findById(player_id).select('username');
       const username = user?.username || 'Opponent';
-      client.to(room_id).emit('domino', { success: true, data: { opponentJoined: true, opponentName: username }, messages: [`${username} joined!`] });
+      client.to(room_id).emit('domino', {
+        success: true,
+        data: { opponentJoined: true, opponentName: username, waitingForOpponent: true, playersJoined: socketsInRoom.length, maxPlayers },
+        messages: [`${username} joined!`]
+      });
     }
-
-    const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
 
     if (socketsInRoom.length >= maxPlayers && room.status === 'waiting') {
       const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
@@ -384,12 +393,11 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         data: { gameEnded: true, outcome: 'timeout_loss', youWon: false, reason: 'timeout' },
         messages: ['ws.domino.timeout'],
       });
-      // 2. Remove from room and disconnect BEFORE eliminatePlayer
-      //    so they don't receive the playerEliminated notification
+      // 2. Mark elimination reason so handleDisconnect uses 'timeout'
+      socket.data.eliminationReason = 'timeout';
+      // 3. Remove from room and disconnect (disconnect triggers handleDisconnect which handles elimination)
       socket.leave(room_id);
       socket.disconnect(true);
-      // 3. Eliminate from game (notifies remaining players only)
-      await this.eliminatePlayer(room_id, timedOutPlayerId, 'timeout');
     }, seconds * 1000);
     turnTimers.set(socket.id, t);
   }
@@ -427,7 +435,11 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       game.turn_start_time = new Date();
     }
 
+    // Reset consecutive passes since the boneyard just got filled with the eliminated player's hand
+    game.consecutive_passes = 0;
+
     // Check game result
+
     const handsObj = Object.fromEntries(game.hands);
     const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
 
@@ -435,6 +447,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       room.status = 'finished'; room.winner_reason = result.reason || reason; room.finished_at = new Date();
       if (result.winner) {
         room.winner = new Types.ObjectId(result.winner);
+        // Prize should be based on the original number of players (use game_id.max_players if available, or just room.players.length before they disconnect, wait, room.players hasn't been modified since it's just 'started')
         const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
         await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
       }

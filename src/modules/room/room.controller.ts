@@ -27,6 +27,13 @@ class SetReadyDto {
 export class RoomController {
   constructor(private readonly roomService: RoomService) {}
 
+  // GET /api/rooms/stats — public live stats (no auth needed)
+  @Get('stats')
+  @ApiOperation({ summary: 'Get live stats: online players, active games, total bets' })
+  getLiveStats() {
+    return this.roomService.getLiveStats();
+  }
+
   // GET /api/rooms/game/:game_id  — matches legacy router.get('/game/:game_id', ...)
   @Get('game/:game_id')
   @ApiOperation({ summary: 'Get all waiting/started rooms for a game' })

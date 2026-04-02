@@ -25,6 +25,42 @@ export class RoomService {
     private readonly dominoGateway: DominoGateway,
   ) {}
 
+  // ── LIVE STATS ─────────────────────────────────────────────────────────────
+
+  async getLiveStats(): Promise<any> {
+    // Count unique online players across all game namespaces
+    const allSockets = await Promise.all([
+      this.navalBattleGateway.server?.fetchSockets() || [],
+      this.halmaGateway.server?.fetchSockets() || [],
+      this.chessGateway.server?.fetchSockets() || [],
+      this.dominoGateway.server?.fetchSockets() || [],
+    ]);
+    const uniquePlayerIds = new Set<string>();
+    for (const sockets of allSockets) {
+      for (const s of sockets) {
+        const pid = (s as any).data?.player_id;
+        if (pid) uniquePlayerIds.add(pid);
+      }
+    }
+
+    // Sum total bet amount from active rooms
+    const activeRooms = await this.roomModel.find({ status: 'started' }).select('bet_amount players').lean();
+    let totalBetAmount = 0;
+    for (const room of activeRooms) {
+      totalBetAmount += (room.bet_amount || 0) * (room.players?.length || 0);
+    }
+
+    return {
+      success: true,
+      messages: [],
+      data: {
+        playersOnline: uniquePlayerIds.size,
+        activeGames: activeRooms.length,
+        totalBetAmount,
+      },
+    };
+  }
+
   // ── GET ROOMS ───────────────────────────────────────────────────────────────
 
   async getRooms(gameId: string, lang = 'en'): Promise<any> {
