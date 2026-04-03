@@ -259,12 +259,14 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           prize: pNum === playerNum ? prize : 0, 
           isPlayerOne: pNum === 1, 
           yourTurn: false,
-          isSpectator: sIsSpectator,
-          player1, player2 
+          isSpectator: sIsSpectator
         };
         if (sIsSpectator) {
+           sData.player1 = player1;
+           sData.player2 = player2;
            sData.shotFrom = shotFrom;
            sData.turnOf = playerNum === 1 ? player1 : player2;
+           sData.winner = winner_id.toString() === game.player1_id?.toString() ? player1 : player2;
         }
 
         s.emit('halma', { 
@@ -292,16 +294,18 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     for (const s of sockets) {
       if (s.id === client.id) {
         if (chainPossible) {
-          client.emit('halma', { success: true, data: { board, yourTurn: true, turnTimerSeconds: 30, outcome: '', isPlayerOne: playerNum === 1, continuingJump: true, jumpingPiece: { row: tr, col: tc }, isSpectator: false, player1, player2 }, messages: ['You can jump again!'] });
+          client.emit('halma', { success: true, data: { board, yourTurn: true, turnTimerSeconds: 30, outcome: '', isPlayerOne: playerNum === 1, continuingJump: true, jumpingPiece: { row: tr, col: tc }, isSpectator: false }, messages: ['You can jump again!'] });
         } else {
-          client.emit('halma', { success: true, data: { board, yourTurn: true, turnTimerSeconds: 30, outcome: '', isPlayerOne: playerNum === 1, mustEndTurn: true, isSpectator: false, player1, player2 }, messages: ['Move accepted. End turn when ready.'] });
+          client.emit('halma', { success: true, data: { board, yourTurn: true, turnTimerSeconds: 30, outcome: '', isPlayerOne: playerNum === 1, mustEndTurn: true, isSpectator: false }, messages: ['Move accepted. End turn when ready.'] });
         }
       } else {
         const sIsSpectator = (s as any).data.isSpectator || false;
         const sPlayerNum = (s as any).data.playerNum || 2;
         
-        const sData: any = { board, yourTurn: false, turnTimerSeconds: 30, outcome: '', isPlayerOne: sPlayerNum === 1, isSpectator: sIsSpectator, player1, player2 };
+        const sData: any = { board, yourTurn: false, turnTimerSeconds: 30, outcome: '', isPlayerOne: sPlayerNum === 1, isSpectator: sIsSpectator };
         if (sIsSpectator) {
+           sData.player1 = player1;
+           sData.player2 = player2;
            sData.shotFrom = shotFrom;
            sData.turnOf = playerNum === 1 ? player1 : player2;
         }
@@ -351,8 +355,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const isMyTurn = sIsSpectator ? false : pNum === game.current_player;
       const msg = sIsSpectator ? ['Turn ended.'] : [(isMyTurn ? 'Your turn!' : 'Opponent ended turn.')];
       
-      const sData: any = { board: game.board, yourTurn: isMyTurn, turnTimerSeconds: timerSec, outcome: '', isPlayerOne: pNum === 1, isSpectator: sIsSpectator, player1, player2 };
+      const sData: any = { board: game.board, yourTurn: isMyTurn, turnTimerSeconds: timerSec, outcome: '', isPlayerOne: pNum === 1, isSpectator: sIsSpectator };
       if (sIsSpectator) {
+         sData.player1 = player1;
+         sData.player2 = player2;
          sData.shotFrom = shotFrom;
          sData.turnOf = game.current_player === 1 ? player1 : player2;
       }
@@ -380,13 +386,14 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           const socketPlayerId = (s as any).data.player_id;
           const isWinner = socketPlayerId === winnerId.toString();
           const sIsSpectator = (s as any).data.isSpectator || false;
+          const winnerUsername = await this.getCachedUsername(winnerId.toString());
           (s as unknown as Socket).emit('halma', {
             success: true,
             data: {
               gameEnded: true,
               outcome: isWinner ? 'win' : 'timeout_loss',
               youWon: isWinner && !sIsSpectator,
-              winner: winnerId,
+              winner: sIsSpectator ? winnerUsername : winnerId,
               reason: 'timeout',
               prize: isWinner ? prize : 0,
               isPlayerOne: (s as any).data.playerNum === 1,

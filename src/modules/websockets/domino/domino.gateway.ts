@@ -326,12 +326,15 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         winner: result.winner, 
         reason: result.reason, 
         prize,
-        handCount,
-        ...playersData
+        handCount
       };
       if (sIsSpectator) {
+         Object.assign(sData, playersData);
          sData.shotFrom = shotFrom;
          sData.turnOf = nextUsername;
+         if (result.finished && result.winner) {
+           sData.winner = await this.getCachedUsername(result.winner);
+         }
       }
 
       (s as unknown as Socket).emit('domino', { 
@@ -454,12 +457,15 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         yourTurn: isMyTurn, 
         turnTimerSeconds: timerSec, 
         currentTurnUsername: nextPassUsername,
-        handCount,
-        ...playersData
+        handCount
       };
       if (sIsSpectator) {
+         Object.assign(sData, playersData);
          sData.shotFrom = shotFrom;
          sData.turnOf = nextPassUsername;
+         if (result.finished && result.winner) {
+           sData.winner = await this.getCachedUsername(result.winner);
+         }
       }
 
       (s as unknown as Socket).emit('domino', { 
@@ -568,6 +574,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       const isWinner = result.winner === pid;
       const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
       const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+      const isSpectator = (s as any).data.isSpectator || false;
+      const winnerUsername = result.winner ? await this.getCachedUsername(result.winner) : null;
 
       (s as unknown as Socket).emit('domino', {
         success: true,
@@ -583,8 +591,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
           gameEnded: result.finished,
           outcome,
           youWon: isWinner,
-          isSpectator: (s as any).data.isSpectator || false,
-          winner: result.winner,
+          isSpectator: isSpectator,
+          winner: isSpectator ? winnerUsername : result.winner,
           reason: result.reason || reason,
           prize,
           handCount,

@@ -130,7 +130,7 @@ export const applyMove = (move: any, board: Board, state: GameState): { nextBoar
   const nextBoard = board.map(r => [...r]) as Board;
   const piece = nextBoard[move.from.row][move.from.col]!;
   const nextState: GameState = {
-    current_player: state.current_player,
+    current_player: state.current_player === 1 ? 2 : 1,
     castling_rights: { ...state.castling_rights },
     en_passant_target: null,
     history: [...(state.history || [])],
