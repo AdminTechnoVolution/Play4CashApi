@@ -147,7 +147,8 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         waitingForOpponent: false, gameStarted: room.status === 'started',
         yourTurn: false, turnTimerSeconds: 30,
         isSpectator: true, spectatorsCount: room.spectators.length,
-        player1, player2, shotFrom, turnOf: shotFrom
+        player1, player2, shotFrom, turnOf: shotFrom,
+        history: room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: i === 0 ? player1 : player2 })))
       }, messages: [] });
     }
 

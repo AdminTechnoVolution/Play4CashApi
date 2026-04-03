@@ -157,7 +157,11 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           isSpectator: true,
           spectatorsCount: room.spectators.length,
           castlingAvailable: { kingSide: false, queenSide: false },
-          player1, player2, shotFrom, turnOf: shotFrom
+          player1, player2, shotFrom, turnOf: shotFrom,
+          history: (game.history || []).map((m: any) => ({
+            ...m,
+            player: m.player === 1 ? player1 : (m.player === 2 ? player2 : m.player)
+          }))
         }});
         client.to(room_id).emit('chess', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
         return;
@@ -273,7 +277,8 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     game.current_player = nextState.current_player;
     game.castling_rights = nextState.castling_rights;
     game.en_passant_target = nextState.en_passant_target;
-    game.history.push({ from, to, moveType: move.castle ? 'castle' : move.enPassant ? 'enPassant' : 'normal' });
+    const movingPlayerUsername = await this.getCachedUsername(client.data.player_id);
+    game.history.push({ player: movingPlayerUsername, from, to, moveType: move.castle ? 'castle' : move.enPassant ? 'enPassant' : 'normal' });
     game.turn_start_time = new Date();
     await game.save();
 

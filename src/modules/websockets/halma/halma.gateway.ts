@@ -108,6 +108,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
 
         const shotFrom = game.current_player === 1 ? player1 : player2;
+        const turnUser = game.current_player === 1 ? { username: player1 } : { username: player2 };
 
         client.emit('halma', { success: true, messages: [], data: {
           board: game.board,
@@ -115,7 +116,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           waitingForOpponent: false, isPlayerOne: false, gameStarted: true, youWon: false,
           isSpectator: true,
           spectatorsCount: room.spectators.length,
-          player1, player2, shotFrom, turnOf: shotFrom
+          player1, player2,
+          shotFrom,
+          turnOf: shotFrom,
+          history: room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: i === 0 ? player1 : player2 })))
         }});
         client.to(room_id).emit('halma', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
         return;

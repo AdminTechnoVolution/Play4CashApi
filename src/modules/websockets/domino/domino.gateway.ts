@@ -131,7 +131,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
             handCount,
             ...playersData,
             shotFrom: turnUser?.username || 'Unknown',
-            turnOf: turnUser?.username || 'Unknown'
+            turnOf: turnUser?.username || 'Unknown',
+            history: room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: playersData[`player${i + 1}`] })))
           }
         });
         client.to(room_id).emit('domino', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
