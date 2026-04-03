@@ -27,6 +27,7 @@ export class Room {
   @Prop({ required: true, unique: true }) code: string;
   @Prop({ type: Types.ObjectId, ref: 'Game', required: true }) game_id: Types.ObjectId;
   @Prop({ type: [RoomPlayer], default: [] }) players: RoomPlayer[];
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] }) spectators: Types.ObjectId[];
   @Prop({ required: true, min: 1 }) bet_amount: number;
   @Prop({ required: true, min: 1, max: 100 }) house_edge: number;
   @Prop({ required: true }) public: boolean;

@@ -35,6 +35,15 @@ function clearTimer(socketId: string) {
 export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(ChessGateway.name);
+  private usernameCache = new Map<string, string>();
+
+  private async getCachedUsername(userId: string): Promise<string> {
+    if (this.usernameCache.has(userId)) return this.usernameCache.get(userId)!;
+    const user = await this.userModel.findById(userId).select('username').lean();
+    const username = user?.username || 'Unknown';
+    if (user) this.usernameCache.set(userId, username);
+    return username;
+  }
 
   constructor(
     @InjectModel(ChessGame.name) private readonly chessGameModel: Model<ChessGameDocument>,
@@ -66,8 +75,15 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const roomObjId = new Types.ObjectId(room_id);
     const playerObjId = new Types.ObjectId(player_id);
 
-    const room = await this.roomModel.findOne({ _id: roomObjId, 'players.playerId': playerObjId });
+    const room = await this.roomModel.findOne({ _id: roomObjId, $or: [{ 'players.playerId': playerObjId }, { spectators: playerObjId }] });
     if (!room || room.status === 'finished') return;
+
+    const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
+    if (isSpectator) {
+      const updated = await this.roomModel.findOneAndUpdate({ _id: room_id }, { $pull: { spectators: playerObjId } }, { returnDocument: 'after' });
+      client.to(room_id).emit('chess', { success: true, data: { spectatorsCount: updated?.spectators?.length || 0 }, messages: [] });
+      return;
+    }
 
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate(
@@ -112,7 +128,43 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (room.status === 'finished') return client.emit('chess', { success: false, messages: ['Room is no longer active.'] });
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
-    if (!isMember) return client.emit('chess', { success: false, messages: ['You are not a member of this room.'] });
+    const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
+    if (!isMember && !isSpectator) return client.emit('chess', { success: false, messages: ['You are not a member of this room.'] });
+
+    await client.join(room_id);
+    client.data.room_id = room_id;
+    client.data.isSpectator = !isMember;
+
+    if (client.data.isSpectator) {
+      this.logger.log(`[Chess] 👀 Spectator joined | room=${room_id} | player=${player_id}`);
+      const game = await this.chessGameModel.findOne({ room_id });
+      if (game) {
+        const currentBoard = game.board;
+        const currentState = game.toObject() as any;
+        const p1Id = room.players[0]?.playerId?.toString();
+        const p2Id = room.players[1]?.playerId?.toString();
+        const player1 = p1Id ? await this.getCachedUsername(p1Id) : 'Unknown';
+        const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
+
+        const shotFrom = game.current_player === 1 ? player1 : player2;
+
+        client.emit('chess', { success: true, messages: [], data: {
+          board: currentBoard,
+          yourTurn: false, turnTimerSeconds: 30,
+          waitingForOpponent: false, 
+          isPlayerOne: false, playingWhite: false, 
+          gameStarted: true, youWon: false,
+          isSpectator: true,
+          spectatorsCount: room.spectators.length,
+          castlingAvailable: { kingSide: false, queenSide: false },
+          player1, player2, shotFrom, turnOf: shotFrom
+        }});
+        client.to(room_id).emit('chess', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
+        return;
+      } else {
+        return client.emit('chess', { success: false, messages: ['Game not found'] });
+      }
+    }
 
     await client.join(room_id);
     const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
@@ -129,12 +181,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       return client.emit('chess', { success: true, messages: [], data: {
         board: currentBoard,
         yourTurn: isMyTurn, turnTimerSeconds: timerSeconds,
-        waitingForOpponent: false, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, gameStarted: true, youWon: false,
+        waitingForOpponent: false, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, gameStarted: true, youWon: false, isSpectator: false,
         castlingAvailable: this.getCastlingAvailable(currentBoard, currentState, playerNum as 1 | 2),
       }});
     }
 
-    client.emit('chess', { success: true, messages: ['Joined room. Waiting for opponent.'], data: { room_id, waitingForOpponent: true, isPlayerOne: playerNum === 1 } });
+    client.emit('chess', { success: true, messages: ['Joined room. Waiting for opponent.'], data: { room_id, waitingForOpponent: true, isPlayerOne: playerNum === 1, isSpectator: false } });
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     if (socketsInRoom.length > 1) {
@@ -167,10 +219,11 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const initialState: GameState = { current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null };
       for (const s of socketsInRoom) {
         const pNum = (s as any).data.playerNum;
+        const sIsSpectator = (s as any).data.isSpectator || false;
         const isFirst = pNum === 1;
-        (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false,
+        (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst && !sIsSpectator, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false, isSpectator: sIsSpectator,
           castlingAvailable: this.getCastlingAvailable(board, initialState, pNum as 1 | 2) },
-          messages: [isFirst ? 'Game started! Your turn.' : 'Game started! Waiting for opponent.'] });
+          messages: sIsSpectator ? ['Game started!'] : [isFirst ? 'Game started! Your turn.' : 'Game started! Waiting for opponent.'] });
         if (isFirst) this.startTimer(s as unknown as Socket, room_id, timerSeconds);
       }
     }
@@ -178,6 +231,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
   @SubscribeMessage('move')
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
+    if (client.data.isSpectator) return client.emit('chess', { success: false, messages: ['Spectators cannot perform actions.'] });
     this.logger.log(`[Chess] ♟ Move received | room=${payload?.room_id} | player=${client.data.player_id} | payload=${JSON.stringify(payload)}`);
     const { room_id, promotion } = payload;
     let { from, to } = payload;
@@ -245,7 +299,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
-    await game.save();
+    const p1Id = room.players[0]?.playerId?.toString();
+    const p2Id = room.players[1]?.playerId?.toString();
+    const player1 = p1Id ? await this.getCachedUsername(p1Id) : 'Unknown';
+    const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
+    const shotFrom = await this.getCachedUsername(client.data.player_id);
+
 
     const timerSec = 30;
     const inCheck = isCheck(playerNum === 1 ? COLORS.WHITE : COLORS.BLACK, nextBoard, nextState);
@@ -253,12 +312,30 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const myCastling = this.getCastlingAvailable(nextBoard, nextState, playerNum as 1 | 2);
     const oppCastling = this.getCastlingAvailable(nextBoard, nextState, opponentNum as 1 | 2);
 
-    client.emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: true, turnTimerSeconds: timerSec, mustEndTurn: !result.finished, outcome: result.finished ? (result.winner ? (result.winner === playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner === playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, prize: (result.finished && result.winner === playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0, castlingAvailable: myCastling }, messages: [inCheck ? 'Check!' : 'Move accepted.'] });
-    client.to(room_id).emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, outcome: result.finished ? (result.winner ? (result.winner !== playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner !== playerNum) : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum !== 1, playingWhite: playerNum !== 1, prize: (result.finished && result.winner && result.winner !== playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0, castlingAvailable: oppCastling }, messages: [result.finished ? 'Game over!' : 'Opponent moved.'] });
+    const sockets = await this.server.in(room_id).fetchSockets();
+    for (const s of sockets) {
+      if (s.id === client.id) {
+        (s as unknown as Socket).emit('chess', { success: true, data: { board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, inCheck, outcome: result.finished ? (result.winner ? (result.winner === playerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? result.winner === playerNum : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, prize: (result.finished && result.winner === playerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0, castlingAvailable: myCastling, isSpectator: false, player1, player2 }, messages: [result.finished ? 'Game over!' : inCheck ? 'ws.chess.check' : 'ws.games.moveAccepted'] });
+      } else {
+        const sPlayerNum = (s as any).data.playerNum;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        // For spectators, we just send player2's perspective or keep it generic
+        const effectivePlayerNum = sIsSpectator ? 2 : sPlayerNum;
+        
+        const sData: any = { board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, inCheck, outcome: result.finished ? (result.winner ? (result.winner !== effectivePlayerNum ? 'win' : 'lose') : 'draw') : '', youWon: result.finished ? (result.winner === effectivePlayerNum) && !sIsSpectator : false, gameEnded: result.finished, winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), reason: result.reason, isPlayerOne: effectivePlayerNum === 1, playingWhite: effectivePlayerNum === 1, prize: (result.finished && result.winner === effectivePlayerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0, castlingAvailable: oppCastling, isSpectator: sIsSpectator, player1, player2 };
+        if (sIsSpectator) {
+           sData.shotFrom = shotFrom;
+           sData.turnOf = game.current_player === 1 ? player1 : player2;
+        }
+
+        (s as unknown as Socket).emit('chess', { success: true, data: sData, messages: sIsSpectator ? [result.finished ? 'Game over!' : 'A move was made.'] : [result.finished ? 'Game over!' : inCheck ? 'ws.chess.check' : 'ws.games.opponentMoved'] });
+      }
+    }
   }
 
   @SubscribeMessage('end_turn')
   async handleEndTurn(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    if (client.data.isSpectator) return client.emit('chess', { success: false, messages: ['Spectators cannot perform actions.'] });
     this.logger.log(`[Chess] ⏭ End turn received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const playerNum = client.data.playerNum;
@@ -285,8 +362,15 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const myEndCastling = this.getCastlingAvailable(game.board, endTurnState, playerNum as 1 | 2);
     const oppEndCastling = this.getCastlingAvailable(game.board, endTurnState, nextPlayer as 1 | 2);
 
-    client.emit('chess', { success: true, data: { board: game.board, yourTurn: false, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, castlingAvailable: myEndCastling }, messages: ['Turn ended.'] });
-    client.to(room_id).emit('chess', { success: true, data: { board: game.board, yourTurn: true, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: nextPlayer === 1, playingWhite: nextPlayer === 1, castlingAvailable: oppEndCastling }, messages: ['Opponent ended their turn. Your turn!'] });
+    for (const s of sockets) {
+      if (s.id === client.id) {
+        client.emit('chess', { success: true, data: { board: game.board, yourTurn: false, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, castlingAvailable: myEndCastling, isSpectator: false }, messages: ['Turn ended.'] });
+      } else {
+        const sPlayerNum = (s as any).data.playerNum || 2;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        (s as unknown as Socket).emit('chess', { success: true, data: { board: game.board, yourTurn: !sIsSpectator, outcome: '', turnTimerSeconds: timerSec, isPlayerOne: sPlayerNum === 1, playingWhite: sPlayerNum === 1, castlingAvailable: oppEndCastling, isSpectator: sIsSpectator }, messages: sIsSpectator ? ['Turn ended.'] : ['Opponent ended their turn. Your turn!'] });
+      }
+    }
   }
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {
@@ -305,19 +389,21 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         for (const s of sockets) {
           const socketPlayerId = (s as any).data.player_id;
           const isWinner = socketPlayerId === winnerId.toString();
+          const sIsSpectator = (s as any).data.isSpectator || false;
           (s as unknown as Socket).emit('chess', {
             success: true,
             data: {
               gameEnded: true,
               outcome: isWinner ? 'win' : 'timeout_loss',
-              youWon: isWinner,
+              youWon: isWinner && !sIsSpectator,
               winner: winnerId,
               reason: 'timeout',
               prize: isWinner ? (room.bet_amount * (2 - room.house_edge / 100)) : 0,
               isPlayerOne: (s as any).data.playerNum === 1,
               playingWhite: (s as any).data.playerNum === 1,
+              isSpectator: sIsSpectator,
             },
-            messages: [isWinner ? 'Opponent timed out. You win!' : 'Turn time expired. You lose.']
+            messages: sIsSpectator ? ['A player timed out. Game over.'] : [isWinner ? 'Opponent timed out. You win!' : 'Turn time expired. You lose.']
           });
         }
         

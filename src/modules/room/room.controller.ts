@@ -75,6 +75,16 @@ export class RoomController {
     return this.roomService.joinRoom(user.id, id, lang || 'en');
   }
 
+  @Post(':id/spectate')
+  @ApiOperation({ summary: 'Join a started room as a spectator' })
+  spectateRoom(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Headers('accept-language') lang: string,
+  ) {
+    return this.roomService.spectateRoom(user.id, id, lang || 'en');
+  }
+
   @Post(':id/leave')
   @ApiOperation({ summary: 'Leave a room (waiting=remove, started=forfeit)' })
   leaveRoom(

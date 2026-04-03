@@ -186,6 +186,28 @@ export class RoomService {
     return room;
   }
 
+  // ── SPECTATE ROOM ───────────────────────────────────────────────────────────
+
+  async spectateRoom(userId: string, roomId: string, lang = 'en'): Promise<RoomDocument> {
+    const roomInfo = await this.roomModel.findById(roomId).populate('game_id');
+    if (!roomInfo) throw new BusinessException('ERROR_NOT_FOUND', 404);
+    if (roomInfo.status !== RoomStatus.STARTED) throw new BusinessException('ERROR_ROOM_NOT_STARTED', 400);
+
+    const isPlayer = roomInfo.players.some((p: any) => p.playerId.toString() === userId);
+    if (isPlayer) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
+
+    const isSpectating = roomInfo.spectators?.some((s: any) => s.toString() === userId);
+    if (!isSpectating) {
+      roomInfo.spectators.push(new Types.ObjectId(userId));
+      await roomInfo.save();
+    }
+
+    const populated = await this.roomModel.findById(roomId).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+    const [enriched] = this.localizeRooms([populated], lang);
+
+    return enriched as any;
+  }
+
   // ── SET READY ───────────────────────────────────────────────────────────────
 
   async setReady(userId: string, roomId: string, ready: boolean, lang = 'en'): Promise<RoomDocument> {
@@ -220,9 +242,33 @@ export class RoomService {
   // ── LEAVE ROOM ──────────────────────────────────────────────────────────────
 
   async leaveRoom(userId: string, roomId: string, lang = 'en'): Promise<any> {
-    const roomInfo = await this.roomModel.findOne({ _id: new Types.ObjectId(roomId), 'players.playerId': new Types.ObjectId(userId) }).populate('game_id');
+    const roomInfo = await this.roomModel.findOne({
+      _id: new Types.ObjectId(roomId),
+      $or: [
+        { 'players.playerId': new Types.ObjectId(userId) },
+        { spectators: new Types.ObjectId(userId) }
+      ]
+    }).populate('game_id');
     if (!roomInfo) throw new BusinessException('ERROR_AUTH', 403);
     if (roomInfo.status === RoomStatus.FINISHED) return roomInfo;
+
+    const isSpectator = roomInfo.spectators?.some((id: any) => id.toString() === userId);
+    if (isSpectator) {
+      const updated = await this.roomModel.findOneAndUpdate(
+        { _id: roomId },
+        { $pull: { spectators: new Types.ObjectId(userId) } },
+        { returnDocument: 'after' }
+      );
+      
+      // Notify game namespaces of spectator count change
+      const commonPayload = { success: true, data: { spectatorsCount: updated?.spectators?.length || 0 }, messages: [] };
+      await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', commonPayload);
+      await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload);
+      await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload);
+      await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload);
+
+      return updated;
+    }
 
     if (roomInfo.status === RoomStatus.WAITING) {
       const updated = await this.roomModel.findOneAndUpdate(
