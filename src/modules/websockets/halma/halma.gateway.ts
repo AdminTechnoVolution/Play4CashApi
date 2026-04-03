@@ -11,7 +11,7 @@ import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { HalmaGame, HalmaGameDocument } from './schemas/halma-game.schema';
-import { createHalmaBoard, isValidStep, isValidJump, canJumpFurther, checkHalmaWin, HalmaBoard } from './halma-game.logic';
+import { createHalmaBoard, isValidStep, isValidJump, canJumpFurther, HalmaBoard, P1_NORMAL, P2_NORMAL, P1_KING, P2_KING, isOwner } from './halma-game.logic';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -122,7 +122,6 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
 
         const shotFrom = game.current_player === 1 ? player1 : player2;
-        const turnUser = game.current_player === 1 ? { username: player1 } : { username: player2 };
         
         const now = new Date();
         const elapsed = Math.floor((now.getTime() - game.turn_start_time.getTime()) / 1000);
@@ -142,10 +141,8 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         }});
         client.to(room_id).emit('halma', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
         return;
-      } else {
-        return client.emit('halma', { success: false, messages: ['Game not found'] });
       }
-      return;
+      return client.emit('halma', { success: false, messages: ['Game not found'] });
     }
 
     const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
@@ -160,10 +157,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         const elapsed = Math.floor((now.getTime() - game.turn_start_time.getTime()) / 1000);
         const remaining = Math.max(0, 30 - elapsed);
         return client.emit('halma', { success: true, messages: [], data: {
-        board: game ? game.board : createHalmaBoard(),
-        yourTurn: isMyTurn, turnTimerSeconds: remaining,
-        waitingForOpponent: false, isPlayerOne: playerNum === 1, gameStarted: true, youWon: false, isSpectator: false
-      }});
+          board: game.board,
+          yourTurn: isMyTurn, turnTimerSeconds: remaining,
+          waitingForOpponent: false, isPlayerOne: playerNum === 1, gameStarted: true, youWon: false, isSpectator: false
+        }});
       }
     }
 
@@ -214,11 +211,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   @SubscribeMessage('move')
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
     if (client.data.isSpectator) return client.emit('halma', { success: false, messages: ['Spectators cannot perform actions.'] });
-    const { room_id, isChainJump } = payload;
+    const { room_id } = payload;
     let from = payload.from;
     let to = payload.to;
 
-    // Support legacy payload format
     if (!from && payload.from_row !== undefined && payload.from_col !== undefined) {
       from = [Number(payload.from_row), Number(payload.from_col)];
     }
@@ -226,13 +222,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       to = [Number(payload.to_row), Number(payload.to_col)];
     }
 
-    this.logger.log(`[Halma] ⭐ Move received | room=${payload?.room_id} | player=${client.data.player_id} | payload=${JSON.stringify(payload)}`);
-    this.logger.debug(`[Halma] Processed from: ${JSON.stringify(from)}, to: ${JSON.stringify(to)}`);
-
-    const playerNum = client.data.playerNum;
+    this.logger.log(`[Halma] ⭐ Move received | room=${room_id} | player=${client.data.player_id}`);
+    const playerNum = client.data.playerNum || 1;
 
     if (!room_id || !from || !to || !Array.isArray(from) || !Array.isArray(to) || from.length !== 2 || to.length !== 2) {
-      this.logger.error(`[Halma] Validation failed: room_id=${!!room_id}, from=${JSON.stringify(from)}, to=${JSON.stringify(to)}`);
       return client.emit('halma', { success: false, messages: ['Invalid move payload.'] });
     }
     const game = await this.halmaModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -246,9 +239,52 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const isJump = isValidJump(board, fr, fc, tr, tc);
     if (!isStep && !isJump) return client.emit('halma', { success: false, messages: ['Invalid move.'], data: { board } });
 
+    // Execute Move
     board[tr][tc] = board[fr][fc];
     board[fr][fc] = 0;
+
+    // 1. Promotion logic: check if piece reached last row
+    if (playerNum === 1 && tr === 7 && board[tr][tc] === P1_NORMAL) {
+      board[tr][tc] = P1_KING;
+    } else if (playerNum === 2 && tr === 0 && board[tr][tc] === P2_NORMAL) {
+      board[tr][tc] = P2_KING;
+    }
+
+    // 2. Chain check (using promoted piece if applicable)
+    const chainPossible = isJump && canJumpFurther(board, tr, tc);
+
+    // 3. Capture logic (toggle)
+    if (isJump) {
+      const dr = tr - fr;
+      const dc = tc - fc;
+      const absDr = Math.abs(dr);
+      const unitR = dr / absDr;
+      const unitC = dc / absDr;
+
+      let midR = -1;
+      let midC = -1;
+      for (let i = 1; i < absDr; i++) {
+        if (board[fr + i * unitR][fc + i * unitC] !== 0) {
+          midR = fr + i * unitR;
+          midC = fc + i * unitC;
+          break;
+        }
+      }
+
+      if (midR !== -1) {
+        const jumpedPiece = board[midR][midC];
+        const isOpponenPiece = (playerNum === 1 && (jumpedPiece === P2_NORMAL || jumpedPiece === P2_KING)) ||
+                               (playerNum === 2 && (jumpedPiece === P1_NORMAL || jumpedPiece === P1_KING));
+        if (isOpponenPiece) {
+          const idx = game.pending_captures.findIndex(([pr, pc]) => pr === midR && pc === midC);
+          if (idx !== -1) game.pending_captures.splice(idx, 1);
+          else game.pending_captures.push([midR, midC]);
+        }
+      }
+    }
+
     game.board = board;
+    await game.save();
 
     await this.roomModel.updateOne(
       { _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(client.data.player_id) },
@@ -262,27 +298,6 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
     const shotFrom = await this.getCachedUsername(client.data.player_id);
 
-
-    const chainPossible = isJump && canJumpFurther(board, tr, tc);
-    if (isJump) {
-      const midR = (fr + tr) / 2;
-      const midC = (fc + tc) / 2;
-      const jumpedPiece = board[midR][midC];
-      const opponentNum = playerNum === 1 ? 2 : 1;
-      
-      if (jumpedPiece === opponentNum) {
-        // Toggle capture logic: if already jumped this turn, remove. Else, add.
-        const idx = game.pending_captures.findIndex(([pr, pc]) => pr === midR && pc === midC);
-        if (idx !== -1) {
-          game.pending_captures.splice(idx, 1);
-        } else {
-          game.pending_captures.push([midR, midC]);
-        }
-      }
-    }
-    await game.save();
-    
-    // Calculate remaining time for the current player's turn window
     const now = new Date();
     const elapsed = Math.floor((now.getTime() - game.turn_start_time.getTime()) / 1000);
     const remaining = Math.max(0, 30 - elapsed);
@@ -300,20 +315,12 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       } else {
         const sIsSpectator = (s as any).data.isSpectator || false;
         const sPlayerNum = (s as any).data.playerNum || 2;
-        
         const sData: any = { board, pendingCaptures, yourTurn: false, turnTimerSeconds: remaining, outcome: '', isPlayerOne: sPlayerNum === 1, isSpectator: sIsSpectator };
         if (sIsSpectator) {
-           sData.player1 = player1;
-           sData.player2 = player2;
-           sData.shotFrom = shotFrom;
+           sData.player1 = player1; sData.player2 = player2; sData.shotFrom = shotFrom;
            sData.turnOf = playerNum === 1 ? player1 : player2;
         }
-
-        if (chainPossible) {
-           (s as unknown as Socket).emit('halma', { success: true, data: sData, messages: sIsSpectator ? ['Continuing jump.'] : ['Opponent is continuing jump.'] });
-        } else {
-           (s as unknown as Socket).emit('halma', { success: true, data: sData, messages: sIsSpectator ? ['A move was made.'] : ['Opponent moved.'] });
-        }
+        (s as unknown as Socket).emit('halma', { success: true, data: sData, messages: sIsSpectator ? [chainPossible ? 'Continuing jump.' : 'A move was made.'] : [chainPossible ? 'Opponent is continuing jump.' : 'Opponent moved.'] });
       }
     }
   }
@@ -321,9 +328,8 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   @SubscribeMessage('end_turn')
   async handleEndTurn(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     if (client.data.isSpectator) return client.emit('halma', { success: false, messages: ['Spectators cannot perform actions.'] });
-    this.logger.log(`[Halma] ⏭ End turn received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
-    const playerNum = client.data.playerNum;
+    const playerNum = client.data.playerNum || 1;
     if (!room_id) return;
     const game = await this.halmaModel.findOne({ room_id: new Types.ObjectId(room_id) });
     if (!game || game.current_player !== playerNum) return;
@@ -331,9 +337,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     // 1. Finalize Captures
     if (game.pending_captures && game.pending_captures.length > 0) {
       const board = game.board as number[][];
-      for (const [cr, cc] of game.pending_captures) {
-        board[cr][cc] = 0;
-      }
+      for (const [cr, cc] of game.pending_captures) { board[cr][cc] = 0; }
       game.board = board;
       game.pending_captures = [];
     }
@@ -359,26 +363,21 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     clearTimer(client.id);
     if (opponent) this.startTimer(opponent as unknown as Socket, room_id, timerSec);
 
-    // 2. Refresh Win Condition Check
+    // 2. Refresh Win Condition Check (Elimination Only)
     const board = game.board as number[][];
-    const p1Pieces = board.flat().filter(p => p === 1).length;
-    const p2Pieces = board.flat().filter(p => p === 2).length;
+    const p1Pieces = board.flat().filter(p => p === 1 || p === 3).length;
+    const p2Pieces = board.flat().filter(p => p === 2 || p === 4).length;
 
     let automatedWinner = 0;
     const winReason = 'elimination';
-    
-    if (p1Pieces === 0) {
-      automatedWinner = 2;
-    } else if (p2Pieces === 0) {
-      automatedWinner = 1;
-    }
+    if (p1Pieces === 0) automatedWinner = 2;
+    else if (p2Pieces === 0) automatedWinner = 1;
 
     if (automatedWinner !== 0) {
         const room = await this.roomModel.findById(room_id);
         const winnerId = automatedWinner === 1 ? game.player1_id : game.player2_id;
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = winReason; room.finished_at = new Date();
         await room.save();
-        
         const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
         await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
 
@@ -386,20 +385,13 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           const sPNum = (s as any).data.playerNum || 2;
           const sIsSpectator = (s as any).data.isSpectator || false;
           const outcome = sPNum === automatedWinner ? 'win' : 'lose';
-          
           (s as unknown as Socket).emit('halma', {
             success: true,
             data: {
-              board: game.board,
-              gameEnded: true,
-              outcome,
-              youWon: sPNum === automatedWinner && !sIsSpectator,
-              winner: winnerId,
-              reason: winReason,
-              prize: sPNum === automatedWinner ? prize : 0,
-              isSpectator: sIsSpectator
+              board: game.board, gameEnded: true, outcome, youWon: sPNum === automatedWinner && !sIsSpectator,
+              winner: winnerId, reason: winReason, prize: sPNum === automatedWinner ? prize : 0, isSpectator: sIsSpectator
             },
-            messages: sIsSpectator ? ['Game over!'] : [outcome === 'win' ? 'You win!' : (winReason === 'elimination' ? 'All your pieces were captured. You lose.' : 'You lose!')]
+            messages: sIsSpectator ? ['Game over!'] : [outcome === 'win' ? 'You win!' : 'All your pieces were captured. You lose.']
           });
         }
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -412,15 +404,8 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const sIsSpectator = (s as any).data.isSpectator || false;
       const isMyTurn = sIsSpectator ? false : pNum === game.current_player;
       const msg = sIsSpectator ? ['Turn ended.'] : [(isMyTurn ? 'Your turn!' : 'Opponent ended turn.')];
-      
       const sData: any = { board: game.board, yourTurn: isMyTurn, turnTimerSeconds: timerSec, outcome: '', isPlayerOne: pNum === 1, isSpectator: sIsSpectator };
-      if (sIsSpectator) {
-         sData.player1 = player1;
-         sData.player2 = player2;
-         sData.shotFrom = shotFrom;
-         sData.turnOf = game.current_player === 1 ? player1 : player2;
-      }
-
+      if (sIsSpectator) { sData.player1 = player1; sData.player2 = player2; sData.shotFrom = shotFrom; sData.turnOf = game.current_player === 1 ? player1 : player2; }
       (s as unknown as Socket).emit('halma', { success: true, data: sData, messages: msg });
     }
   }

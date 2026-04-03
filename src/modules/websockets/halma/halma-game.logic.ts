@@ -29,39 +29,124 @@ export const createHalmaBoard = (): HalmaBoard => {
   return b;
 };
 
+/** Constants for piece types */
+export const P1_NORMAL = 1;
+export const P2_NORMAL = 2;
+export const P1_KING = 3;
+export const P2_KING = 4;
+
 const inBounds = (r: number, c: number) => r >= 0 && r < 8 && c >= 0 && c < 8;
 export const goalRowsForPlayer = (pNum: number) => pNum === 1 ? PLAYER_A_GOAL_ROWS : PLAYER_B_GOAL_ROWS;
 export const isInGoalZone = (r: number, pNum: number) => goalRowsForPlayer(pNum).includes(r);
 
 /**
- * Simple move: exactly 1 diagonal step forward to an empty dark square.
+ * Returns true if a piece belongs to the given player number.
  */
-export const isValidStep = (b: HalmaBoard, fr: number, fc: number, tr: number, tc: number, pNum: number): boolean => {
-  if (!inBounds(tr, tc)) return false;
-  if (b[fr][fc] !== pNum) return false;
-  if (b[tr][tc] !== 0) return false;
-  if (!isDarkSquare(tr, tc)) return false;
-  return Math.abs(tr - fr) === 1 && Math.abs(tc - fc) === 1;
+export const isOwner = (piece: number, pNum: number): boolean => {
+  if (pNum === 1) return piece === P1_NORMAL || piece === P1_KING;
+  if (pNum === 2) return piece === P2_NORMAL || piece === P2_KING;
+  return false;
 };
 
 /**
- * Jump move: exactly 2 diagonal steps forward over any piece to an empty dark square.
- * Player is inferred from board[fr][fc] to preserve gateway signature.
+ * Simple move: 
+ * - Normal: 1 diagonal step.
+ * - King: Any distance, path must be clear.
+ */
+export const isValidStep = (b: HalmaBoard, fr: number, fc: number, tr: number, tc: number, pNum: number): boolean => {
+  if (!inBounds(tr, tc)) return false;
+  const piece = b[fr][fc];
+  if (!isOwner(piece, pNum)) return false;
+  if (b[tr][tc] !== 0) return false;
+  if (!isDarkSquare(tr, tc)) return false;
+
+  const dr = tr - fr;
+  const dc = tc - fc;
+  const absDr = Math.abs(dr);
+  const absDc = Math.abs(dc);
+
+  if (absDr !== absDc) return false; // Must be diagonal
+
+  if (piece === P1_KING || piece === P2_KING) {
+    // King: any distance, clear path
+    const unitR = dr / absDr;
+    const unitC = dc / absDc;
+    for (let i = 1; i < absDr; i++) {
+        if (b[fr + i * unitR][fc + i * unitC] !== 0) return false;
+    }
+    return true;
+  } else {
+    // Normal: 1 step
+    return absDr === 1;
+  }
+};
+
+/**
+ * Jump move: 
+ * - Normal: Exactly 2 steps over 1 piece.
+ * - King: Any distance over 1 piece, land anywhere behind it.
  */
 export const isValidJump = (b: HalmaBoard, fr: number, fc: number, tr: number, tc: number): boolean => {
   if (!inBounds(tr, tc)) return false;
   if (b[tr][tc] !== 0) return false;
   if (!isDarkSquare(tr, tc)) return false;
-  const pNum = b[fr][fc];
-  if (!pNum) return false;
-  if (Math.abs(tr - fr) !== 2 || Math.abs(tc - fc) !== 2) return false;
-  return b[(fr + tr) / 2][(fc + tc) / 2] !== 0;
+  const piece = b[fr][fc];
+  if (!piece) return false;
+
+  const dr = tr - fr;
+  const dc = tc - fc;
+  const absDr = Math.abs(dr);
+  const absDc = Math.abs(dc);
+
+  if (absDr !== absDc) return false; // Must be diagonal
+
+  const unitR = dr / absDr;
+  const unitC = dc / absDc;
+
+  if (piece === P1_KING || piece === P2_KING) {
+    // King: Flying jump over exactly ONE piece
+    let pieceCount = 0;
+    for (let i = 1; i < absDr; i++) {
+        if (b[fr + i * unitR][fc + i * unitC] !== 0) {
+            pieceCount++;
+        }
+    }
+    return pieceCount === 1;
+  } else {
+    // Normal: Distance 2 over 1 piece
+    if (absDr !== 2) return false;
+    return b[fr + unitR][fc + unitC] !== 0;
+  }
 };
 
-export const getJumpDestinations = (b: HalmaBoard, r: number, c: number): [number, number][] =>
-  DIAGONAL_DIRECTIONS
-    .map(([dr, dc]) => [r + dr * 2, c + dc * 2] as [number, number])
-    .filter(([jr, jc]) => isValidJump(b, r, c, jr, jc));
+export const getJumpDestinations = (b: HalmaBoard, r: number, c: number): [number, number][] => {
+  const piece = b[r][c];
+  if (!piece) return [];
+  const dests: [number, number][] = [];
+
+  if (piece === P1_KING || piece === P2_KING) {
+    // Scans all diagonal paths for possible flying jumps
+    for (const [dr, dc] of DIAGONAL_DIRECTIONS) {
+      for (let dist = 2; dist < 8; dist++) {
+        const tr = r + dr * dist;
+        const tc = c + dc * dist;
+        if (inBounds(tr, tc) && isValidJump(b, r, c, tr, tc)) {
+          dests.push([tr, tc]);
+        }
+      }
+    }
+  } else {
+    // Normal pieces: only distance 2
+    for (const [dr, dc] of DIAGONAL_DIRECTIONS) {
+      const tr = r + dr * 2;
+      const tc = c + dc * 2;
+      if (isValidJump(b, r, c, tr, tc)) {
+        dests.push([tr, tc]);
+      }
+    }
+  }
+  return dests;
+};
 
 export const canJumpFurther = (b: HalmaBoard, r: number, c: number): boolean => getJumpDestinations(b, r, c).length > 0;
 
