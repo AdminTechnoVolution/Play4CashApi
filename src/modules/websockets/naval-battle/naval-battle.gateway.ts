@@ -105,6 +105,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       const sockets = await this.server.in(room_id).fetchSockets();
       for (const s of sockets) {
         const sIsSpectator = (s as any).data.isSpectator || false;
+        const winnerUsername = await this.getCachedUsername(winner_id.toString());
         (s as unknown as Socket).emit('naval-battle', {
           success: false, 
           data: { 
@@ -113,7 +114,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
             winner: sIsSpectator ? winnerUsername : winner_id,
             isSpectator: sIsSpectator
           }, 
-          messages: sIsSpectator ? ['A player disconnected. Game over.'] : ['ws.games.playerDisconnected'] 
+          messages: sIsSpectator ? [`${winnerUsername} wins by forfeit!`] : ['ws.games.playerDisconnected'] 
         });
       }
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -344,16 +345,17 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
           const vLang = this.getLang(s as unknown as Socket);
           const loseMsg = this.i18n.translate('ws.games.loseSunk', vLang, { shipType: shipType || '' });
           
+          const winName = player_id === p1Id ? player1 : player2;
           const sData: any = { outcome: 'lose', youWon: false, winner: player_id, reason: 'normal', row, col, shipType: shipType, yourTurn: false, gameEnded: true, isSpectator: sIsSpectator };
           if (sIsSpectator) { 
             sData.player1 = player1; 
             sData.player2 = player2;
             sData.shotFrom = shotFrom; 
-            sData.turnOf = player_id === p1Id ? player1 : player2; 
-            sData.winner = player_id === p1Id ? player1 : player2;
+            sData.turnOf = winName; 
+            sData.winner = winName;
           }
 
-          (s as unknown as Socket).emit('naval-battle', { success: true, data: sData, messages: sIsSpectator ? ['A player lost all their ships!'] : [loseMsg] });
+          (s as unknown as Socket).emit('naval-battle', { success: true, data: sData, messages: sIsSpectator ? [`${winName} wins! ${shipType || ''} sunk!`] : [loseMsg] });
         }
       }
       
@@ -439,9 +441,10 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
               winner: sIsSpectator ? winnerUsername : winnerId,
               reason: 'timeout',
               prize: isWinner ? prize : 0,
-              isSpectator: sIsSpectator
+              isPlayerOne: (s as any).data.playerNum === 1,
+              isSpectator: sIsSpectator,
             },
-            messages: sIsSpectator ? ['A player timed out. Game over.'] : [isWinner ? 'ws.games.timeoutWin' : 'ws.games.timeoutLoss']
+            messages: sIsSpectator ? [`${winnerUsername} won by timeout!`] : [isWinner ? 'ws.games.opponentTimedOut' : 'ws.games.turnExpired']
           });
         }
         

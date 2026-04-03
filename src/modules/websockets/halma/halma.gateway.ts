@@ -78,6 +78,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const sockets = await this.server.in(room_id).fetchSockets();
       for (const s of sockets) {
         const sIsSpectator = (s as any).data.isSpectator || false;
+        const winnerUsername = await this.getCachedUsername(winner_id.toString());
         (s as unknown as Socket).emit('halma', {
           success: false, 
           data: { 
@@ -86,7 +87,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
             winner: sIsSpectator ? winnerUsername : winner_id,
             isSpectator: sIsSpectator
           }, 
-          messages: sIsSpectator ? ['A player disconnected. Game over.'] : ['Opponent disconnected. You win!'] 
+          messages: sIsSpectator ? [`${winnerUsername} wins by forfeit!`] : ['Opponent disconnected. You win!'] 
         });
       }
 
@@ -380,6 +381,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         await room.save();
         const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
         await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
+        const winnerUsername = await this.getCachedUsername(winnerId.toString());
 
         for (const s of sockets) {
           const sPNum = (s as any).data.playerNum || 2;
@@ -389,9 +391,9 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
             success: true,
             data: {
               board: game.board, gameEnded: true, outcome, youWon: sPNum === automatedWinner && !sIsSpectator,
-              winner: winnerId, reason: winReason, prize: sPNum === automatedWinner ? prize : 0, isSpectator: sIsSpectator
+              winner: sIsSpectator ? winnerUsername : winnerId, reason: winReason, prize: sPNum === automatedWinner ? prize : 0, isSpectator: sIsSpectator
             },
-            messages: sIsSpectator ? ['Game over!'] : [outcome === 'win' ? 'You win!' : 'All your pieces were captured. You lose.']
+            messages: sIsSpectator ? [`${winnerUsername} wins!`] : [outcome === 'win' ? 'You win!' : 'All your pieces were captured. You lose.']
           });
         }
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -442,7 +444,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
               isPlayerOne: (s as any).data.playerNum === 1,
               isSpectator: sIsSpectator,
             },
-            messages: sIsSpectator ? ['A player timed out. Game over.'] : [isWinner ? 'Opponent timed out. You win!' : 'Turn time expired. You lose.']
+            messages: sIsSpectator ? [`${winnerUsername} won by timeout!`] : [isWinner ? 'Opponent timed out. You win!' : 'Turn time expired. You lose.']
           });
         }
         

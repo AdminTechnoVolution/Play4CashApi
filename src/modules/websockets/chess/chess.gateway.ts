@@ -112,15 +112,16 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const sockets = await this.server.in(room_id).fetchSockets();
       for (const s of sockets) {
         const sIsSpectator = (s as any).data.isSpectator || false;
+        const winnerUsername = await this.getCachedUsername(winner_id.toString());
         (s as unknown as Socket).emit('chess', {
           success: false, 
-          messages: sIsSpectator ? ['A player disconnected. Game over.'] : ['Your opponent disconnected. You win!'],
+          messages: sIsSpectator ? [`${winnerUsername} wins by forfeit!`] : ['Your opponent disconnected. You win!'],
           data: { 
             outcome: 'opponent_disconnected', 
             gameEnded: true,
             winner: sIsSpectator ? winnerUsername : winner_id,
             isSpectator: sIsSpectator
-          },
+          } 
         });
       }
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -344,39 +345,25 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         const effectivePlayerNum = sIsSpectator ? 2 : sPlayerNum;
         const isMyTurn = !sIsSpectator && sPlayerNum === game.current_player;
         
+        const winName = result.winner === 1 ? player1 : (result.winner === 2 ? player2 : null);
         const sData: any = { 
-          board: nextBoard, 
-          lastMove: { from, to }, 
-          yourTurn: isMyTurn, 
-          turnTimerSeconds: timerSec, 
-          inCheck, 
+          board: nextBoard, lastMove: { from, to }, yourTurn: false, turnTimerSeconds: timerSec, inCheck,
           outcome: result.finished ? (result.winner ? (result.winner !== effectivePlayerNum ? 'win' : 'lose') : 'draw') : '', 
           youWon: result.finished ? (result.winner === effectivePlayerNum) && !sIsSpectator : false, 
           gameEnded: result.finished, 
           winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), 
-          reason: result.reason, 
-          isPlayerOne: effectivePlayerNum === 1, 
-          playingWhite: effectivePlayerNum === 1, 
+          reason: result.reason, isPlayerOne: effectivePlayerNum === 1, playingWhite: effectivePlayerNum === 1, 
           prize: (result.finished && result.winner === effectivePlayerNum) ? (room.bet_amount * (2 - room.house_edge / 100)) : 0, 
-          castlingAvailable: oppCastling, 
-          isSpectator: sIsSpectator 
+          castlingAvailable: sIsSpectator ? { white: { short: true, long: true }, black: { short: true, long: true } } : (s as any).data.castling || { short: true, long: true },
+          isSpectator: sIsSpectator
         };
-
-        if (sIsSpectator) {
-           sData.player1 = player1;
-           sData.player2 = player2;
-           sData.shotFrom = shotFrom;
-           sData.turnOf = game.current_player === 1 ? player1 : player2;
-           if (result.finished) {
-             sData.winner = result.winner === 1 ? player1 : (result.winner === 2 ? player2 : null);
-           }
+        if (sIsSpectator) { 
+           sData.player1 = player1; sData.player2 = player2; sData.shotFrom = shotFrom;
+           sData.turnOf = winName;
+           sData.winner = winName;
         }
-
-        (s as unknown as Socket).emit('chess', { 
-          success: true, 
-          data: sData, 
-          messages: sIsSpectator ? [result.finished ? 'Game over!' : 'A move was made.'] : [result.finished ? 'Game over!' : inCheck ? 'ws.chess.check' : 'ws.games.opponentMoved'] 
-        });
+        const msg = result.finished ? (result.winner ? [`${winName} wins!`] : ['Game ended in a draw.']) : (inCheck ? ['Check!'] : ['Move accepted.']);
+        (s as unknown as Socket).emit('chess', { success: true, data: sData, messages: sIsSpectator ? msg : [result.finished ? 'Game over!' : inCheck ? 'ws.chess.check' : 'ws.games.opponentMoved'] });
       }
     }
   }
@@ -412,12 +399,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
               youWon: isWinner && !sIsSpectator,
               winner: sIsSpectator ? winnerUsername : winnerId,
               reason: 'timeout',
-              prize: isWinner ? (room.bet_amount * (2 - room.house_edge / 100)) : 0,
+              prize: isWinner ? prize : 0,
               isPlayerOne: (s as any).data.playerNum === 1,
               playingWhite: (s as any).data.playerNum === 1,
               isSpectator: sIsSpectator,
             },
-            messages: sIsSpectator ? ['A player timed out. Game over.'] : [isWinner ? 'Opponent timed out. You win!' : 'Turn time expired. You lose.']
+            messages: sIsSpectator ? [`${winnerUsername} won by timeout!`] : [isWinner ? 'Your opponent timed out. You win!' : 'Your turn expired. You lose!']
           });
         }
         

@@ -299,55 +299,29 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     clearTimer(client.id);
     if (!result.finished && nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
 
-    const playersData: any = {};
-    for (let i = 0; i < room.players.length; i++) {
-      playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
-    }
-    const shotFrom = await this.getCachedUsername(player_id);
-
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
       const sIsSpectator = (s as any).data.isSpectator || false;
-      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
-      const isMyTurn = !sIsSpectator && pid === nextPlayerId;
       const isWinner = !sIsSpectator && result.winner === pid;
-      const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
-      const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
-      
-      const sData: any = { 
-        board: game.board, 
-        hand: myHand, 
-        boneyardCount: game.boneyard.length, 
-        lastTile: flippedTile, 
-        lastSide: side, 
-        lastPlayer: player_id, 
-        yourTurn: isMyTurn, 
-        turnTimerSeconds: timerSec, 
-        currentTurnUsername: nextUsername,
-        gameEnded: result.finished, 
-        outcome,
-        youWon: isWinner,
-        winner: result.winner, 
-        reason: result.reason, 
-        prize,
-        handCount,
-        isSpectator: sIsSpectator
-      };
+      const winnerUsername = result.winner ? await this.getCachedUsername(result.winner) : null;
 
+      const sData: any = {
+        board: game.board, yourTurn: !result.finished && pid === nextPlayerId && !sIsSpectator,
+        turnTimerSeconds: result.finished ? 0 : timerSec, currentTurnUsername: nextUsername,
+        gameEnded: result.finished, outcome: isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : '')), youWon: isWinner,
+        winner: result.winner, 
+        reason: result.reason, handCount, isSpectator: sIsSpectator
+      };
       if (sIsSpectator) {
-         Object.assign(sData, playersData);
-         sData.shotFrom = shotFrom;
-         sData.turnOf = nextUsername;
          if (result.finished && result.winner) {
-           sData.winner = await this.getCachedUsername(result.winner);
+           sData.winner = winnerUsername;
+           sData.turnOf = winnerUsername;
+         } else if (!result.finished) {
+           sData.turnOf = nextUsername;
          }
       }
 
-      (s as unknown as Socket).emit('domino', { 
-        success: true, 
-        data: sData, 
-        messages: sIsSpectator ? [result.finished ? 'Game over!' : 'A move was made.'] : [result.finished ? 'Game over!' : isMyTurn ? 'Your turn!' : 'Opponent moved.'] 
-      });
+      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: sIsSpectator ? (result.finished ? (result.winner ? [`${winnerUsername} wins!`] : ['Game ended in a draw.']) : ['A move was made.']) : (result.finished ? ['Game over!'] : ['Move accepted.']) });
     }
   }
 
