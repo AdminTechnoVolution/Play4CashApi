@@ -74,7 +74,21 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       await room.save();
       const prize = room.bet_amount * (2 - room.house_edge / 100);
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      client.to(room_id).emit('halma', { success: false, data: { outcome: 'opponent_disconnected', gameEnded: true }, messages: ['Opponent disconnected. You win!'] });
+      const winnerUsername = await this.getCachedUsername(winner_id.toString());
+      const sockets = await this.server.in(room_id).fetchSockets();
+      for (const s of sockets) {
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        (s as unknown as Socket).emit('halma', {
+          success: false, 
+          data: { 
+            outcome: 'opponent_disconnected', 
+            gameEnded: true,
+            winner: sIsSpectator ? winnerUsername : winner_id,
+            isSpectator: sIsSpectator
+          }, 
+          messages: sIsSpectator ? ['A player disconnected. Game over.'] : ['Opponent disconnected. You win!'] 
+        });
+      }
 
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });

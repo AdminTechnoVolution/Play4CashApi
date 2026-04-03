@@ -262,10 +262,10 @@ export class RoomService {
       
       // Notify game namespaces of spectator count change
       const commonPayload = { success: true, data: { spectatorsCount: updated?.spectators?.length || 0 }, messages: [] };
-      await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', commonPayload);
-      await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload);
-      await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload);
-      await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload);
+      await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', commonPayload, commonPayload);
+      await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload, commonPayload);
+      await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload, commonPayload);
+      await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload, commonPayload);
 
       return updated;
     }
@@ -311,7 +311,7 @@ export class RoomService {
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
         
         // Notify game namespaces too
-        this.navalBattleGateway.server.to(roomId).emit('naval-battle', {
+        this.serverBroadcast(roomId, {
           success: false,
           data: { outcome: 'match_cancelled', gameEnded: true },
           messages: ['The game was cancelled before starting']
@@ -322,12 +322,13 @@ export class RoomService {
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomUpdated', enriched);
 
         // Notify game namespaces of opponent leaving - only notify others!
-        const commonPayload = { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: isNavalBattle }, messages: ['Opponent left the lobby.'] };
+        const playerPayload = { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: isNavalBattle, isSpectator: false }, messages: ['Opponent left the lobby.'] };
+        const spectatorPayload = { success: true, data: { playerLeft: true, waitingForOpponent: true, isSpectator: true }, messages: ['A player left the lobby.'] };
         
-        await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', commonPayload);
-        await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload);
-        await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload);
-        await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload);
+        await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
       }
       return updated;
     }
@@ -349,13 +350,24 @@ export class RoomService {
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
 
         // Notify game namespaces of forfeit - only notify others!
-        const commonData = { gameEnded: true, outcome: 'forfeit', youWon: true, winner: winner_id, reason: 'forfeit', prize };
-        const commonPayload = { success: true, data: commonData, messages: ['Opponent disconnected. You win by forfeit!'] };
+        const winnerUser = await this.userModel.findById(winner_id).select('username').lean();
+        const winnerUsername = winnerUser?.username || 'Unknown';
         
-        await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', commonPayload);
-        await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload);
-        await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload);
-        await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload);
+        const playerPayload = { 
+          success: true, 
+          data: { gameEnded: true, outcome: 'forfeit', youWon: true, winner: winner_id, reason: 'forfeit', prize, isSpectator: false }, 
+          messages: ['Opponent disconnected. You win by forfeit!'] 
+        };
+        const spectatorPayload = { 
+          success: true, 
+          data: { gameEnded: true, outcome: 'forfeit', youWon: false, winner: winnerUsername, reason: 'forfeit', isSpectator: true }, 
+          messages: ['A player disconnected. Game over.'] 
+        };
+        
+        await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
       }
     }
 
@@ -484,13 +496,22 @@ export class RoomService {
   }
 
   /** Helper to emit to all sockets in a room except those belonging to specific user */
-  private async emitToOthers(gateway: any, roomId: string, excludeUserId: string, eventName: string, payload: any) {
+  private async emitToOthers(gateway: any, roomId: string, excludeUserId: string, eventName: string, playerPayload: any, spectatorPayload: any) {
     if (!gateway?.server) return;
     const sockets = await gateway.server.in(roomId).fetchSockets();
     for (const s of sockets) {
       if (s.data?.player_id !== excludeUserId) {
-        s.emit(eventName, payload);
+        const isSpectator = (s as any).data?.isSpectator || false;
+        s.emit(eventName, isSpectator ? spectatorPayload : playerPayload);
       }
     }
+  }
+
+  /** Helper to emit to ALL sockets in a room */
+  private async serverBroadcast(roomId: string, payload: any) {
+    this.navalBattleGateway.server.to(roomId).emit('naval-battle', payload);
+    this.halmaGateway.server.to(roomId).emit('halma', payload);
+    this.chessGateway.server.to(roomId).emit('chess', payload);
+    this.dominoGateway.server.to(roomId).emit('domino', payload);
   }
 }

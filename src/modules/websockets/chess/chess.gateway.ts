@@ -108,10 +108,21 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       await room.save();
       const prize = room.bet_amount * (2 - room.house_edge / 100);
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      client.to(room_id).emit('chess', {
-    success: false, messages: ['Your opponent disconnected. You win!'],
-    data: { outcome: 'opponent_disconnected', gameEnded: true },
-});
+      const winnerUsername = await this.getCachedUsername(winner_id.toString());
+      const sockets = await this.server.in(room_id).fetchSockets();
+      for (const s of sockets) {
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        (s as unknown as Socket).emit('chess', {
+          success: false, 
+          messages: sIsSpectator ? ['A player disconnected. Game over.'] : ['Your opponent disconnected. You win!'],
+          data: { 
+            outcome: 'opponent_disconnected', 
+            gameEnded: true,
+            winner: sIsSpectator ? winnerUsername : winner_id,
+            isSpectator: sIsSpectator
+          },
+        });
+      }
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
