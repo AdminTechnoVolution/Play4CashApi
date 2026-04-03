@@ -9,7 +9,7 @@ class OpenEnds {
   @Prop() right: number;
 }
 
-@Schema({ versionKey: false, timestamps: true })
+@Schema({ versionKey: '__v', timestamps: true, optimisticConcurrency: true })
 export class DominoGame {
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Room', required: true, unique: true }) room_id: Types.ObjectId;
   @Prop([{ type: MongooseSchema.Types.ObjectId, ref: 'User', required: true }]) player_ids: Types.ObjectId[];

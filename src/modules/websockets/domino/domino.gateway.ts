@@ -45,6 +45,25 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     private readonly i18n: I18nService,
   ) {}
 
+  private async runWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+    let lastError;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (error) {
+        if (error.name === 'VersionError' || error.message?.includes('version')) {
+          this.logger.warn(`[Domino] 🔄 Version collision detected, retrying... (${i + 1}/${maxRetries})`);
+          lastError = error;
+          await new Promise(resolve => setTimeout(resolve, 50 * (i + 1))); // Incremental backoff
+          continue;
+        }
+        throw error;
+      }
+    }
+    this.logger.error(`[Domino] ❌ Max retries reached for game action`);
+    throw lastError;
+  }
+
   afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
 
   handleConnection(client: Socket) { this.logger.log(`[Domino] Connected: ${client.id}`); }
@@ -112,11 +131,14 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
     await client.join(room_id);
     client.data.room_id = room_id;
-    client.data.isSpectator = !isMember;
+
+    // Check if player is eliminated in an active game
+    const game = await this.dominoModel.findOne({ room_id });
+    const isEliminated = game?.eliminated_players?.includes(player_id);
+    client.data.isSpectator = !isMember || isEliminated;
 
     if (client.data.isSpectator) {
-      this.logger.log(`[Domino] 👀 Spectator joined | room=${room_id} | player=${player_id}`);
-      const game = await this.dominoModel.findOne({ room_id });
+      this.logger.log(`[Domino] 👀 User joined as SPECTATOR | room=${room_id} | player=${player_id} | isMember=${isMember}`);
       if (game) {
         const currentTurnPlayerId = game.player_ids[game.current_player_index]?.toString();
         const turnUsername = await this.getCachedUsername(currentTurnPlayerId);
@@ -153,19 +175,33 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
     client.data.playerNum = playerIndex + 1;
 
-    if (room.status === 'started') {
-      const game = await this.dominoModel.findOne({ room_id });
-      if (game) {
-        const currentTurnPlayerId = game.player_ids[game.current_player_index]?.toString();
-        const isMyTurn = currentTurnPlayerId === player_id;
-        const turnUsername = await this.getCachedUsername(currentTurnPlayerId);
-        return client.emit('domino', { success: true, messages: [], data: {
+    if (room.status === 'started' && game) {
+      const currentTurnPlayerId = game.player_ids[game.current_player_index]?.toString();
+      const isMyTurn = currentTurnPlayerId === player_id;
+      const turnUsername = await this.getCachedUsername(currentTurnPlayerId);
+      const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
+      
+      const playersData: any = {};
+      for (let i = 0; i < room.players.length; i++) {
+        playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
+      }
+
+      this.logger.log(`[Domino] 🏠 Re-joined STARTED game | room=${room_id} | player=${player_id} | asSpectator=${client.data.isSpectator}`);
+
+      return client.emit('domino', {
+        success: true, messages: [], data: {
           board: game.board, hand: game.hands.get(player_id) || [],
+          boneyardCount: game.boneyard.length,
           yourTurn: isMyTurn, turnTimerSeconds: 30,
           currentTurnUsername: turnUsername,
-          waitingForOpponent: false, gameStarted: true, youWon: false, isSpectator: false
-        }});
-      }
+          waitingForOpponent: false, gameStarted: true, youWon: false, isSpectator: false,
+          handCount,
+          ...playersData,
+          shotFrom: turnUsername,
+          turnOf: turnUsername,
+          history: room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: playersData[`player${i + 1}`] })))
+        }
+      });
     }
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
@@ -234,212 +270,242 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; tile: number[]; side: 'left' | 'right' }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    this.logger.log(`[Domino] 🁣 Move received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id, tile, side } = payload;
     const player_id = client.data.player_id;
     if (!room_id || !tile || !side) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
 
-    const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
+    await this.runWithRetry(async () => {
+      const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game) throw new Error('Game not found');
+      if (game.player_ids[game.current_player_index]?.toString() !== player_id) throw new Error('Not your turn');
 
-    const { valid, flippedTile } = validateMove(tile as [number, number], side, game.open_ends || {});
-    if (!valid) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
-
-    const hand = game.hands.get(player_id) || [];
-    const tileIdx = hand.findIndex(([v1, v2]) => (v1 === tile[0] && v2 === tile[1]) || (v1 === tile[1] && v2 === tile[0]));
-    if (tileIdx === -1) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
-    hand.splice(tileIdx, 1);
-    game.hands.set(player_id, hand);
-
-    await this.roomModel.updateOne(
-      { _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) },
-      { $push: { 'players.$.moves': { data: { tile, side, type: 'move' } } } }
-    );
-
-    if (side === 'left') {
-      game.board.unshift(flippedTile);
-      game.open_ends = game.open_ends || {};
-      game.open_ends.left = flippedTile[0];
-      if (game.board.length === 1) game.open_ends.right = flippedTile[1];
-    } else {
-      game.board.push(flippedTile);
-      game.open_ends = game.open_ends || {};
-      game.open_ends.right = flippedTile[1];
-      if (game.board.length === 1) game.open_ends.left = flippedTile[0];
-    }
-
-    game.consecutive_passes = 0;
-    const playerIdsStr = game.player_ids.map((p: any) => p.toString());
-    const eliminated = game.eliminated_players || [];
-    game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, eliminated);
-    game.turn_start_time = new Date();
-
-    const handsObj = Object.fromEntries(game.hands);
-    const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
-
-    const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-
-    if (result.finished) {
-      room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
-      if (result.winner) {
-        room.winner = new Types.ObjectId(result.winner);
-        const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
-        await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
-      }
-      await room.save();
-      const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
-    }
-    await game.save();
-
-    const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
-    const sockets = await this.server.in(room_id).fetchSockets();
-    const timerSec = 30;
-    const nextPlayerId = game.player_ids[game.current_player_index].toString();
-    const nextUsername = await this.getCachedUsername(nextPlayerId);
-    const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
-    clearTimer(client.id);
-    if (!result.finished && nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
-
-    for (const s of sockets) {
-      const pid = (s as any).data.player_id;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const sLang = this.getLang(s as unknown as Socket);
-      const isWinner = !sIsSpectator && result.winner === pid;
-      const winnerUsername = result.winner ? await this.getCachedUsername(result.winner) : null;
-
-      const sData: any = {
-        board: game.board, yourTurn: !result.finished && pid === nextPlayerId && !sIsSpectator,
-        turnTimerSeconds: result.finished ? 0 : timerSec, currentTurnUsername: nextUsername,
-        gameEnded: result.finished, outcome: isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : '')), youWon: isWinner,
-        winner: result.winner, 
-        reason: result.reason, handCount, isSpectator: sIsSpectator
-      };
-      if (sIsSpectator) {
-         if (result.finished && result.winner) { sData.winner = winnerUsername; sData.turnOf = winnerUsername; } else if (!result.finished) { sData.turnOf = nextUsername; }
+      const { valid, flippedTile } = validateMove(tile as [number, number], side, game.open_ends || {});
+      if (!valid) {
+        this.logger.warn(`[Domino] ❌ Invalid move (validation failed) | player=${player_id} | tile=${JSON.stringify(tile)} | side=${side} | open_ends=${JSON.stringify(game.open_ends)}`);
+        client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+        return;
       }
 
-      let msg = '';
-      if (result.finished) {
-        if (sIsSpectator) msg = result.winner ? this.i18n.translate('ws.games.wins', sLang, { username: winnerUsername! }) : this.i18n.translate('ws.games.drawGeneric', sLang);
-        else msg = this.i18n.translate('ws.games.gameOver', sLang);
+      const hand = game.hands.get(player_id) || [];
+      const t0 = Number(tile[0]), t1 = Number(tile[1]);
+      const tileIdx = hand.findIndex(([v1, v2]) => (v1 === t0 && v2 === t1) || (v1 === t1 && v2 === t0));
+
+      if (tileIdx === -1) {
+        this.logger.warn(`[Domino] ❌ Invalid move (tile not in hand) | player=${player_id} | tile=${JSON.stringify(tile)} | hand=${JSON.stringify(hand)}`);
+        client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+        return;
+      }
+
+      // Record move in room
+      await this.roomModel.updateOne(
+        { _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) },
+        { $push: { 'players.$.moves': { data: { tile, side, type: 'move' } } } }
+      );
+
+      // Immutable state updates
+      const newHand = hand.filter((_, i) => i !== tileIdx);
+      game.hands.set(player_id, newHand);
+
+      if (side === 'left') {
+        game.board = [flippedTile, ...game.board];
+        game.open_ends = { left: flippedTile[0], right: game.board.length === 1 ? flippedTile[1] : game.open_ends?.right };
       } else {
-        msg = sIsSpectator ? this.i18n.translate('ws.games.opponentMoved', sLang) : this.i18n.translate('ws.games.moveAccepted', sLang);
+        game.board = [...game.board, flippedTile];
+        game.open_ends = { right: flippedTile[1], left: game.board.length === 1 ? flippedTile[0] : game.open_ends?.left };
       }
 
-      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
-    }
+      game.consecutive_passes = 0;
+      const playerIdsStr = game.player_ids.map((p: any) => p.toString());
+      const eliminated = game.eliminated_players || [];
+      game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, eliminated);
+      game.turn_start_time = new Date();
+
+      const handsObj = Object.fromEntries(game.hands);
+      const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
+
+      const room = await this.roomModel.findById(room_id);
+      if (result.finished && room) {
+        room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
+        if (result.winner) {
+          room.winner = new Types.ObjectId(result.winner);
+          const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
+          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
+        }
+        await room.save();
+        const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+        if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
+      }
+
+      game.markModified('hands');
+      game.markModified('board');
+      game.markModified('open_ends');
+      await game.save();
+
+      this.logger.log(`[Domino] ✅ Move SUCCESS | player=${player_id} | tile=${JSON.stringify(tile)} | boardLen=${game.board.length} | ends=${JSON.stringify(game.open_ends)} | tilesRemaining=${newHand.length}`);
+
+      const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
+      const sockets = await this.server.in(room_id).fetchSockets();
+      const nextPlayerId = game.player_ids[game.current_player_index].toString();
+      const nextUsername = await this.getCachedUsername(nextPlayerId);
+      const timerSec = 30;
+
+      clearTimer(client.id);
+      const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
+      if (!result.finished && nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
+
+      const shotFrom = await this.getCachedUsername(player_id);
+
+      for (const s of sockets) {
+        const pid = (s as any).data.player_id;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const sLang = this.getLang(s as unknown as Socket);
+        const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+        const isMyTurn = !sIsSpectator && pid === nextPlayerId;
+        const isWinner = !sIsSpectator && result.winner === pid;
+        const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
+        const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+
+        const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: flippedTile, lastSide: side, lastPlayer: player_id, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason, prize, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, handCount, isSpectator: sIsSpectator };
+        if (sIsSpectator) { sData.shotFrom = shotFrom; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = result.winner ? await this.getCachedUsername(result.winner) : null; }
+
+        let msg = '';
+        if (result.finished) msg = isWinner ? this.i18n.translate('ws.games.youWin', sLang) : this.i18n.translate('ws.games.gameOver', sLang);
+        else msg = isMyTurn ? this.i18n.translate('ws.domino.yourTurn', sLang) : this.i18n.translate('ws.domino.waitingForOther', sLang, { username: nextUsername });
+
+        (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
+      }
+    });
   }
 
   @SubscribeMessage('draw')
   async handleDraw(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    this.logger.log(`[Domino] 🃏 Draw received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const player_id = client.data.player_id;
     if (!room_id) return;
-    const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
-    if (game.boneyard.length === 0) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.domino.boneyardEmpty', lang)] });
 
-    const drawn = game.boneyard.splice(0, 1)[0];
-    const hand = game.hands.get(player_id) || [];
-    hand.push(drawn);
-    game.hands.set(player_id, hand);
-    await game.save();
+    await this.runWithRetry(async () => {
+      const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game) throw new Error('Game not found');
+      if (game.player_ids[game.current_player_index]?.toString() !== player_id) throw new Error('Not your turn');
+      if (game.boneyard.length === 0) {
+        client.emit('domino', { success: false, messages: [this.i18n.translate('ws.domino.boneyardEmpty', lang)] });
+        return;
+      }
 
-    const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
-    const sockets = await this.server.in(room_id).fetchSockets();
-    const timerSec = 30;
-    const drawingPlayerSocket = sockets.find(s => (s as any).data.player_id === player_id);
-    clearTimer(client.id);
-    if (drawingPlayerSocket) this.startTimer(drawingPlayerSocket as unknown as Socket, room_id, timerSec);
+      const currentBoneyard = [...game.boneyard];
+      const drawn = currentBoneyard.pop();
+      if (!drawn) throw new Error('Boneyard unexpectedly empty');
 
-    const turnUsername = await this.getCachedUsername(player_id);
+      const hand = game.hands.get(player_id) || [];
+      const newHand = [...hand, drawn as [number, number]];
+      game.hands.set(player_id, newHand);
+      game.boneyard = currentBoneyard;
 
-    for (const s of sockets) {
-      const pid = (s as any).data.player_id;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const sLang = this.getLang(s as unknown as Socket);
-      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
-      const isDrawingPlayer = !sIsSpectator && pid === player_id;
-      
-      const sData: any = { 
-        board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, yourTurn: isDrawingPlayer, turnTimerSeconds: timerSec, currentTurnUsername: turnUsername, handCount, isSpectator: sIsSpectator
-      };
-      if (sIsSpectator) { sData.shotFrom = turnUsername; sData.turnOf = turnUsername; }
+      game.markModified('hands');
+      game.markModified('boneyard');
+      await game.save();
 
-      const msg = isDrawingPlayer ? this.i18n.translate('ws.domino.drewTile', sLang) : this.i18n.translate('ws.domino.opponentDrew', sLang, { username: turnUsername });
-      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
-    }
+      this.logger.log(`[Domino] 🁣 Draw SUCCESS | player=${player_id} | drawn=${JSON.stringify(drawn)} | boneyardLeft=${game.boneyard.length} | handSize=${newHand.length}`);
+
+      const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
+      const sockets = await this.server.in(room_id).fetchSockets();
+      const timerSec = 30;
+      clearTimer(client.id);
+      const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === player_id);
+      if (nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
+
+      const turnUsername = await this.getCachedUsername(player_id);
+
+      for (const s of sockets) {
+        const pid = (s as any).data.player_id;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const sLang = this.getLang(s as unknown as Socket);
+        const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+        const isDrawingPlayer = !sIsSpectator && pid === player_id;
+
+        const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, yourTurn: isDrawingPlayer, turnTimerSeconds: timerSec, currentTurnUsername: turnUsername, handCount, isSpectator: sIsSpectator };
+        if (sIsSpectator) { sData.shotFrom = turnUsername; sData.turnOf = turnUsername; }
+
+        const msg = isDrawingPlayer ? this.i18n.translate('ws.domino.drewTile', sLang) : this.i18n.translate('ws.domino.opponentDrew', sLang, { username: turnUsername });
+        (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
+      }
+    });
   }
 
   @SubscribeMessage('pass')
   async handlePass(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    this.logger.log(`[Domino] ⏩ Pass received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const player_id = client.data.player_id;
     if (!room_id) return;
-    const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
 
-    game.consecutive_passes++;
-    const playerIdsStr = game.player_ids.map((p: any) => p.toString());
-    const eliminated = game.eliminated_players || [];
-    game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, eliminated);
-    game.turn_start_time = new Date();
+    await this.runWithRetry(async () => {
+      const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game) throw new Error('Game not found');
+      if (game.player_ids[game.current_player_index]?.toString() !== player_id) throw new Error('Not your turn');
 
-    const handsObj = Object.fromEntries(game.hands);
-    const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
+      game.consecutive_passes++;
+      const playerIdsStr = game.player_ids.map((p: any) => p.toString());
+      const eliminated = game.eliminated_players || [];
+      game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, eliminated);
+      game.turn_start_time = new Date();
 
-    const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+      const handsObj = Object.fromEntries(game.hands);
+      const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
 
-    if (result.finished) {
-      room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
-      if (result.winner) { room.winner = new Types.ObjectId(result.winner); const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100); await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } }); }
-      await room.save();
-      const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
-    }
-    await game.save();
-    const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
-    const sockets = await this.server.in(room_id).fetchSockets();
-    const nextPlayerId = game.player_ids[game.current_player_index].toString();
-    const nextPassUsername = await this.getCachedUsername(nextPlayerId);
-    const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
-    const timerSec = 30;
-    clearTimer(client.id);
-    if (!result.finished && nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
+      const room = await this.roomModel.findById(room_id);
+      if (result.finished && room) {
+        room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
+        if (result.winner) {
+          room.winner = new Types.ObjectId(result.winner);
+          const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
+          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
+        }
+        await room.save();
+        const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+        if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
+      }
 
-    const shotFrom = await this.getCachedUsername(player_id);
+      game.markModified('consecutive_passes');
+      await game.save();
 
-    for (const s of sockets) {
-      const pid = (s as any).data.player_id;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const sLang = this.getLang(s as unknown as Socket);
-      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
-      const isMyTurn = !sIsSpectator && pid === nextPlayerId;
-      const isWinner = !sIsSpectator && result.winner === pid;
-      const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
-      const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+      this.logger.log(`[Domino] ⏩ Pass SUCCESS | player=${player_id} | consecutivePasses=${game.consecutive_passes}`);
 
-      const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, passed: true, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason, prize, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextPassUsername, handCount, isSpectator: sIsSpectator };
-      if (sIsSpectator) { sData.shotFrom = shotFrom; sData.turnOf = nextPassUsername; if (result.finished && result.winner) sData.winner = await this.getCachedUsername(result.winner); }
+      const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
+      const sockets = await this.server.in(room_id).fetchSockets();
+      const nextPlayerId = game.player_ids[game.current_player_index].toString();
+      const nextUsername = await this.getCachedUsername(nextPlayerId);
+      const timerSec = 30;
 
-      let msg = '';
-      if (result.finished) msg = this.i18n.translate('ws.games.gameOver', sLang);
-      else msg = isMyTurn ? this.i18n.translate('ws.domino.opponentPassed', sLang, { username: shotFrom }) : (pid === player_id ? this.i18n.translate('ws.domino.passed', sLang) : this.i18n.translate('ws.domino.opponentPassed', sLang, { username: shotFrom }));
+      clearTimer(client.id);
+      const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
+      if (!result.finished && nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
 
-      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
-    }
+      const shotFrom = await this.getCachedUsername(player_id);
+
+      for (const s of sockets) {
+        const pid = (s as any).data.player_id;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const sLang = this.getLang(s as unknown as Socket);
+        const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+        const sIsMyTurn = !sIsSpectator && pid === nextPlayerId;
+        const isWinner = !sIsSpectator && result.winner === pid;
+        const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
+        const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+
+        const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, passed: true, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason, prize, yourTurn: sIsMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, handCount, isSpectator: sIsSpectator };
+        if (sIsSpectator) { sData.shotFrom = shotFrom; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = result.winner ? await this.getCachedUsername(result.winner) : null; }
+
+        let msg = '';
+        if (result.finished) msg = this.i18n.translate('ws.games.gameOver', sLang);
+        else msg = sIsMyTurn ? this.i18n.translate('ws.domino.opponentPassed', sLang, { username: shotFrom }) : (pid === player_id ? this.i18n.translate('ws.domino.passed', sLang) : this.i18n.translate('ws.domino.opponentPassed', sLang, { username: shotFrom }));
+
+        (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
+      }
+    });
   }
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {
@@ -456,68 +522,87 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     turnTimers.set(socket.id, t);
   }
 
-  private async eliminatePlayer(room_id: string, player_id: string, reason: 'forfeit' | 'timeout') {
-    const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return;
-    const room = await this.roomModel.findById(room_id);
-    if (!room || room.status !== 'started') return;
+  public async eliminatePlayer(room_id: string, player_id: string, reason: 'forfeit' | 'timeout') {
+    await this.runWithRetry(async () => {
+      const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game) return;
+      const room = await this.roomModel.findById(room_id);
+      if (!room || room.status !== 'started') return;
 
-    const playerIdsStr = game.player_ids.map((p: any) => p.toString());
-    const eliminated = game.eliminated_players || [];
-    if (eliminated.includes(player_id)) return;
+      const playerIdsStr = game.player_ids.map((p: any) => p.toString());
+      const eliminated = game.eliminated_players || [];
+      if (eliminated.includes(player_id)) return;
 
-    const hand = game.hands.get(player_id) || [];
-    if (hand.length > 0) { game.boneyard.push(...hand); game.hands.set(player_id, []); }
-    eliminated.push(player_id);
-    game.eliminated_players = eliminated;
+      const hand = game.hands.get(player_id) || [];
+      if (hand.length > 0) {
+        this.logger.log(`[Domino] 🔄 Returning tiles to boneyard | player=${player_id} | tiles=${JSON.stringify(hand)}`);
+        game.boneyard = [...game.boneyard, ...hand];
+        game.hands.set(player_id, []);
+      }
+      
+      this.logger.log(`[Domino] 🚪 ELIMINATING player | player=${player_id} | reason=${reason} | remainingActive=${playerIdsStr.filter(id => !eliminated.includes(id) && id !== player_id).length}`);
+      
+      const newEliminated = [...eliminated, player_id];
+      game.eliminated_players = newEliminated;
 
-    const currentPlayerId = playerIdsStr[game.current_player_index];
-    if (currentPlayerId === player_id) { game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, eliminated); game.turn_start_time = new Date(); }
-    game.consecutive_passes = 0;
+      const currentPlayerId = playerIdsStr[game.current_player_index];
+      if (currentPlayerId === player_id) {
+        game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, newEliminated);
+        game.turn_start_time = new Date();
+      }
+      game.consecutive_passes = 0;
 
-    const handsObj = Object.fromEntries(game.hands);
-    const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
+      const handsObj = Object.fromEntries(game.hands);
+      const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, newEliminated);
 
-    if (result.finished) {
-      room.status = 'finished'; room.winner_reason = result.reason || reason; room.finished_at = new Date();
-      if (result.winner) { room.winner = new Types.ObjectId(result.winner); const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100); await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } }); }
-      await room.save();
-      const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
-    }
-    await game.save();
+      if (result.finished) {
+        room.status = 'finished'; room.winner_reason = result.reason || reason; room.finished_at = new Date();
+        if (result.winner) {
+          room.winner = new Types.ObjectId(result.winner);
+          const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
+          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
+        }
+        await room.save();
+        const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+        if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
+      }
 
-    const sockets = await this.server.in(room_id).fetchSockets();
-    const nextPlayerId = playerIdsStr[game.current_player_index];
-    const nextUsername = await this.getCachedUsername(nextPlayerId);
-    const eliminatedUsername = await this.getCachedUsername(player_id);
-    const timerSec = 30;
-    const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
+      game.markModified("hands");
+      game.markModified("boneyard");
+      game.markModified("eliminated_players");
+      await game.save();
 
-    if (!result.finished) {
-      const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
-      if (nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
-    }
+      const sockets = await this.server.in(room_id).fetchSockets();
+      const nextPlayerId = playerIdsStr[game.current_player_index];
+      const nextUsername = await this.getCachedUsername(nextPlayerId);
+      const eliminatedUsername = await this.getCachedUsername(player_id);
+      const timerSec = 30;
+      const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
 
-    for (const s of sockets) {
-      const pid = (s as any).data.player_id;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const sLang = this.getLang(s as unknown as Socket);
-      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
-      const isMyTurn = !sIsSpectator && pid === nextPlayerId;
-      const isWinner = !sIsSpectator && result.winner === pid;
-      const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
-      const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
-      const winnerUsername = result.winner ? await this.getCachedUsername(result.winner) : null;
+      if (!result.finished) {
+        const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
+        if (nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
+      }
 
-      const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, yourTurn: !result.finished && isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, playerEliminated: eliminatedUsername, eliminationReason: reason, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason || reason, prize, handCount, isSpectator: sIsSpectator };
-      if (sIsSpectator) { sData.shotFrom = eliminatedUsername; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = winnerUsername; }
+      for (const s of sockets) {
+        const pid = (s as any).data.player_id;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const sLang = this.getLang(s as unknown as Socket);
+        const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+        const sIsMyTurn = !sIsSpectator && pid === nextPlayerId;
+        const isWinner = !sIsSpectator && result.winner === pid;
+        const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
+        const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
 
-      let msg = '';
-      if (result.finished) msg = isWinner ? this.i18n.translate('ws.domino.youWinElimination', sLang) : this.i18n.translate('ws.games.gameOver', sLang);
-      else msg = this.i18n.translate('ws.domino.playerEliminated', sLang, { username: eliminatedUsername });
+        const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, yourTurn: !result.finished && sIsMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, playerEliminated: eliminatedUsername, eliminationReason: reason, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason || reason, prize, handCount, isSpectator: sIsSpectator };
+        if (sIsSpectator) { sData.shotFrom = eliminatedUsername; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = result.winner ? await this.getCachedUsername(result.winner) : null; }
 
-      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
-    }
+        let msg = '';
+        if (result.finished) msg = isWinner ? this.i18n.translate('ws.domino.youWinElimination', sLang) : this.i18n.translate('ws.games.gameOver', sLang);
+        else msg = this.i18n.translate('ws.domino.playerEliminated', sLang, { username: eliminatedUsername });
+
+        (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
+      }
+    });
   }
 }

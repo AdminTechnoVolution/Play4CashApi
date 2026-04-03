@@ -194,7 +194,8 @@ export class RoomService {
     if (roomInfo.status !== RoomStatus.STARTED) throw new BusinessException('ERROR_ROOM_NOT_STARTED', 400);
 
     const isPlayer = roomInfo.players.some((p: any) => p.playerId.toString() === userId);
-    if (isPlayer) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
+    // Allow players to spectate if they was previously in the room but now the room is started (e.g. they were eliminated)
+    if (isPlayer && roomInfo.status !== RoomStatus.STARTED) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
 
     const isSpectating = roomInfo.spectators?.some((s: any) => s.toString() === userId);
     if (!isSpectating) {
@@ -335,39 +336,49 @@ export class RoomService {
 
     // STARTED → forfeit
     if (roomInfo.status === RoomStatus.STARTED) {
-      const winner_id = roomInfo.players.find((p: any) => p.playerId.toString() !== userId)?.playerId;
-      if (winner_id) {
-        roomInfo.status = RoomStatus.FINISHED as any;
-        (roomInfo as any).winner = winner_id;
-        (roomInfo as any).winner_reason = 'forfeit';
-        (roomInfo as any).finished_at = new Date();
-        await roomInfo.save();
+      const numPlayersAtStart = roomInfo.players.length;
+      const gameSocketCode = (roomInfo.game_id as any)?.socket_code;
+      const isDomino = gameSocketCode === 'domino';
 
-        const prize = roomInfo.bet_amount * (2 - roomInfo.house_edge / 100);
-        await this.userModel.updateOne({ _id: winner_id }, { $inc: { balance: prize } });
+      if (numPlayersAtStart > 2 && isDomino) {
+        // Multi-player game: eliminate the player, let others continue
+        await this.dominoGateway.eliminatePlayer(roomId, userId, 'forfeit');
+      } else {
+        // Standard 1v1 forfeit (or multi-player where only 2 were left)
+        const winner_id = roomInfo.players.find((p: any) => p.playerId.toString() !== userId)?.playerId;
+        if (winner_id) {
+          roomInfo.status = RoomStatus.FINISHED as any;
+          (roomInfo as any).winner = winner_id;
+          (roomInfo as any).winner_reason = 'forfeit';
+          (roomInfo as any).finished_at = new Date();
+          await roomInfo.save();
 
-        const gameId = (roomInfo.game_id as any)?.toString();
-        if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
+          const prize = roomInfo.bet_amount * (numPlayersAtStart - roomInfo.house_edge / 100);
+          await this.userModel.updateOne({ _id: winner_id }, { $inc: { balance: prize } });
 
-        // Notify game namespaces of forfeit - only notify others!
-        const winnerUser = await this.userModel.findById(winner_id).select('username').lean();
-        const winnerUsername = winnerUser?.username || 'Unknown';
-        
-        const playerPayload = { 
-          success: true, 
-          data: { gameEnded: true, outcome: 'forfeit', youWon: true, winner: winner_id, reason: 'forfeit', prize, isSpectator: false }, 
-          messages: ['Opponent disconnected. You win by forfeit!'] 
-        };
-        const spectatorPayload = { 
-          success: true, 
-          data: { gameEnded: true, outcome: 'forfeit', youWon: false, winner: winnerUsername, reason: 'forfeit', isSpectator: true }, 
-          messages: ['A player disconnected. Game over.'] 
-        };
-        
-        await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', playerPayload, spectatorPayload);
-        await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', playerPayload, spectatorPayload);
-        await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
-        await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
+          const gameId = (roomInfo.game_id as any)?._id?.toString() || (roomInfo.game_id as any)?.toString();
+          if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
+
+          // Notify game namespaces of forfeit - only notify others!
+          const winnerUser = await this.userModel.findById(winner_id).select('username').lean();
+          const winnerUsername = winnerUser?.username || 'Unknown';
+          
+          const playerPayload = { 
+            success: true, 
+            data: { gameEnded: true, outcome: 'forfeit', youWon: true, winner: winner_id, reason: 'forfeit', prize, isSpectator: false }, 
+            messages: ['Opponent disconnected. You win by forfeit!'] 
+          };
+          const spectatorPayload = { 
+            success: true, 
+            data: { gameEnded: true, outcome: 'forfeit', youWon: false, winner: winnerUsername, reason: 'forfeit', isSpectator: true }, 
+            messages: ['A player disconnected. Game over.'] 
+          };
+          
+          await this.emitToOthers(this.navalBattleGateway, roomId, userId, 'naval-battle', playerPayload, spectatorPayload);
+          await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', playerPayload, spectatorPayload);
+          await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
+          await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
+        }
       }
     }
 
