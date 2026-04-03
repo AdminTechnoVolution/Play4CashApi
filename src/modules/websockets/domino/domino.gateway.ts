@@ -303,12 +303,13 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
-      const myHand = game.hands.get(pid) || [];
-      const isMyTurn = pid === nextPlayerId;
-      const isWinner = result.winner === pid;
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+      const isMyTurn = !sIsSpectator && pid === nextPlayerId;
+      const isWinner = !sIsSpectator && result.winner === pid;
       const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
       const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
-      const sIsSpectator = (s as any).data.isSpectator || false;
+      
       const sData: any = { 
         board: game.board, 
         hand: myHand, 
@@ -322,12 +323,13 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         gameEnded: result.finished, 
         outcome,
         youWon: isWinner,
-        isSpectator: sIsSpectator,
         winner: result.winner, 
         reason: result.reason, 
         prize,
-        handCount
+        handCount,
+        isSpectator: sIsSpectator
       };
+
       if (sIsSpectator) {
          Object.assign(sData, playersData);
          sData.shotFrom = shotFrom;
@@ -354,6 +356,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     if (!room_id) return;
     const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
     if (!game) return client.emit('domino', { success: false, messages: ['Game not found'] });
+    const room = await this.roomModel.findById(room_id);
+    if (!room) return client.emit('domino', { success: false, messages: ['Room not found'] });
     if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: ['Not your turn.'] });
     if (game.boneyard.length === 0) return client.emit('domino', { success: false, messages: ['Boneyard empty.'] });
 
@@ -373,12 +377,39 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const turnUser = await this.userModel.findById(player_id).select('username');
     const turnUsername = turnUser?.username || 'Unknown';
 
+    const playersData: any = {};
+    for (let i = 0; i < room.players.length; i++) {
+      playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
+    }
+    const shotFrom = await this.getCachedUsername(player_id);
+
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
-      const myHand = game.hands.get(pid) || [];
-      const isDrawingPlayer = pid === player_id;
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+      const isDrawingPlayer = !sIsSpectator && pid === player_id;
       
-      (s as unknown as Socket).emit('domino', { success: true, data: { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, yourTurn: isDrawingPlayer, turnTimerSeconds: timerSec, currentTurnUsername: turnUsername, handCount }, messages: [isDrawingPlayer ? 'You drew a tile.' : 'Opponent drew a tile.'] });
+      const sData: any = { 
+        board: game.board, 
+        hand: myHand, 
+        boneyardCount: game.boneyard.length, 
+        lastTile: null, 
+        lastSide: null, 
+        lastPlayer: player_id, 
+        yourTurn: isDrawingPlayer, 
+        turnTimerSeconds: timerSec, 
+        currentTurnUsername: turnUsername, 
+        handCount,
+        isSpectator: sIsSpectator
+      };
+
+      if (sIsSpectator) {
+         Object.assign(sData, playersData);
+         sData.shotFrom = shotFrom;
+         sData.turnOf = turnUsername;
+      }
+
+      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: sIsSpectator ? ['A player drew a tile.'] : [isDrawingPlayer ? 'You drew a tile.' : 'Opponent drew a tile.'] });
     }
   }
 
@@ -432,13 +463,13 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
-      const myHand = game.hands.get(pid) || [];
-      const isMyTurn = pid === nextPlayerId;
-      const isWinner = result.winner === pid;
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+      const isMyTurn = !sIsSpectator && pid === nextPlayerId;
+      const isWinner = !sIsSpectator && result.winner === pid;
       const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
       const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
 
-      const sIsSpectator = (s as any).data.isSpectator || false;
       const sData: any = { 
         board: game.board, 
         hand: myHand, 
@@ -450,15 +481,16 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         gameEnded: result.finished, 
         outcome,
         youWon: isWinner,
-        isSpectator: sIsSpectator,
         winner: result.winner, 
         reason: result.reason, 
         prize,
         yourTurn: isMyTurn, 
         turnTimerSeconds: timerSec, 
         currentTurnUsername: nextPassUsername,
-        handCount
+        handCount,
+        isSpectator: sIsSpectator
       };
+
       if (sIsSpectator) {
          Object.assign(sData, playersData);
          sData.shotFrom = shotFrom;
@@ -567,37 +599,53 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       if (nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
     }
 
+    const playersData: any = {};
+    for (let i = 0; i < room.players.length; i++) {
+      playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
+    }
+
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
-      const myHand = game.hands.get(pid) || [];
-      const isMyTurn = pid === nextPlayerId;
-      const isWinner = result.winner === pid;
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
+      const isMyTurn = !sIsSpectator && pid === nextPlayerId;
+      const isWinner = !sIsSpectator && result.winner === pid;
       const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
       const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
-      const isSpectator = (s as any).data.isSpectator || false;
       const winnerUsername = result.winner ? await this.getCachedUsername(result.winner) : null;
+
+      const sData: any = {
+        board: game.board,
+        hand: myHand,
+        boneyardCount: game.boneyard.length,
+        yourTurn: !result.finished && isMyTurn,
+        turnTimerSeconds: timerSec,
+        currentTurnUsername: nextUsername,
+        playerEliminated: eliminatedUsername,
+        eliminationReason: reason,
+        gameEnded: result.finished,
+        outcome,
+        youWon: isWinner,
+        winner: result.winner,
+        reason: result.reason || reason,
+        prize,
+        handCount,
+        isSpectator: sIsSpectator,
+      };
+
+      if (sIsSpectator) {
+         Object.assign(sData, playersData);
+         sData.shotFrom = eliminatedUsername;
+         sData.turnOf = nextUsername;
+         if (result.finished && result.winner) {
+           sData.winner = winnerUsername;
+         }
+      }
 
       (s as unknown as Socket).emit('domino', {
         success: true,
-        data: {
-          board: game.board,
-          hand: myHand,
-          boneyardCount: game.boneyard.length,
-          yourTurn: !result.finished && isMyTurn,
-          turnTimerSeconds: timerSec,
-          currentTurnUsername: nextUsername,
-          playerEliminated: eliminatedUsername,
-          eliminationReason: reason,
-          gameEnded: result.finished,
-          outcome,
-          youWon: isWinner,
-          isSpectator: isSpectator,
-          winner: isSpectator ? winnerUsername : result.winner,
-          reason: result.reason || reason,
-          prize,
-          handCount,
-        },
-        messages: ((s as any).data.isSpectator || false) ? [result.finished ? 'Game over!' : 'A player was eliminated.'] : [result.finished
+        data: sData,
+        messages: sIsSpectator ? [result.finished ? 'Game over!' : 'A player was eliminated.'] : [result.finished
           ? (isWinner ? 'ws.domino.youWinElimination' : 'ws.domino.gameOver')
           : 'ws.domino.playerEliminated'
         ]
