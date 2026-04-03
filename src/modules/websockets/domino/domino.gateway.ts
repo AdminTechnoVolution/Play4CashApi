@@ -12,6 +12,7 @@ import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { DominoGame, DominoGameDocument } from './schemas/domino-game.schema';
 import { deal, getStartingPlayerIndex, getNextActivePlayerIndex, hasValidMoves, validateMove, getDominoGameResult } from './domino-game.logic';
+import { I18nService } from '../../../common/i18n/i18n.service';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -30,6 +31,10 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     return username;
   }
 
+  private getLang(client: Socket): string {
+    return (client.handshake?.query?.lang as string) || (client.data?.lang as string) || 'en';
+  }
+
   constructor(
     @InjectModel(DominoGame.name) private readonly dominoModel: Model<DominoGameDocument>,
     @InjectModel('Room') private readonly roomModel: Model<any>,
@@ -37,6 +42,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     private readonly config: ConfigService,
     private readonly roomsGateway: RoomsGateway,
     @Inject(REDIS_CLIENT) private readonly redis: any,
+    private readonly i18n: I18nService,
   ) {}
 
   afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
@@ -63,22 +69,23 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate({ _id: roomObjId, 'players.playerId': playerObjId }, { $pull: { players: { playerId: playerObjId } } }, { returnDocument: 'after' });
-      if (updated?.players.length === 0) {
+      if (!updated) return;
+      if (updated.players.length === 0) {
         await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
       } else {
-        const user = await this.userModel.findById(player_id).select('username');
-        const username = user?.username || 'Unknown';
-        const maxPlayers = room.player_limit || (room as any).game_id?.max_players || 2;
+        const username = await this.getCachedUsername(player_id);
+        const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
+        const lang = this.getLang(client);
         client.to(room_id).emit('domino', {
           success: true,
           data: {
             opponentLeft: true,
             waitingForOpponent: true,
             playerLeft: username,
-            playersRemaining: updated?.players.length || 0,
+            playersRemaining: updated.players.length,
             playersRequired: maxPlayers,
           },
-          messages: ['ws.domino.playerLeftWaiting'],
+          messages: [this.i18n.translate('ws.domino.playerLeftWaiting', lang, { username })],
         });
       }
       return;
@@ -91,16 +98,17 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
-    if (!payload?.room_id) return client.emit('domino', { success: false, messages: ['Missing room_id'] });
+    const lang = this.getLang(client);
+    if (!payload?.room_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     const { room_id } = payload;
     const player_id = client.data.player_id;
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
-    if (!room) return client.emit('domino', { success: false, messages: ['Room not found.'] });
+    if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
-    if (!isMember && !isSpectator) return client.emit('domino', { success: false, messages: ['Not in room.'] });
+    if (!isMember && !isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notInRoom', lang)] });
 
     await client.join(room_id);
     client.data.room_id = room_id;
@@ -111,7 +119,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       const game = await this.dominoModel.findOne({ room_id });
       if (game) {
         const currentTurnPlayerId = game.player_ids[game.current_player_index]?.toString();
-        const turnUser = await this.userModel.findById(currentTurnPlayerId).select('username');
+        const turnUsername = await this.getCachedUsername(currentTurnPlayerId);
         const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
         
         const playersData: any = {};
@@ -124,21 +132,21 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
             board: game.board, hand: [],
             boneyardCount: game.boneyard.length,
             yourTurn: false, turnTimerSeconds: 30,
-            currentTurnUsername: turnUser?.username || 'Unknown',
+            currentTurnUsername: turnUsername,
             waitingForOpponent: false, gameStarted: true,
             isSpectator: true, youWon: false,
             spectatorsCount: room.spectators.length,
             handCount,
             ...playersData,
-            shotFrom: turnUser?.username || 'Unknown',
-            turnOf: turnUser?.username || 'Unknown',
+            shotFrom: turnUsername,
+            turnOf: turnUsername,
             history: room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: playersData[`player${i + 1}`] })))
           }
         });
         client.to(room_id).emit('domino', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
         return;
       } else {
-        return client.emit('domino', { success: false, messages: ['Game not found'] });
+        return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
       }
     }
 
@@ -148,16 +156,15 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     if (room.status === 'started') {
       const game = await this.dominoModel.findOne({ room_id });
       if (game) {
-        const myHand = game.hands.get(player_id) || [];
         const currentTurnPlayerId = game.player_ids[game.current_player_index]?.toString();
         const isMyTurn = currentTurnPlayerId === player_id;
-        const turnUser = await this.userModel.findById(currentTurnPlayerId).select('username');
+        const turnUsername = await this.getCachedUsername(currentTurnPlayerId);
         return client.emit('domino', { success: true, messages: [], data: {
-        board: game.board, hand: game.hands.get(player_id) || [],
-        yourTurn: isMyTurn, turnTimerSeconds: 30,
-        currentTurnUsername: turnUser?.username || 'Unknown',
-        waitingForOpponent: false, gameStarted: true, youWon: false, isSpectator: false
-      }});
+          board: game.board, hand: game.hands.get(player_id) || [],
+          yourTurn: isMyTurn, turnTimerSeconds: 30,
+          currentTurnUsername: turnUsername,
+          waitingForOpponent: false, gameStarted: true, youWon: false, isSpectator: false
+        }});
       }
     }
 
@@ -167,16 +174,15 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     client.emit('domino', {
       success: true,
       data: { waitingForOpponent: true, isPlayerOne: playerIndex === 0, playersJoined: socketsInRoom.length, maxPlayers, isSpectator: false },
-      messages: ['Waiting for opponent.']
+      messages: [this.i18n.translate('ws.games.waitingOpponent', lang)]
     });
 
     if (socketsInRoom.length > 1 && room.status === 'waiting' && socketsInRoom.length < maxPlayers) {
-      const user = await this.userModel.findById(player_id).select('username');
-      const username = user?.username || 'Opponent';
+      const username = await this.getCachedUsername(player_id);
       client.to(room_id).emit('domino', {
         success: true,
         data: { opponentJoined: true, opponentName: username, waitingForOpponent: true, playersJoined: socketsInRoom.length, maxPlayers },
-        messages: [`${username} joined!`]
+        messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })]
       });
     }
 
@@ -185,7 +191,6 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       if (!started) return;
 
       const playerIds = room.players.map((p: any) => p.playerId);
-      // Deduct bets atomically
       let allPaid = true;
       const paid: Types.ObjectId[] = [];
       for (const pid of playerIds) {
@@ -196,7 +201,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       if (!allPaid) {
         for (const pid of paid) await this.userModel.updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } });
         await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
-        this.server.to(room_id).emit('domino', { success: false, messages: ['Insufficient balance.'] });
+        this.server.to(room_id).emit('domino', { success: false, messages: [this.i18n.translate('ws.games.insufficientBalance', lang)] });
         return;
       }
 
@@ -209,14 +214,14 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
       const timerSec = room.game_id?.turn_timer_seconds ?? 30;
       const startingPlayerId = playerIds[startIdx].toString();
-      const startUser = await this.userModel.findById(startingPlayerId).select('username');
-      const startingUsername = startUser?.username || 'Unknown';
+      const startingUsername = await this.getCachedUsername(startingPlayerId);
       for (const s of socketsInRoom) {
         const pid = (s as any).data.player_id;
         const sIsSpectator = (s as any).data.isSpectator || false;
         const myHand = sIsSpectator ? [] : (hands.get(pid) || []);
         const isMyTurn = sIsSpectator ? false : startingPlayerId === pid;
-        (s as unknown as Socket).emit('domino', { success: true, data: { hand: myHand, board: [], boneyardCount: boneyard.length, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: startingUsername, gameStarted: true, isSpectator: sIsSpectator }, messages: sIsSpectator ? ['Game started!'] : [isMyTurn ? 'Game started! Your turn.' : 'Game started!'] });
+        const sLang = this.getLang(s as unknown as Socket);
+        (s as unknown as Socket).emit('domino', { success: true, data: { hand: myHand, board: [], boneyardCount: boneyard.length, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: startingUsername, gameStarted: true, isSpectator: sIsSpectator }, messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isMyTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.gameStarted', sLang)] });
         if (isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
       }
       const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -227,22 +232,23 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
   @SubscribeMessage('move')
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; tile: number[]; side: 'left' | 'right' }) {
-    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: ['Spectators cannot perform actions.'] });
-    this.logger.log(`[Domino] 🁣 Move received | room=${payload?.room_id} | player=${client.data.player_id} | tile=${JSON.stringify(payload?.tile)} | side=${payload?.side}`);
+    const lang = this.getLang(client);
+    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
+    this.logger.log(`[Domino] 🁣 Move received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id, tile, side } = payload;
     const player_id = client.data.player_id;
-    if (!room_id || !tile || !side) return client.emit('domino', { success: false, messages: ['Invalid payload'] });
+    if (!room_id || !tile || !side) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
 
     const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return client.emit('domino', { success: false, messages: ['Game not found'] });
-    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: ['Not your turn.'] });
+    if (!game) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
 
     const { valid, flippedTile } = validateMove(tile as [number, number], side, game.open_ends || {});
-    if (!valid) return client.emit('domino', { success: false, messages: ['Invalid move.'] });
+    if (!valid) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
 
     const hand = game.hands.get(player_id) || [];
     const tileIdx = hand.findIndex(([v1, v2]) => (v1 === tile[0] && v2 === tile[1]) || (v1 === tile[1] && v2 === tile[0]));
-    if (tileIdx === -1) return client.emit('domino', { success: false, messages: ['Tile not in hand.'] });
+    if (tileIdx === -1) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
     hand.splice(tileIdx, 1);
     game.hands.set(player_id, hand);
 
@@ -273,7 +279,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
 
     const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('domino', { success: false, messages: ['Room not found'] });
+    if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
 
     if (result.finished) {
       room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
@@ -283,7 +289,6 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
       }
       await room.save();
-      
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
@@ -293,8 +298,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const sockets = await this.server.in(room_id).fetchSockets();
     const timerSec = 30;
     const nextPlayerId = game.player_ids[game.current_player_index].toString();
-    const nextUser = await this.userModel.findById(nextPlayerId).select('username');
-    const nextUsername = nextUser?.username || 'Unknown';
+    const nextUsername = await this.getCachedUsername(nextPlayerId);
     const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
     clearTimer(client.id);
     if (!result.finished && nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
@@ -302,6 +306,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
       const sIsSpectator = (s as any).data.isSpectator || false;
+      const sLang = this.getLang(s as unknown as Socket);
       const isWinner = !sIsSpectator && result.winner === pid;
       const winnerUsername = result.winner ? await this.getCachedUsername(result.winner) : null;
 
@@ -313,31 +318,33 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         reason: result.reason, handCount, isSpectator: sIsSpectator
       };
       if (sIsSpectator) {
-         if (result.finished && result.winner) {
-           sData.winner = winnerUsername;
-           sData.turnOf = winnerUsername;
-         } else if (!result.finished) {
-           sData.turnOf = nextUsername;
-         }
+         if (result.finished && result.winner) { sData.winner = winnerUsername; sData.turnOf = winnerUsername; } else if (!result.finished) { sData.turnOf = nextUsername; }
       }
 
-      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: sIsSpectator ? (result.finished ? (result.winner ? [`${winnerUsername} wins!`] : ['Game ended in a draw.']) : ['A move was made.']) : (result.finished ? ['Game over!'] : ['Move accepted.']) });
+      let msg = '';
+      if (result.finished) {
+        if (sIsSpectator) msg = result.winner ? this.i18n.translate('ws.games.wins', sLang, { username: winnerUsername! }) : this.i18n.translate('ws.games.drawGeneric', sLang);
+        else msg = this.i18n.translate('ws.games.gameOver', sLang);
+      } else {
+        msg = sIsSpectator ? this.i18n.translate('ws.games.opponentMoved', sLang) : this.i18n.translate('ws.games.moveAccepted', sLang);
+      }
+
+      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
     }
   }
 
   @SubscribeMessage('draw')
   async handleDraw(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
-    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: ['Spectators cannot perform actions.'] });
+    const lang = this.getLang(client);
+    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
     this.logger.log(`[Domino] 🃏 Draw received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const player_id = client.data.player_id;
     if (!room_id) return;
     const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return client.emit('domino', { success: false, messages: ['Game not found'] });
-    const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('domino', { success: false, messages: ['Room not found'] });
-    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: ['Not your turn.'] });
-    if (game.boneyard.length === 0) return client.emit('domino', { success: false, messages: ['Boneyard empty.'] });
+    if (!game) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
+    if (game.boneyard.length === 0) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.domino.boneyardEmpty', lang)] });
 
     const drawn = game.boneyard.splice(0, 1)[0];
     const hand = game.hands.get(player_id) || [];
@@ -352,55 +359,36 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     clearTimer(client.id);
     if (drawingPlayerSocket) this.startTimer(drawingPlayerSocket as unknown as Socket, room_id, timerSec);
 
-    const turnUser = await this.userModel.findById(player_id).select('username');
-    const turnUsername = turnUser?.username || 'Unknown';
-
-    const playersData: any = {};
-    for (let i = 0; i < room.players.length; i++) {
-      playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
-    }
-    const shotFrom = await this.getCachedUsername(player_id);
+    const turnUsername = await this.getCachedUsername(player_id);
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
       const sIsSpectator = (s as any).data.isSpectator || false;
+      const sLang = this.getLang(s as unknown as Socket);
       const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
       const isDrawingPlayer = !sIsSpectator && pid === player_id;
       
       const sData: any = { 
-        board: game.board, 
-        hand: myHand, 
-        boneyardCount: game.boneyard.length, 
-        lastTile: null, 
-        lastSide: null, 
-        lastPlayer: player_id, 
-        yourTurn: isDrawingPlayer, 
-        turnTimerSeconds: timerSec, 
-        currentTurnUsername: turnUsername, 
-        handCount,
-        isSpectator: sIsSpectator
+        board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, yourTurn: isDrawingPlayer, turnTimerSeconds: timerSec, currentTurnUsername: turnUsername, handCount, isSpectator: sIsSpectator
       };
+      if (sIsSpectator) { sData.shotFrom = turnUsername; sData.turnOf = turnUsername; }
 
-      if (sIsSpectator) {
-         Object.assign(sData, playersData);
-         sData.shotFrom = shotFrom;
-         sData.turnOf = turnUsername;
-      }
-
-      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: sIsSpectator ? ['A player drew a tile.'] : [isDrawingPlayer ? 'You drew a tile.' : 'Opponent drew a tile.'] });
+      const msg = isDrawingPlayer ? this.i18n.translate('ws.domino.drewTile', sLang) : this.i18n.translate('ws.domino.opponentDrew', sLang, { username: turnUsername });
+      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
     }
   }
 
   @SubscribeMessage('pass')
   async handlePass(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
-    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: ['Spectators cannot perform actions.'] });
+    const lang = this.getLang(client);
+    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
     this.logger.log(`[Domino] ⏩ Pass received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const { room_id } = payload;
     const player_id = client.data.player_id;
     if (!room_id) return;
     const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return client.emit('domino', { success: false, messages: ['Game not found'] });
-    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: ['Not your turn.'] });
+    if (!game) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (game.player_ids[game.current_player_index]?.toString() !== player_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
 
     game.consecutive_passes++;
     const playerIdsStr = game.player_ids.map((p: any) => p.toString());
@@ -412,13 +400,12 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
 
     const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('domino', { success: false, messages: ['Room not found'] });
+    if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
 
     if (result.finished) {
       room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
-      if (result.winner) { room.winner = new Types.ObjectId(result.winner); const prize = room.bet_amount * (2 - room.house_edge / 100); await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } }); }
+      if (result.winner) { room.winner = new Types.ObjectId(result.winner); const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100); await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } }); }
       await room.save();
-      
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
@@ -426,63 +413,32 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
     const sockets = await this.server.in(room_id).fetchSockets();
     const nextPlayerId = game.player_ids[game.current_player_index].toString();
-    const nextPassUser = await this.userModel.findById(nextPlayerId).select('username');
-    const nextPassUsername = nextPassUser?.username || 'Unknown';
+    const nextPassUsername = await this.getCachedUsername(nextPlayerId);
     const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
     const timerSec = 30;
     clearTimer(client.id);
     if (!result.finished && nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
 
-    const playersData: any = {};
-    for (let i = 0; i < room.players.length; i++) {
-      playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
-    }
     const shotFrom = await this.getCachedUsername(player_id);
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
       const sIsSpectator = (s as any).data.isSpectator || false;
+      const sLang = this.getLang(s as unknown as Socket);
       const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
       const isMyTurn = !sIsSpectator && pid === nextPlayerId;
       const isWinner = !sIsSpectator && result.winner === pid;
       const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
       const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
 
-      const sData: any = { 
-        board: game.board, 
-        hand: myHand, 
-        boneyardCount: game.boneyard.length, 
-        lastTile: null, 
-        lastSide: null, 
-        lastPlayer: player_id, 
-        passed: true, 
-        gameEnded: result.finished, 
-        outcome,
-        youWon: isWinner,
-        winner: result.winner, 
-        reason: result.reason, 
-        prize,
-        yourTurn: isMyTurn, 
-        turnTimerSeconds: timerSec, 
-        currentTurnUsername: nextPassUsername,
-        handCount,
-        isSpectator: sIsSpectator
-      };
+      const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, passed: true, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason, prize, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextPassUsername, handCount, isSpectator: sIsSpectator };
+      if (sIsSpectator) { sData.shotFrom = shotFrom; sData.turnOf = nextPassUsername; if (result.finished && result.winner) sData.winner = await this.getCachedUsername(result.winner); }
 
-      if (sIsSpectator) {
-         Object.assign(sData, playersData);
-         sData.shotFrom = shotFrom;
-         sData.turnOf = nextPassUsername;
-         if (result.finished && result.winner) {
-           sData.winner = await this.getCachedUsername(result.winner);
-         }
-      }
+      let msg = '';
+      if (result.finished) msg = this.i18n.translate('ws.games.gameOver', sLang);
+      else msg = isMyTurn ? this.i18n.translate('ws.domino.opponentPassed', sLang, { username: shotFrom }) : (pid === player_id ? this.i18n.translate('ws.domino.passed', sLang) : this.i18n.translate('ws.domino.opponentPassed', sLang, { username: shotFrom }));
 
-      (s as unknown as Socket).emit('domino', { 
-        success: true, 
-        data: sData, 
-        messages: sIsSpectator ? [result.finished ? 'Game over!' : 'A player passed.'] : [result.finished ? 'Game over!' : isMyTurn ? 'Opponent passed, your turn!' : 'Opponent passed.'] 
-      });
+      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
     }
   }
 
@@ -491,28 +447,15 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const t = setTimeout(async () => {
       const timedOutPlayerId = (socket as any).data?.player_id;
       if (!timedOutPlayerId) return;
-      // 1. Notify the timed-out player they lost
-      socket.emit('domino', {
-        success: false,
-        data: { gameEnded: true, outcome: 'timeout_loss', youWon: false, reason: 'timeout', isSpectator: false },
-        messages: ['ws.domino.timeout'],
-      });
-      // 2. Mark elimination reason so handleDisconnect uses 'timeout'
+      const lang = this.getLang(socket);
+      socket.emit('domino', { success: false, data: { gameEnded: true, outcome: 'timeout_loss', youWon: false, reason: 'timeout', isSpectator: false }, messages: [this.i18n.translate('ws.domino.timeout', lang)] });
       socket.data.eliminationReason = 'timeout';
-      // 3. Remove from room and disconnect (disconnect triggers handleDisconnect which handles elimination)
       socket.leave(room_id);
       socket.disconnect(true);
     }, seconds * 1000);
     turnTimers.set(socket.id, t);
   }
 
-  /**
-   * Eliminates a player from an active domino game:
-   * - Returns their tiles to the boneyard
-   * - Advances turn if it was their turn
-   * - If only 1 active player remains → that player wins
-   * - Otherwise the game continues
-   */
   private async eliminatePlayer(room_id: string, player_id: string, reason: 'forfeit' | 'timeout') {
     const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
     if (!game) return;
@@ -521,70 +464,45 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
     const playerIdsStr = game.player_ids.map((p: any) => p.toString());
     const eliminated = game.eliminated_players || [];
-    if (eliminated.includes(player_id)) return; // already eliminated
+    if (eliminated.includes(player_id)) return;
 
-    // Return tiles to boneyard
     const hand = game.hands.get(player_id) || [];
-    if (hand.length > 0) {
-      game.boneyard.push(...hand);
-      game.hands.set(player_id, []);
-    }
+    if (hand.length > 0) { game.boneyard.push(...hand); game.hands.set(player_id, []); }
     eliminated.push(player_id);
     game.eliminated_players = eliminated;
 
-    // If it was this player's turn, advance to next active player
     const currentPlayerId = playerIdsStr[game.current_player_index];
-    if (currentPlayerId === player_id) {
-      game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, eliminated);
-      game.turn_start_time = new Date();
-    }
-
-    // Reset consecutive passes since the boneyard just got filled with the eliminated player's hand
+    if (currentPlayerId === player_id) { game.current_player_index = getNextActivePlayerIndex(game.current_player_index, playerIdsStr, eliminated); game.turn_start_time = new Date(); }
     game.consecutive_passes = 0;
-
-    // Check game result
 
     const handsObj = Object.fromEntries(game.hands);
     const result = getDominoGameResult(new Map(Object.entries(handsObj)) as Map<string, any>, game.consecutive_passes, playerIdsStr, eliminated);
 
     if (result.finished) {
       room.status = 'finished'; room.winner_reason = result.reason || reason; room.finished_at = new Date();
-      if (result.winner) {
-        room.winner = new Types.ObjectId(result.winner);
-        // Prize should be based on the original number of players (use game_id.max_players if available, or just room.players.length before they disconnect, wait, room.players hasn't been modified since it's just 'started')
-        const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
-        await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
-      }
+      if (result.winner) { room.winner = new Types.ObjectId(result.winner); const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100); await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } }); }
       await room.save();
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
     await game.save();
 
-    // Notify all connected sockets
     const sockets = await this.server.in(room_id).fetchSockets();
     const nextPlayerId = playerIdsStr[game.current_player_index];
-    const nextUser = await this.userModel.findById(nextPlayerId).select('username');
-    const nextUsername = nextUser?.username || 'Unknown';
-    const eliminatedUser = await this.userModel.findById(player_id).select('username');
-    const eliminatedUsername = eliminatedUser?.username || 'Unknown';
+    const nextUsername = await this.getCachedUsername(nextPlayerId);
+    const eliminatedUsername = await this.getCachedUsername(player_id);
     const timerSec = 30;
     const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
 
-    // Start timer for next player if game continues
     if (!result.finished) {
       const nextPlayerSocket = sockets.find(s => (s as any).data.player_id === nextPlayerId);
       if (nextPlayerSocket) this.startTimer(nextPlayerSocket as unknown as Socket, room_id, timerSec);
     }
 
-    const playersData: any = {};
-    for (let i = 0; i < room.players.length; i++) {
-      playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
-    }
-
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
       const sIsSpectator = (s as any).data.isSpectator || false;
+      const sLang = this.getLang(s as unknown as Socket);
       const myHand = sIsSpectator ? [] : (game.hands.get(pid) || []);
       const isMyTurn = !sIsSpectator && pid === nextPlayerId;
       const isWinner = !sIsSpectator && result.winner === pid;
@@ -592,42 +510,14 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
       const winnerUsername = result.winner ? await this.getCachedUsername(result.winner) : null;
 
-      const sData: any = {
-        board: game.board,
-        hand: myHand,
-        boneyardCount: game.boneyard.length,
-        yourTurn: !result.finished && isMyTurn,
-        turnTimerSeconds: timerSec,
-        currentTurnUsername: nextUsername,
-        playerEliminated: eliminatedUsername,
-        eliminationReason: reason,
-        gameEnded: result.finished,
-        outcome,
-        youWon: isWinner,
-        winner: result.winner,
-        reason: result.reason || reason,
-        prize,
-        handCount,
-        isSpectator: sIsSpectator,
-      };
+      const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, yourTurn: !result.finished && isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, playerEliminated: eliminatedUsername, eliminationReason: reason, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason || reason, prize, handCount, isSpectator: sIsSpectator };
+      if (sIsSpectator) { sData.shotFrom = eliminatedUsername; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = winnerUsername; }
 
-      if (sIsSpectator) {
-         Object.assign(sData, playersData);
-         sData.shotFrom = eliminatedUsername;
-         sData.turnOf = nextUsername;
-         if (result.finished && result.winner) {
-           sData.winner = winnerUsername;
-         }
-      }
+      let msg = '';
+      if (result.finished) msg = isWinner ? this.i18n.translate('ws.domino.youWinElimination', sLang) : this.i18n.translate('ws.games.gameOver', sLang);
+      else msg = this.i18n.translate('ws.domino.playerEliminated', sLang, { username: eliminatedUsername });
 
-      (s as unknown as Socket).emit('domino', {
-        success: true,
-        data: sData,
-        messages: sIsSpectator ? [result.finished ? 'Game over!' : 'A player was eliminated.'] : [result.finished
-          ? (isWinner ? 'ws.domino.youWinElimination' : 'ws.domino.gameOver')
-          : 'ws.domino.playerEliminated'
-        ]
-      });
+      (s as unknown as Socket).emit('domino', { success: true, data: sData, messages: [msg] });
     }
   }
 }

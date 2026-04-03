@@ -62,7 +62,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   private getLang(client: Socket): string {
-    return (client.handshake.headers['accept-language'] as string) || 'en';
+    return (client.handshake?.query?.lang as string) || (client.data?.lang as string) || 'en';
   }
 
   private async processForfeit(client: Socket, room_id: string, player_id: string) {
@@ -73,7 +73,6 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate({ _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) }, { $pull: { players: { playerId: new Types.ObjectId(player_id) } } }, { returnDocument: 'after' });
       
-      // Cleanup ALL placements for this room
       const roomOid = new Types.ObjectId(room_id);
       const allPlacements = await this.placementModel.find({ room_id: roomOid });
       const refundAmount = Number(room.bet_amount);
@@ -85,13 +84,12 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       }
       await this.placementModel.deleteMany({ room_id: roomOid });
 
-      // Reset ready status for remaining players
       if (updated && updated.players.length > 0) {
         await this.roomModel.updateOne({ _id: roomOid }, { $set: { 'players.$[].ready': false } });
       }
 
       if (updated?.players.length === 0) await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
-      else client.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: true }, messages: ['ws.games.opponentLeft'] });
+      else client.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: true }, messages: [this.i18n.translate('ws.games.opponentLeft', lang)] });
       return;
     }
     if (room.status === 'started') {
@@ -99,22 +97,17 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       if (!winner_id) return;
       room.status = 'finished'; room.winner = winner_id; room.winner_reason = 'forfeit'; room.finished_at = new Date();
       await room.save();
-      const prize = room.bet_amount * (2 - room.house_edge / 100);
+      const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
       await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
       const winnerUsername = await this.getCachedUsername(winner_id.toString());
       const sockets = await this.server.in(room_id).fetchSockets();
       for (const s of sockets) {
         const sIsSpectator = (s as any).data.isSpectator || false;
-        const winnerUsername = await this.getCachedUsername(winner_id.toString());
+        const sLang = this.getLang(s as unknown as Socket);
         (s as unknown as Socket).emit('naval-battle', {
           success: false, 
-          data: { 
-            outcome: 'opponent_disconnected', 
-            gameEnded: true,
-            winner: sIsSpectator ? winnerUsername : winner_id,
-            isSpectator: sIsSpectator
-          }, 
-          messages: sIsSpectator ? [`${winnerUsername} wins by forfeit!`] : ['ws.games.playerDisconnected'] 
+          data: { outcome: 'opponent_disconnected', gameEnded: true, winner: sIsSpectator ? winnerUsername : winner_id, isSpectator: sIsSpectator }, 
+          messages: sIsSpectator ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })] : [this.i18n.translate('ws.games.playerDisconnected', sLang)] 
         });
       }
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -125,16 +118,16 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    if (!payload?.room_id) return client.emit('naval-battle', { success: false, messages: ['ws.invalidMessageFormat'] });
+    if (!payload?.room_id) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     const { room_id } = payload;
     const player_id = client.data.player_id;
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) return client.emit('naval-battle', { success: false, messages: ['ws.games.gameNotFound'] });
+    if (!room) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
-    if (!isMember && !isSpectator) return client.emit('naval-battle', { success: false, messages: ['ws.games.notInRoom'] });
+    if (!isMember && !isSpectator) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.notInRoom', lang)] });
 
     await client.join(room_id);
     client.data.room_id = room_id;
@@ -169,47 +162,40 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     if (socketsInRoom.length > 1) {
-      const user = await this.userModel.findById(player_id).select('username');
-      const username = user?.username || 'Opponent';
+      const username = await this.getCachedUsername(player_id);
       client.to(room_id).emit('naval-battle', { success: true, data: { opponentJoined: true, opponentName: username }, messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })] });
     }
 
     const myPlacement = await this.placementModel.findOne({ room_id, player_id });
     if (myPlacement) {
       const isMyTurn = client.data.myTurn;
-      return client.emit('naval-battle', { success: true, data: {
-        ships: myPlacement.ships, shotsFired: myPlacement.shotsFired, status: myPlacement.status,
-        waitingForOpponent: room.status === 'waiting', gameStarted: room.status === 'started',
-        yourTurn: isMyTurn, turnTimerSeconds: 30, isSpectator: false
-      }, messages: ['ws.games.roomReconnected'] });
+      return client.emit('naval-battle', { success: true, data: { ships: myPlacement.ships, shotsFired: myPlacement.shotsFired, status: myPlacement.status, waitingForOpponent: room.status === 'waiting', gameStarted: room.status === 'started', yourTurn: isMyTurn, turnTimerSeconds: 30, isSpectator: false }, messages: [this.i18n.translate('ws.games.roomReconnected', lang)] });
     }
 
-    client.emit('naval-battle', { success: true, data: { waitingForOpponent: true, isSpectator: false }, messages: ['ws.games.waitingOpponent'] });
+    client.emit('naval-battle', { success: true, data: { waitingForOpponent: true, isSpectator: false }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
   }
 
   @SubscribeMessage('place_ships')
   async handlePlaceShips(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; ships: any[] }) {
-    if (client.data.isSpectator) return client.emit('naval-battle', { success: false, messages: ['Spectators cannot perform actions.'] });
     const lang = this.getLang(client);
+    if (client.data.isSpectator) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
     const { room_id, ships } = payload;
     const player_id = client.data.player_id;
-    if (!room_id || !ships?.length) return client.emit('naval-battle', { success: false, messages: ['ws.invalidMessageFormat'] });
+    if (!room_id || !ships?.length) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
 
     const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('naval-battle', { success: false, messages: ['ws.games.gameNotFound'] });
+    if (!room) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
 
     const existing = await this.placementModel.findOne({ room_id, player_id });
-    if (existing) return client.emit('naval-battle', { success: false, messages: ['ws.games.shipsAlreadyPlaced'] });
+    if (existing) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.shipsAlreadyPlaced', lang)] });
 
-    // Deduct bet when ships are placed (per original ship placement balance logic)
     const deducted = await this.userModel.findOneAndUpdate({ _id: player_id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } });
-    if (!deducted) return client.emit('naval-battle', { success: false, messages: ['ws.games.insufficientBalance'] });
+    if (!deducted) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.insufficientBalance', lang)] });
 
     await this.placementModel.create({ room_id, player_id, ships, status: 'placed' });
 
-    client.emit('naval-battle', { success: true, data: { shipsPlaced: true }, messages: ['ws.games.waitingOpponent'] });
+    client.emit('naval-battle', { success: true, data: { shipsPlaced: true }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
 
-    // Check if both players have placed
     const allPlacements = await this.placementModel.find({ room_id: new Types.ObjectId(room_id) });
     if (allPlacements.length === 2) {
       const startedRoom = await this.roomModel.findById(room_id).populate('game_id');
@@ -219,35 +205,16 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       await this.placementModel.updateMany({ room_id }, { status: 'ready' });
       
       const timerSeconds = (startedRoom.game_id as any)?.turn_timer_seconds ?? 30;
-      this.logger.debug(`Game started in room ${room_id}. Timer: ${timerSeconds}s`);
-
-      // Player 1 goes first
       const p1Player = startedRoom.players[0].playerId.toString();
       const allSockets = await this.server.in(room_id).fetchSockets();
       
       for (const s of allSockets) {
         const pid = (s as any).data.player_id;
-        const isTurn = pid === p1Player;
-        this.logger.debug(`Socket ${s.id} for player ${pid}: isTurn=${isTurn}`);
-        
-        const sLang = this.getLang(s as unknown as Socket);
         const sIsSpectator = (s as any).data.isSpectator || false;
-        (s as unknown as Socket).emit('naval-battle', { 
-          success: true, 
-          data: { 
-            gameStarted: true,
-            yourTurn: isTurn && !sIsSpectator, 
-            turnTimerSeconds: timerSeconds,
-            waitingForOpponent: false,
-            isSpectator: sIsSpectator
-          }, 
-          messages: sIsSpectator ? ['ws.games.startedRoom'] : [isTurn ? 'ws.games.opponentReady' : 'ws.games.opponentReadyWait'] 
-        });
-        
-        if (isTurn) {
-          this.logger.debug(`Starting timer for socket ${s.id} (${pid})`);
-          this.startTimer(s as unknown as Socket, room_id, timerSeconds);
-        }
+        const isTurn = pid === p1Player;
+        const sLang = this.getLang(s as unknown as Socket);
+        (s as unknown as Socket).emit('naval-battle', { success: true, data: { gameStarted: true, yourTurn: isTurn && !sIsSpectator, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isSpectator: sIsSpectator }, messages: sIsSpectator ? [this.i18n.translate('ws.games.startedRoom', sLang)] : [isTurn ? this.i18n.translate('ws.games.opponentReady', sLang) : this.i18n.translate('ws.games.opponentReadyWait', sLang)] });
+        if (isTurn && !sIsSpectator) this.startTimer(s as unknown as Socket, room_id, timerSeconds);
       }
       const gId = (startedRoom.game_id as any)?._id?.toString() || startedRoom.game_id?.toString();
       const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
@@ -257,44 +224,32 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
 
   @SubscribeMessage('fire')
   async handleFire(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; row: number; col: number }) {
-    if (client.data.isSpectator) return client.emit('naval-battle', { success: false, messages: ['Spectators cannot perform actions.'] });
-    this.logger.log(`[NavalBattle] 💥 Fire received | room=${payload?.room_id} | player=${client.data.player_id} | target=[${payload?.row},${payload?.col}]`);
     const lang = this.getLang(client);
+    if (client.data.isSpectator) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
+    this.logger.log(`[NavalBattle] 💥 Fire received | room=${payload?.room_id} | player=${client.data.player_id} | target=[${payload?.row},${payload?.col}]`);
     const { room_id, row, col } = payload;
     const player_id = client.data.player_id;
-    if (!room_id || row === undefined || col === undefined) return client.emit('naval-battle', { success: false, messages: ['ws.invalidMessageFormat'] });
+    if (!room_id || row === undefined || col === undefined) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room || room.status !== 'started') return client.emit('naval-battle', { success: false, messages: ['ws.games.roomInactive'] });
+    if (!room || room.status !== 'started') return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
 
     const timerSeconds = (room.game_id as any)?.turn_timer_seconds ?? 30;
-
-    // Get both placements safely cast to ObjectIds
     const roomObjId = new Types.ObjectId(room_id);
     const myPlacement = await this.placementModel.findOne({ room_id: roomObjId, player_id: new Types.ObjectId(player_id) });
     const opponent = room.players.find((p: any) => p.playerId.toString() !== player_id);
     const opponentPlacement = await this.placementModel.findOne({ room_id: roomObjId, player_id: new Types.ObjectId(opponent?.playerId.toString()) });
 
-    const p1Id = room.players[0]?.playerId?.toString();
-    const p2Id = room.players[1]?.playerId?.toString();
-    const player1 = p1Id ? await this.getCachedUsername(p1Id) : 'Unknown';
-    const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
-    const shotFrom = await this.getCachedUsername(player_id);
+    if (!myPlacement || !opponentPlacement) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.placementNotFound', lang)] });
 
-    if (!myPlacement || !opponentPlacement) return client.emit('naval-battle', { success: false, messages: ['ws.games.placementNotFound'] });
-
-    // Check if already fired here
     const alreadyFired = myPlacement.shotsFired.some(s => s[0] === row && s[1] === col);
-    if (alreadyFired) return client.emit('naval-battle', { success: false, messages: ['ws.games.alreadyFiredCell'] });
+    if (alreadyFired) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.alreadyFiredCell', lang)] });
 
-    // Check for hit
     let hit = false, shipType: string | null = null;
     for (const ship of opponentPlacement.ships) {
       if (ship.cells.some(cell => cell[0] === row && cell[1] === col)) {
         hit = true;
         shipType = ship.type;
-        // Check if entire ship is sunk
-        const allHit = ship.cells.every(cell => myPlacement.shotsFired.some(s => s[0] === cell[0] && s[1] === cell[1]) || (cell[0] === row && cell[1] === col));
         break;
       }
     }
@@ -303,60 +258,45 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     await myPlacement.save();
 
     const moveIndex = room.players.find((p: any) => p.playerId.toString() === player_id)?.moves?.length ?? 0;
-    await this.roomModel.updateOne(
-      { _id: roomObjId, 'players.playerId': new Types.ObjectId(player_id) },
-      { $push: { 'players.$.moves': { data: { row, col, outcome: 'pending' } } } }
-    );
+    await this.roomModel.updateOne({ _id: roomObjId, 'players.playerId': new Types.ObjectId(player_id) }, { $push: { 'players.$.moves': { data: { row, col, outcome: 'pending' } } } });
 
-    // Check if all opponent ships sunk
-    const allSunk = opponentPlacement.ships.every(ship =>
-      ship.cells.every(cell => myPlacement.shotsFired.some(s => s[0] === cell[0] && s[1] === cell[1]))
-    );
+    const allSunk = opponentPlacement.ships.every(ship => ship.cells.every(cell => myPlacement.shotsFired.some(s => s[0] === cell[0] && s[1] === cell[1])));
 
     let outcome = 'miss';
     if (allSunk) outcome = 'win';
     else if (hit) {
-      const allHit = opponentPlacement.ships.find(s => s.type === shipType)?.cells.every(cell => 
-        myPlacement.shotsFired.some(s => s[0] === cell[0] && s[1] === cell[1])
-      );
+      const allHit = opponentPlacement.ships.find(s => s.type === shipType)?.cells.every(cell => myPlacement.shotsFired.some(s => s[0] === cell[0] && s[1] === cell[1]));
       outcome = allHit ? 'sunk' : 'hit';
     }
 
-    // Update move history with outcome
-    await this.roomModel.updateOne(
-      { _id: roomObjId, 'players.playerId': new Types.ObjectId(player_id) },
-      { $set: { [`players.${room.players.findIndex((p: any) => p.playerId.toString() === player_id)}.moves.${moveIndex}.data.outcome`]: outcome, [`players.${room.players.findIndex((p: any) => p.playerId.toString() === player_id)}.moves.${moveIndex}.data.shipType`]: shipType } }
-    );
+    await this.roomModel.updateOne({ _id: roomObjId, 'players.playerId': new Types.ObjectId(player_id) }, { $set: { [`players.${room.players.findIndex((p: any) => p.playerId.toString() === player_id)}.moves.${moveIndex}.data.outcome`]: outcome, [`players.${room.players.findIndex((p: any) => p.playerId.toString() === player_id)}.moves.${moveIndex}.data.shipType`]: shipType } });
 
     if (allSunk) {
       room.status = 'finished'; room.winner = new Types.ObjectId(player_id); room.winner_reason = 'normal'; room.finished_at = new Date();
       await room.save();
-      const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100)); // Win original bet + opponent minus house edge
+      const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
       await this.userModel.updateOne({ _id: player_id }, { $inc: { balance: prize } });
       
-      const winMsg = this.i18n.translate('ws.games.winSunk', lang, { shipType: shipType || '' });
-      client.emit('naval-battle', { success: true, data: { outcome: 'win', youWon: true, winner: player_id, reason: 'normal', row, col, shipType: shipType, prize, yourTurn: false, gameEnded: true }, messages: [winMsg] });
-      
-      const opponentSocketId = opponent?.playerId.toString();
+      const p1Id = room.players[0]?.playerId?.toString();
+      const player1 = await this.getCachedUsername(p1Id);
+      const player2 = await this.getCachedUsername(room.players[1]?.playerId?.toString());
+      const winnerUsername = await this.getCachedUsername(player_id);
+
       const sockets = await this.server.in(room_id).fetchSockets();
       for (const s of sockets) {
-        if ((s as any).data.player_id === opponentSocketId || (s as any).data.isSpectator) {
-          const sIsSpectator = (s as any).data.isSpectator || false;
-          const vLang = this.getLang(s as unknown as Socket);
-          const loseMsg = this.i18n.translate('ws.games.loseSunk', vLang, { shipType: shipType || '' });
-          
-          const winName = player_id === p1Id ? player1 : player2;
-          const sData: any = { outcome: 'lose', youWon: false, winner: player_id, reason: 'normal', row, col, shipType: shipType, yourTurn: false, gameEnded: true, isSpectator: sIsSpectator };
-          if (sIsSpectator) { 
-            sData.player1 = player1; 
-            sData.player2 = player2;
-            sData.shotFrom = shotFrom; 
-            sData.turnOf = winName; 
-            sData.winner = winName;
-          }
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const sLang = this.getLang(s as unknown as Socket);
+        const pid = (s as any).data.player_id;
+        const isWinner = pid === player_id;
+        const sData: any = { outcome: isWinner ? 'win' : 'lose', youWon: isWinner && !sIsSpectator, winner: isWinner ? (sIsSpectator ? winnerUsername : player_id) : (sIsSpectator ? winnerUsername : player_id), reason: 'normal', row, col, shipType, prize: isWinner ? prize : 0, yourTurn: false, gameEnded: true, isSpectator: sIsSpectator };
+        if (sIsSpectator) { sData.player1 = player1; sData.player2 = player2; sData.shotFrom = winnerUsername; sData.turnOf = winnerUsername; sData.winner = winnerUsername; }
+        
+        let msg = '';
+        if (isWinner) msg = this.i18n.translate('ws.games.winSunk', sLang, { shipType: shipType || '' });
+        else if (sIsSpectator) msg = this.i18n.translate('ws.games.wins', sLang, { username: winnerUsername });
+        else msg = this.i18n.translate('ws.games.loseSunk', sLang, { shipType: shipType || '' });
 
-          (s as unknown as Socket).emit('naval-battle', { success: true, data: sData, messages: sIsSpectator ? [`${winName} wins! ${shipType || ''} sunk!`] : [loseMsg] });
-        }
+        (s as unknown as Socket).emit('naval-battle', { success: true, data: sData, messages: [msg] });
       }
       
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -365,53 +305,48 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     }
 
     const keepTurn = outcome === 'hit';
-    const shooterMsg = outcome === 'miss' 
-      ? 'ws.games.shotMiss' 
-      : outcome === 'sunk' 
-        ? this.i18n.translate('ws.games.shotSunk', lang, { shipType: shipType || '' }) 
-        : 'ws.games.shotHit';
-    client.emit('naval-battle', { success: true, data: { outcome, row, col, shipType: (outcome === 'sunk' ? shipType : null), yourTurn: keepTurn, turnTimerSeconds: timerSeconds, isSpectator: false }, messages: [shooterMsg] });
-    
-    const opponentSocketId = opponent?.playerId.toString();
+    const shooterUsername = await this.getCachedUsername(player_id);
     const sockets = await this.server.in(room_id).fetchSockets();
-    const opponentSocket = sockets.find(s => (s as any).data.player_id === opponentSocketId);
     
-    const oppLang = opponentSocket ? this.getLang(opponentSocket as unknown as Socket) : 'en';
-    const oppMsg = outcome === 'miss' 
-      ? 'ws.games.opponentMiss' 
-      : outcome === 'sunk' 
-        ? this.i18n.translate('ws.games.opponentSunk', oppLang, { shipType: shipType || '' }) 
-        : 'ws.games.opponentHit';
     clearTimer(client.id);
-    if (!allSunk) {
-      if (keepTurn) {
-        this.startTimer(client, room_id, timerSeconds);
-      } else if (opponentSocket) {
-        this.startTimer(opponentSocket as unknown as Socket, room_id, timerSeconds);
-      }
+    if (keepTurn) this.startTimer(client, room_id, timerSeconds);
+    else {
+      const oppSocket = sockets.find(s => (s as any).data.player_id === opponent?.playerId.toString());
+      if (oppSocket) this.startTimer(oppSocket as unknown as Socket, room_id, timerSeconds);
     }
+
+    const p1Id = room.players[0]?.playerId?.toString();
+    const player1 = await this.getCachedUsername(p1Id);
+    const player2 = await this.getCachedUsername(room.players[1]?.playerId?.toString());
 
     for (const s of sockets) {
       const sIsSpectator = (s as any).data.isSpectator || false;
-      if ((s as any).data.player_id === opponentSocketId || sIsSpectator) {
-        const sData: any = { outcome: outcome === 'miss' ? 'miss' : outcome, row, col, shipType: (outcome === 'sunk' ? shipType : null), yourTurn: !keepTurn && !allSunk && !sIsSpectator, turnTimerSeconds: timerSeconds, isSpectator: sIsSpectator };
-        if (sIsSpectator) {
-           sData.player1 = player1;
-           sData.player2 = player2;
-           sData.shotFrom = shotFrom;
-           sData.turnOf = keepTurn ? shotFrom : (player_id === p1Id ? player2 : player1);
-        }
+      const sLang = this.getLang(s as unknown as Socket);
+      const pid = (s as any).data.player_id;
+      const isShooter = pid === player_id;
+      const sData: any = { outcome, row, col, shipType: (outcome === 'sunk' ? shipType : null), yourTurn: (isShooter ? keepTurn : !keepTurn) && !sIsSpectator, turnTimerSeconds: timerSeconds, isSpectator: sIsSpectator };
+      if (sIsSpectator) { sData.player1 = player1; sData.player2 = player2; sData.shotFrom = shooterUsername; sData.turnOf = keepTurn ? shooterUsername : (player_id === p1Id ? player2 : player1); }
 
-        (s as unknown as Socket).emit('naval-battle', { success: true, data: sData, messages: sIsSpectator ? [(outcome === 'miss' ? 'Missed shot.' : 'A ship was hit!')] : [oppMsg] });
+      let msg = '';
+      if (isShooter) {
+        if (outcome === 'miss') msg = this.i18n.translate('ws.games.shotMiss', sLang);
+        else if (outcome === 'sunk') msg = this.i18n.translate('ws.games.shotSunk', sLang, { shipType: shipType || '' });
+        else msg = this.i18n.translate('ws.games.shotHit', sLang);
+      } else {
+        if (sIsSpectator) msg = outcome === 'miss' ? this.i18n.translate('ws.games.shotMiss', sLang) : this.i18n.translate('ws.games.shotHit', sLang);
+        else {
+          if (outcome === 'miss') msg = this.i18n.translate('ws.games.opponentMiss', sLang);
+          else if (outcome === 'sunk') msg = this.i18n.translate('ws.games.opponentSunk', sLang, { shipType: shipType || '' });
+          else msg = this.i18n.translate('ws.games.opponentHit', sLang);
+        }
       }
+      (s as unknown as Socket).emit('naval-battle', { success: true, data: sData, messages: [msg] });
     }
   }
 
   public startTimer(socket: Socket, room_id: string, seconds: number) {
-    this.logger.debug(`[TIMER] startTimer called for socket ${socket.id} in room ${room_id} for ${seconds}s`);
     clearTimer(socket.id);
     const t = setTimeout(async () => {
-      this.logger.debug(`[TIMER] Timeout reached for socket ${socket.id} in room ${room_id}`);
       const room = await this.roomModel.findById(room_id);
       if (!room || room.status !== 'started') return;
       
@@ -422,29 +357,20 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       if (winnerId) {
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = 'timeout'; room.finished_at = new Date();
         await room.save();
-        const prize = room.bet_amount * (2 - room.house_edge / 100);
+        const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
         await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
         
+        const winnerUsername = await this.getCachedUsername(winnerId.toString());
         const sockets = await this.server.in(room_id).fetchSockets();
         for (const s of sockets) {
           const sLang = this.getLang(s as unknown as Socket);
           const socketPlayerId = (s as any).data.player_id;
           const isWinner = socketPlayerId === winnerId.toString();
           const sIsSpectator = (s as any).data.isSpectator || false;
-          const winnerUsername = await this.getCachedUsername(winnerId.toString());
           (s as unknown as Socket).emit('naval-battle', {
             success: true,
-            data: {
-              gameEnded: true,
-              outcome: isWinner ? 'win' : 'timeout_loss',
-              youWon: isWinner && !sIsSpectator,
-              winner: sIsSpectator ? winnerUsername : winnerId,
-              reason: 'timeout',
-              prize: isWinner ? prize : 0,
-              isPlayerOne: (s as any).data.playerNum === 1,
-              isSpectator: sIsSpectator,
-            },
-            messages: sIsSpectator ? [`${winnerUsername} won by timeout!`] : [isWinner ? 'ws.games.opponentTimedOut' : 'ws.games.turnExpired']
+            data: { gameEnded: true, outcome: isWinner ? 'win' : 'timeout_loss', youWon: isWinner && !sIsSpectator, winner: sIsSpectator ? winnerUsername : winnerId, reason: 'timeout', prize: isWinner ? prize : 0, isSpectator: sIsSpectator },
+            messages: sIsSpectator ? [this.i18n.translate('ws.games.winsTimeout', sLang, { username: winnerUsername })] : [isWinner ? this.i18n.translate('ws.games.timeoutWin', sLang) : this.i18n.translate('ws.games.timeoutLoss', sLang)]
           });
         }
         

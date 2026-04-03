@@ -13,5 +13,6 @@ export class HalmaGame {
   @Prop({ default: false }) prevent_leave_goal: boolean;
   @Prop({ type: Date, default: Date.now }) turn_start_time: Date;
   @Prop({ type: [[Number]], default: [] }) pending_captures: number[][]; // [row, col][]
+  @Prop({ default: false }) must_end_turn: boolean;
 }
 export const HalmaGameSchema = SchemaFactory.createForClass(HalmaGame);
