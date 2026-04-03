@@ -219,6 +219,9 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         (s as unknown as Socket).emit('domino', { success: true, data: { hand: myHand, board: [], boneyardCount: boneyard.length, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: startingUsername, gameStarted: true, isSpectator: sIsSpectator }, messages: sIsSpectator ? ['Game started!'] : [isMyTurn ? 'Game started! Your turn.' : 'Game started!'] });
         if (isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
       }
+      const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+      const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+      if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
     }
   }
 

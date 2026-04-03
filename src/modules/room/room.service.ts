@@ -470,9 +470,16 @@ export class RoomService {
           }
         }
         
-        // Lobby update
-        const [enriched] = this.localizeRooms([updatedRoom.toObject()], lang);
-        this.roomsGateway.broadcastRoomUpdate((updatedRoom.game_id as any)._id.toString(), 'roomUpdated', enriched);
+        // Lobby update - fetch fully populated room with correct 'started' status
+        const populatedStartedRoom = await this.roomModel.findById(startedRoom._id)
+          .populate('game_id', '-created_at')
+          .populate('players.playerId', 'username')
+          .lean();
+        if (populatedStartedRoom) {
+          const [enriched] = this.localizeRooms([populatedStartedRoom], lang);
+          const gameId = (populatedStartedRoom.game_id as any)?._id?.toString() || populatedStartedRoom.game_id?.toString();
+          if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomUpdated', enriched);
+        }
       }
     }
 

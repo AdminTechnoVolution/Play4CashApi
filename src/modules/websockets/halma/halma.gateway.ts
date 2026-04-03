@@ -198,6 +198,9 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         (s as unknown as Socket).emit('halma', { success: true, data: { board, yourTurn: isTurn && !sIsSpectator, isPlayerOne: pNum === 1, gameStarted: true, turnTimerSeconds: 30, isSpectator: sIsSpectator }, messages: sIsSpectator ? ['Game started!'] : [isTurn ? 'Your turn!' : 'Waiting for opponent.'] });
         if (isTurn) this.startTimer(s as unknown as Socket, room_id, 30);
       }
+      const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+      const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+      if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
     }
   }
 
