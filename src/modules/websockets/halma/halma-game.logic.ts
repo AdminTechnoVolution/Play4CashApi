@@ -11,10 +11,6 @@ export type HalmaBoard = number[][];
 /** A square is dark if (row + col) is odd */
 export const isDarkSquare = (r: number, c: number): boolean => (r + c) % 2 !== 0;
 
-/** Player 1 moves DOWN (row increases), Player 2 moves UP (row decreases) */
-export const isForwardMove = (fromRow: number, toRow: number, pNum: number): boolean =>
-  pNum === 1 ? toRow > fromRow : toRow < fromRow;
-
 /**
  * 12 pieces per player, placed on dark squares in their first 3 rows.
  * P1 (rows 0-2): Row 0 → cols 1,3,5,7 | Row 1 → cols 0,2,4,6 | Row 2 → cols 1,3,5,7
@@ -45,7 +41,6 @@ export const isValidStep = (b: HalmaBoard, fr: number, fc: number, tr: number, t
   if (b[fr][fc] !== pNum) return false;
   if (b[tr][tc] !== 0) return false;
   if (!isDarkSquare(tr, tc)) return false;
-  if (!isForwardMove(fr, tr, pNum)) return false;
   return Math.abs(tr - fr) === 1 && Math.abs(tc - fc) === 1;
 };
 
@@ -59,7 +54,6 @@ export const isValidJump = (b: HalmaBoard, fr: number, fc: number, tr: number, t
   if (!isDarkSquare(tr, tc)) return false;
   const pNum = b[fr][fc];
   if (!pNum) return false;
-  if (!isForwardMove(fr, tr, pNum)) return false;
   if (Math.abs(tr - fr) !== 2 || Math.abs(tc - fc) !== 2) return false;
   return b[(fr + tr) / 2][(fc + tc) / 2] !== 0;
 };

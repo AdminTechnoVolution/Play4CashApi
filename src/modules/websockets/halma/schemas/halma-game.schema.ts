@@ -12,5 +12,6 @@ export class HalmaGame {
   @Prop({ type: Number, enum: [1, 2], default: 1 }) current_player: number;
   @Prop({ default: false }) prevent_leave_goal: boolean;
   @Prop({ type: Date, default: Date.now }) turn_start_time: Date;
+  @Prop({ type: [[Number]], default: [] }) pending_captures: number[][]; // [row, col][]
 }
 export const HalmaGameSchema = SchemaFactory.createForClass(HalmaGame);
