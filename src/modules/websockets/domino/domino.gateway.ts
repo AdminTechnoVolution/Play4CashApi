@@ -111,29 +111,61 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
     if (room.status === 'started') {
       const reason = client.data.eliminationReason || 'forfeit';
-      await this.eliminatePlayer(room_id, player_id, reason);
+      if (reason === 'timeout') {
+        // Already a timeout elimination, proceed
+        await this.eliminatePlayer(room_id, player_id, reason);
+        return;
+      }
+
+      // ACCIDENTAL DISCONNECT - Implementation of Grace Period
+      const game = await this.dominoModel.findOne({ room_id: roomObjId });
+      if (game) {
+        let gracePeriod = 60; // Default 60s for non-active turn
+        const currentPlayerId = game.player_ids[game.current_player_index]?.toString();
+        
+        if (currentPlayerId === player_id) {
+          const now = Date.now();
+          const turnStart = game.turn_start_time.getTime();
+          const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
+          const elapsed = now - turnStart;
+          gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
+        }
+
+        const redisKey = `grace_period:domino:${player_id}`;
+        await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
+        this.logger.log(`[Domino] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod}`);
+      }
     }
   }
 
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    if (!payload?.room_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
-    const { room_id } = payload;
     const player_id = client.data.player_id;
+    let room_id = payload?.room_id;
+    
+    // Check for reconnection session in Redis
+    const redisKey = `grace_period:domino:${player_id}`;
+    const reconData = await this.redis.get(redisKey);
 
+    if (reconData) {
+      const parsed = JSON.parse(reconData);
+      room_id = parsed.room_id;
+      await this.redis.del(redisKey);
+      this.logger.log(`[Domino] 🔄 Reconnection detected | player=${player_id} | room=${room_id}`);
+    }
+
+    if (!room_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
     if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-
-    const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
-    const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
-    if (!isMember && !isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.notInRoom', lang)] });
 
     await client.join(room_id);
     client.data.room_id = room_id;
 
     // Check if player is eliminated in an active game
     const game = await this.dominoModel.findOne({ room_id });
+    const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
     const isEliminated = game?.eliminated_players?.includes(player_id);
     client.data.isSpectator = !isMember || isEliminated;
 
@@ -270,7 +302,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; tile: number[]; side: 'left' | 'right' }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    const { room_id, tile, side } = payload;
+    const room_id = payload.room_id || client.data.room_id;
+    const { tile, side } = payload;
     const player_id = client.data.player_id;
     if (!room_id || !tile || !side) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
 
@@ -380,10 +413,9 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   @SubscribeMessage('draw')
   async handleDraw(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    const { room_id } = payload;
+    const room_id = payload.room_id || client.data.room_id;
+    if (!room_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
     const player_id = client.data.player_id;
-    if (!room_id) return;
 
     await this.runWithRetry(async () => {
       const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -437,10 +469,9 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   @SubscribeMessage('pass')
   async handlePass(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    if (client.data.isSpectator) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    const { room_id } = payload;
+    const room_id = payload.room_id || client.data.room_id;
+    if (!room_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
     const player_id = client.data.player_id;
-    if (!room_id) return;
 
     await this.runWithRetry(async () => {
       const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -509,13 +540,24 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   }
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {
+    const player_id = (socket as any).data?.player_id;
+    if (!player_id) return;
+
     clearTimer(socket.id);
     const t = setTimeout(async () => {
-      const timedOutPlayerId = (socket as any).data?.player_id;
-      if (!timedOutPlayerId) return;
+      // Re-verify if player is still in turn via DB to be safe
+      const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game || game.status !== 'active') return;
+      const currentPlayerId = game.player_ids[game.current_player_index]?.toString();
+      if (currentPlayerId !== player_id) return;
+
       const lang = this.getLang(socket);
       socket.emit('domino', { success: false, data: { gameEnded: true, outcome: 'timeout_loss', youWon: false, reason: 'timeout', isSpectator: false }, messages: [this.i18n.translate('ws.domino.timeout', lang)] });
       socket.data.eliminationReason = 'timeout';
+      
+      // Permanently eliminate
+      await this.eliminatePlayer(room_id, player_id, 'timeout');
+      
       socket.leave(room_id);
       socket.disconnect(true);
     }, seconds * 1000);
@@ -524,6 +566,9 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
   public async eliminatePlayer(room_id: string, player_id: string, reason: 'forfeit' | 'timeout') {
     await this.runWithRetry(async () => {
+      // Clear reconnection session
+      await this.redis.del(`grace_period:domino:${player_id}`);
+      
       const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) return;
       const room = await this.roomModel.findById(room_id);

@@ -73,48 +73,86 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       else client.to(room_id).emit('halma', { success: true, data: { opponentLeft: true }, messages: ['Opponent left.'] });
       return;
     }
-    if (room.status === 'started') {      
-      if (room.players.length < 2) return;
+    if (room.status === 'started') {
+      const redisKey = `grace_period:halma:${player_id}`;
+      const game = await this.halmaModel.findOne({ room_id: roomObjId });
+      let gracePeriod = 60;
 
-      const lang = this.getLang(client);
-      const winner_id = room.players.find((p: any) => p.playerId.toString() !== player_id.toString())?.playerId;
-      if (!winner_id) return;
-      room.status = 'finished'; room.winner = winner_id; room.winner_reason = 'forfeit'; room.finished_at = new Date();
-      await room.save();
-      const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-      await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      const winnerUsername = await this.getCachedUsername(winner_id.toString());
-      const sockets = await this.server.in(room_id).fetchSockets();
-      for (const s of sockets) {
-        const sIsSpectator = (s as any).data.isSpectator || false;
-        const sLang = this.getLang(s as unknown as Socket);
-        (s as unknown as Socket).emit('halma', {
-          success: false, 
-          data: { 
-            outcome: 'opponent_disconnected', 
-            gameEnded: true,
-            winner: sIsSpectator ? winnerUsername : winner_id,
-            isSpectator: sIsSpectator
-          }, 
-          messages: sIsSpectator ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })] : [this.i18n.translate('ws.games.playerDisconnected', sLang)] 
-        });
+      if (game) {
+        const turnStart = game.turn_start_time?.getTime();
+        const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
+        if (turnStart) {
+          const elapsed = Date.now() - turnStart;
+          gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
+        }
       }
 
-      const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
+      await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
+      this.logger.log(`[Halma] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod}`);
+
+      // Schedule definitive forfeit
+      setTimeout(async () => {
+        const stillDisconnected = await this.redis.get(redisKey);
+        if (stillDisconnected) {
+          this.logger.log(`[Halma] 🚪 Grace period EXPIRED, forfeiting player=${player_id}`);
+          await this.redis.del(redisKey);
+          await this.executeForfeit(room_id, player_id);
+        }
+      }, gracePeriod * 1000);
     }
+  }
+
+  private async executeForfeit(room_id: string, player_id: string) {
+    const room = await this.roomModel.findOne({ _id: new Types.ObjectId(room_id), status: 'started' });
+    if (!room) return;
+    if (room.players.length < 2) return;
+
+    const winner_id = room.players.find((p: any) => p.playerId.toString() !== player_id.toString())?.playerId;
+    if (!winner_id) return;
+
+    room.status = 'finished' as any;
+    room.winner = winner_id;
+    room.winner_reason = 'forfeit';
+    room.finished_at = new Date();
+    await room.save();
+
+    const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
+    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
+
+    const winnerUsername = await this.getCachedUsername(winner_id.toString());
+    const sockets = await this.server.in(room_id).fetchSockets();
+    for (const s of sockets) {
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const sLang = this.getLang(s as unknown as Socket);
+      (s as unknown as Socket).emit('halma', {
+        success: false,
+        data: { outcome: 'opponent_disconnected', gameEnded: true, winner: sIsSpectator ? winnerUsername : winner_id, isSpectator: sIsSpectator },
+        messages: sIsSpectator ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })] : [this.i18n.translate('ws.games.playerDisconnected', sLang)]
+      });
+    }
+    const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+    if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
   }
 
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
-    if (!payload?.room_id) {
-      const lang = this.getLang(client);
-      return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
-    }
-    const { room_id } = payload;
-    const player_id = client.data.player_id;
     const lang = this.getLang(client);
+    const player_id = client.data.player_id;
+    let room_id = payload?.room_id;
 
+    // Check for reconnection session in Redis
+    const redisKey = `grace_period:halma:${player_id}`;
+    const reconData = await this.redis.get(redisKey);
+
+    if (reconData) {
+      const parsed = JSON.parse(reconData);
+      room_id = parsed.room_id;
+      await this.redis.del(redisKey);
+      this.logger.log(`[Halma] 🔄 Reconnection detected | player=${player_id} | room=${room_id}`);
+    }
+
+    if (!room_id) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
 
@@ -239,9 +277,22 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const lang = this.getLang(client);
     if (client.data.isSpectator) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
     this.logger.log(`[Halma] ♟ Move received | room=${payload?.room_id} | player=${client.data.player_id}`);
-    const { room_id, move } = payload;
+    const room_id = payload.room_id || client.data.room_id;
+    let { move } = payload;
     const player_id = client.data.player_id;
-    if (!room_id || !move) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+
+    // Support flattened payload structure (compatibility with frontend)
+    if (!move && payload.from_row !== undefined && payload.from_col !== undefined) {
+      move = { 
+        from: [Number(payload.from_row), Number(payload.from_col)],
+        to: [Number(payload.to_row), Number(payload.to_col)]
+      };
+    }
+
+    if (!room_id || !move) {
+      this.logger.warn(`[Halma] ❌ Invalid move payload (missing room_id or move) | player=${player_id} | payload=${JSON.stringify(payload)} | socketRoom=${client.data.room_id}`);
+      return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+    }
 
     const game = await this.halmaModel.findOne({ room_id: new Types.ObjectId(room_id) });
     if (!game) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
@@ -250,7 +301,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (game.current_player !== playerNum) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
 
     const { from, to } = move;
-    if (!from || !to || !Array.isArray(from) || !Array.isArray(to)) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+    if (!from || !to || !Array.isArray(from) || !Array.isArray(to)) {
+      this.logger.warn(`[Halma] ❌ Invalid move coordinates | player=${player_id} | move=${JSON.stringify(move)}`);
+      return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+    }
     
     const board = game.board as HalmaBoard;
     const [fr, fc] = [from[0], from[1]];
@@ -259,7 +313,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const isStep = isValidStep(board, fr, fc, tr, tc, playerNum);
     const isJump = isValidJump(board, fr, fc, tr, tc);
 
-    if (!isStep && !isJump) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)], data: { board } });
+    if (!isStep && !isJump) {
+      this.logger.warn(`[Halma] ❌ Illegal move (isStep=${isStep}, isJump=${isJump}) | player=${player_id} | pNum=${playerNum} | from=[${fr},${fc}] | to=[${tr},${tc}]`);
+      return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)], data: { board } });
+    }
 
     // Execute Move
     board[tr][tc] = board[fr][fc];
@@ -356,11 +413,9 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   }
 
   @SubscribeMessage('end_turn')
-  async handleEndTurn(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
+  async handleEndTurn(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    if (client.data.isSpectator) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    const { room_id } = payload;
-    const player_id = client.data.player_id;
+    const room_id = payload.room_id || client.data.room_id;
     if (!room_id) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
     const game = await this.halmaModel.findOne({ room_id: new Types.ObjectId(room_id) });
     const playerNum = client.data.playerNum || 1;

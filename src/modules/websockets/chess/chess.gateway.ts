@@ -109,40 +109,86 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     }
 
     if (room.status === 'started') {
-      const winner_id = room.players.find((p: any) => p.playerId.toString() !== player_id.toString())?.playerId;
-      if (!winner_id) return;
-      room.status = 'finished'; room.winner = winner_id; room.winner_reason = 'forfeit'; room.finished_at = new Date();
-      await room.save();
-      const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-      await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
-      const winnerUsername = await this.getCachedUsername(winner_id.toString());
-      const sockets = await this.server.in(room_id).fetchSockets();
-      for (const s of sockets) {
-        const sIsSpectator = (s as any).data.isSpectator || false;
-        const sLang = this.getLang(s as unknown as Socket);
-        (s as unknown as Socket).emit('chess', {
-          success: false, 
-          messages: sIsSpectator ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })] : [this.i18n.translate('ws.games.playerDisconnected', sLang)],
-          data: { 
-            outcome: 'opponent_disconnected', 
-            gameEnded: true,
-            winner: sIsSpectator ? winnerUsername : winner_id,
-            isSpectator: sIsSpectator
-          } 
-        });
+      const redisKey = `grace_period:chess:${player_id}`;
+      // Calculate remaining turn time if game supports it, otherwise default 60s
+      const game = await this.chessGameModel.findOne({ room_id: roomObjId });
+      let gracePeriod = 60;
+      
+      if (game) {
+        const turnStart = game.turn_start_time?.getTime();
+        const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
+        if (turnStart) {
+          const elapsed = Date.now() - turnStart;
+          gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
+        }
       }
-      const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
+
+      await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
+      this.logger.log(`[Chess] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod}`);
+
+      // Schedule definitive forfeit if not reconnected
+      setTimeout(async () => {
+        const stillDisconnected = await this.redis.get(redisKey);
+        if (stillDisconnected) {
+          this.logger.log(`[Chess] 🚪 Grace period EXPIRED, forfeiting player=${player_id}`);
+          await this.redis.del(redisKey);
+          await this.executeForfeit(room_id, player_id);
+        }
+      }, gracePeriod * 1000);
     }
+  }
+
+  private async executeForfeit(room_id: string, player_id: string) {
+    const room = await this.roomModel.findOne({ _id: new Types.ObjectId(room_id), status: 'started' });
+    if (!room) return;
+
+    const winner_id = room.players.find((p: any) => p.playerId.toString() !== player_id.toString())?.playerId;
+    if (!winner_id) return;
+
+    room.status = 'finished' as any;
+    room.winner = winner_id;
+    room.winner_reason = 'forfeit';
+    room.finished_at = new Date();
+    await room.save();
+
+    const numPlayers = room.players.length;
+    const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
+    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
+
+    const winnerUsername = await this.getCachedUsername(winner_id.toString());
+    const sockets = await this.server.in(room_id).fetchSockets();
+    for (const s of sockets) {
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const sLang = this.getLang(s as unknown as Socket);
+      (s as unknown as Socket).emit('chess', {
+        success: false,
+        messages: sIsSpectator ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })] : [this.i18n.translate('ws.games.playerDisconnected', sLang)],
+        data: { outcome: 'opponent_disconnected', gameEnded: true, winner: sIsSpectator ? winnerUsername : winner_id, isSpectator: sIsSpectator }
+      });
+    }
+    const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+    if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
   }
 
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    if (!payload?.room_id) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
-    const { room_id } = payload;
     const player_id = client.data.player_id;
 
+    // Check for reconnection session in Redis
+    let room_id = payload?.room_id;
+    const redisKey = `grace_period:chess:${player_id}`;
+    const reconData = await this.redis.get(redisKey);
+
+    if (reconData) {
+      const parsed = JSON.parse(reconData);
+      room_id = parsed.room_id;
+      await this.redis.del(redisKey);
+      this.logger.log(`[Chess] 🔄 Reconnection detected | player=${player_id} | room=${room_id}`);
+    }
+
+    if (!room_id) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
     if (room.status === 'finished') return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
@@ -268,7 +314,8 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const lang = this.getLang(client);
     if (client.data.isSpectator) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
     this.logger.log(`[Chess] ♟ Move received | room=${payload?.room_id} | player=${client.data.player_id}`);
-    const { room_id, promotion } = payload;
+    const room_id = payload.room_id || client.data.room_id;
+    const { promotion } = payload;
     let { from, to } = payload;
 
     if (!from && payload.from_row !== undefined && payload.from_col !== undefined) {
