@@ -22,6 +22,7 @@ export class AuthService {
 
   // ─── Login (Google OAuth) ───────────────────────────────────────────────────
   async loginUser(googleToken: string, lang = 'en'): Promise<any> {
+    this.logger.log(`[AuthService] Starting loginUser...`);
     let googlePayload: any;
     try {
       const ticket = await this.googleClient.verifyIdToken({
@@ -29,7 +30,9 @@ export class AuthService {
         audience: this.config.get<string>('google.clientId')!,
       });
       googlePayload = ticket.getPayload();
-    } catch {
+      this.logger.log(`[AuthService] Google token verified | email=${googlePayload.email}`);
+    } catch (err) {
+      this.logger.error(`[AuthService] Google token verification FAILED | error=${err.message}`);
       throw new BusinessException('ERROR_LOGIN', 401);
     }
 
@@ -39,14 +42,21 @@ export class AuthService {
     let user = await this.userRepo.findByEmail(email);
 
     if (!user) {
+      this.logger.log(`[AuthService] User NOT found, auto-registering... | email=${email}`);
       // Auto-register: valid Google account without an existing profile
       let username = name.replace(/\s+/g, '_').toLowerCase();
       const existing = await this.userRepo.findByUsername(username);
       if (existing) username = `${username}${Math.floor(Math.random() * 10000)}`;
       user = await this.userRepo.create({ email, username, status: 'active' as any });
+      this.logger.log(`[AuthService] Auto-registration SUCCESS | userId=${user._id}`);
+    } else {
+      this.logger.log(`[AuthService] User found | userId=${user._id} | status=${user.status}`);
     }
 
-    if (user.status !== 'active') throw new BusinessException('ERROR_LOGIN', 401);
+    if (user.status !== 'active') {
+      this.logger.warn(`[AuthService] Login DENIED | user is not active | userId=${user._id}`);
+      throw new BusinessException('ERROR_LOGIN', 401);
+    }
 
     const accessTtl = this.config.get<number>('jwt.accessTtlSecs')!;
     const refreshTtl = this.config.get<number>('jwt.refreshTtlSecs')!;
@@ -56,7 +66,8 @@ export class AuthService {
 
     const token = await this.issueToken(userPayload, accessTtl, REDIS_KEY_ACCESS_TOKEN);
     const refreshToken = await this.issueToken(refreshPayload, refreshTtl, REDIS_KEY_REFRESH_TOKEN);
-    this.logger.debug(`${token}`);
+    
+    this.logger.log(`[AuthService] Login SUCCESS | userId=${user._id} | Tokens issued`);
     return { success: true, messages: [], data: { token, refreshToken } };
   }
 

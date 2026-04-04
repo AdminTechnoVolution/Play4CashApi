@@ -46,7 +46,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     // Unhandled error — NEVER expose raw message to client
     const message = this.i18n.translate('ERROR_GENERIC_RESPONSE', lang);
-    console.error('[GlobalExceptionFilter] Unhandled exception:', exception);
+    console.error(`[GlobalExceptionFilter] Unhandled exception ON [${request.method}] ${request.url}:`, exception);
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
       success: false,
       messages: [message],

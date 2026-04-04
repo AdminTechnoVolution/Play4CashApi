@@ -13,10 +13,39 @@ async function bootstrap(): Promise<void> {
   // ─── Security Headers ─────────────────────────────────────────────────────
   app.use(helmet());
 
+  // ─── Systematic Request Tracer ──────────────────────────────────────────
+  app.use((req: any, _res: any, next: any) => {
+    const method = req.method;
+    const url = req.url;
+    const gatewayUser = req.headers['x-gateway-user'] || 'Not found';
+    const bodySize = req.headers['content-length'] || '0';
+    const contentType = req.headers['content-type'] || 'None';
+    const startTime = Date.now();
+
+    console.log(`[Tracer] INCOMING: ${method} ${url} | Size=${bodySize} | Type=${contentType} | GatewayUser=${gatewayUser}`);
+
+    _res.on('finish', () => {
+      const duration = Date.now() - startTime;
+      console.log(`[Tracer] COMPLETED: ${method} ${url} | Status=${_res.statusCode} | Duration=${duration}ms`);
+    });
+
+    _res.on('close', () => {
+      if (!_res.writableFinished) {
+        console.warn(`[Tracer] CLOSED PREMATURELY: ${method} ${url} | Duration=${Date.now() - startTime}ms`);
+      }
+    });
+
+    next();
+  });
+
   // ─── NoSQL Injection Protection ───────────────────────────────────────────
   // Custom wrapper for Express 5 compatibility (req.query is read-only)
   app.use((req: any, _res: any, next: any) => {
-    if (req.body) req.body = mongoSanitize.sanitize(req.body);
+    console.log(`[Tracer] ENTERING NoSQL Protection | RequestBody=${!!req.body}`);
+    if (req.body) {
+      console.log(`[Tracer] Sanitizing body...`);
+      req.body = mongoSanitize.sanitize(req.body);
+    }
     if (req.params) req.params = mongoSanitize.sanitize(req.params);
     next();
   });

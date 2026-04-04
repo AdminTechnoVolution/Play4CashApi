@@ -55,6 +55,11 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         await client.join(room._id.toString());
         client.data.room_id = room._id.toString();
         await this.syncPlayerState(client, room._id.toString(), player_id);
+        
+        // Cancel grace period forfeiture upon reconnection
+        const redisKey = `grace_period:naval-battle:${player_id}`;
+        await this.redis.del(redisKey);
+        this.logger.log(`[NavalBattle] 🔄 Grace period CANCELLED for player=${player_id}`);
       }
     }
     this.logger.log(`[NavalBattle] Connected: ${client.id}`); 

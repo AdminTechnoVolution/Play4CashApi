@@ -10,7 +10,6 @@ import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { I18nService } from '../../common/i18n/i18n.service';
 import { Public } from '../../common/decorators/public.decorator';
-import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
@@ -28,6 +27,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login with Google OAuth token' })
   async login(@Body() dto: LoginDto) {
+    console.log(`[AuthController] Login request started | tokenPrefix=${dto.token?.substring(0, 10)}...`);
     return this.authService.loginUser(dto.token);
   }
 
