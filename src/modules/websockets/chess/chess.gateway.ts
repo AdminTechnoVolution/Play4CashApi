@@ -241,10 +241,21 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (room.status === 'started') {
       const game = await this.chessGameModel.findOne({ room_id });
       if (game) {
-        const timerSeconds = room.game_id?.turn_timer_seconds || 30;
+        const totalTimerSeconds = room.game_id?.turn_timer_seconds || 30;
+        let timerSeconds = totalTimerSeconds;
+        if (room.turn_start_time) {
+          const elapsed = (Date.now() - new Date(room.turn_start_time).getTime()) / 1000;
+          timerSeconds = Math.max(5, Math.ceil(totalTimerSeconds - elapsed));
+        }
+
         const isMyTurn = game.current_player === playerNum;
         const currentBoard = game.board;
         const currentState = game.toObject() as any;
+
+        if (isMyTurn) {
+          this.startTimer(client, room_id, timerSeconds);
+        }
+
         return client.emit('chess', { success: true, messages: [], data: {
           board: currentBoard,
           yourTurn: isMyTurn, turnTimerSeconds: timerSeconds,
@@ -363,13 +374,17 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     game.markModified('board');
     await game.save();
 
+    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
+    if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    
+    const limit = room.game_id?.turn_timer_seconds || 30;
     const sockets = await this.server.in(room_id).fetchSockets();
     const opponent = sockets.find(s => (s as any).data.playerNum === game.current_player);
     clearTimer(client.id);
-    if (opponent) this.startTimer(opponent as unknown as Socket, room_id, 30);
-
-    const room = await this.roomModel.findById(room_id);
-    if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (opponent) this.startTimer(opponent as unknown as Socket, room_id, limit);
+    
+    room.turn_start_time = new Date();
+    await room.save();
     
     if (room.status === 'finished') {
       return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
@@ -408,7 +423,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       
       const sData: any = { 
         board: nextBoard, lastMove: { from, to }, yourTurn: !sIsSpectator && sPNum === game.current_player && !result.finished, 
-        turnTimerSeconds: 30, inCheck: inCheckNow,
+        turnTimerSeconds: limit, turn_start_time: room.turn_start_time, inCheck: inCheckNow,
         outcome: result.finished ? (result.winner ? (isWinner ? 'win' : 'lose') : 'draw') : '', 
         youWon: !isDraw && isWinner && !sIsSpectator, 
         gameEnded: result.finished, 
