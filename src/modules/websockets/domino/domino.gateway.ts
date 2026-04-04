@@ -159,6 +159,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
     if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (room.status === 'finished') return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
 
     await client.join(room_id);
     client.data.room_id = room_id;
@@ -305,7 +306,10 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const room_id = payload.room_id || client.data.room_id;
     const { tile, side } = payload;
     const player_id = client.data.player_id;
-    if (!room_id || !tile || !side) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+    if (!room_id || !tile || !side) {
+      this.logger.warn(`[Domino] ❌ Invalid move payload | player=${player_id} | payload=${JSON.stringify(payload)} | socketRoom=${client.data.room_id}`);
+      return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+    }
 
     await this.runWithRetry(async () => {
       const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });

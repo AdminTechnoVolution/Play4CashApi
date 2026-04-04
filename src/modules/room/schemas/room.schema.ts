@@ -42,7 +42,8 @@ export class Room {
   @Prop({ default: Date.now }) created_at: Date;
   @Prop() finished_at: Date;
   @Prop({ type: Types.ObjectId, ref: 'User' }) winner: Types.ObjectId;
-  @Prop({ lowercase: true }) winner_reason: string;
+  @Prop() winner_reason: string;
+  @Prop() turn_start_time: Date;
 }
 
 export const RoomSchema = SchemaFactory.createForClass(Room);

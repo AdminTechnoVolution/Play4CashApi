@@ -10,6 +10,7 @@ import { Model, Types } from 'mongoose';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { BattleshipPlacement, BattleshipPlacementDocument } from '../../naval-battle/schemas/battleship-placement.schema';
+import { Room, RoomStatus, RoomPlayer } from '../../room/schemas/room.schema';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { I18nService } from '../../../common/i18n/i18n.service';
 
@@ -42,15 +43,43 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
 
   afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
 
-  handleConnection(client: Socket) { this.logger.log(`[NavalBattle] Connected: ${client.id}`); }
+  async handleConnection(client: Socket) { 
+    const player_id = client.data.player_id;
+    if (player_id) {
+      const room = await this.roomModel.findOne({ 
+        status: { $in: [RoomStatus.STARTED, RoomStatus.WAITING] },
+        'players.playerId': new Types.ObjectId(player_id)
+      });
+      if (room) {
+        this.logger.log(`[NavalBattle] 🔄 Auto-reconnection detected | player=${player_id} | room=${room._id}`);
+        await client.join(room._id.toString());
+        client.data.room_id = room._id.toString();
+        await this.syncPlayerState(client, room._id.toString(), player_id);
+      }
+    }
+    this.logger.log(`[NavalBattle] Connected: ${client.id}`); 
+  }
 
   async handleDisconnect(client: Socket) {
-    clearTimer(client.id);
     const { room_id, player_id } = client.data;
-    if (!room_id || !player_id) return;
-    
+    if (!room_id || !player_id) {
+       clearTimer(client.id);
+       return;
+    }
+
     const room = await this.roomModel.findById(room_id);
     if (!room) return;
+
+    // Store move count to calculate missed shots on reconnection
+    const totalMoves = (room.players[0]?.moves?.length || 0) + (room.players[1]?.moves?.length || 0);
+    await this.redis.set(`last_move_index:naval-battle:${room_id}:${player_id}`, totalMoves.toString(), 'EX', 300);
+
+    // Save remaining turn time BEFORE clearing the timer
+    if (turnTimers.has(client.id)) {
+      await this.redis.set(`timer:naval-battle:${room_id}`, "30", 'EX', 60);
+    }
+    clearTimer(client.id);
+    
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
     if (isSpectator) {
       const updated = await this.roomModel.findOneAndUpdate({ _id: room_id }, { $pull: { spectators: new Types.ObjectId(player_id) } }, { returnDocument: 'after' });
@@ -66,7 +95,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   private async processForfeit(client: Socket, room_id: string, player_id: string) {
-    const room = await this.roomModel.findOne({ _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) });
+    const room = await this.roomModel.findOne({ _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) }).populate('game_id', 'turn_timer_seconds');
     if (!room || room.status === 'finished') return;
     const lang = this.getLang(client);
 
@@ -94,10 +123,19 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     }
     if (room.status === 'started') {
       const redisKey = `grace_period:naval-battle:${player_id}`;
-      const gracePeriod = 60; // Standard 60s for Naval Battle (less strict turn mapping)
+      const limit = ((room.game_id as any)?.turn_timer_seconds || 30) * 1000;
+      let gracePeriod = 60;
+
+      if (room.turn_start_time) {
+        const elapsed = Date.now() - new Date(room.turn_start_time).getTime();
+        gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
+      } else {
+        this.logger.warn(`[NavalBattle] ⚠️ turn_start_time missing for room=${room_id}, defaulting grace to 30s`);
+        gracePeriod = 30; // Fallback to standard turn length
+      }
 
       await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
-      this.logger.log(`[NavalBattle] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod}`);
+      this.logger.log(`[NavalBattle] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod} | limit=${limit/1000}s`);
 
       // Schedule definitive forfeit
       setTimeout(async () => {
@@ -144,11 +182,10 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
 
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
-    const lang = this.getLang(client);
     const player_id = client.data.player_id;
     let room_id = payload?.room_id;
 
-    // Check for reconnection session in Redis
+    // Check for reconnection session in Redis (grace period)
     const redisKey = `grace_period:naval-battle:${player_id}`;
     const reconData = await this.redis.get(redisKey);
 
@@ -156,13 +193,19 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       const parsed = JSON.parse(reconData);
       room_id = parsed.room_id;
       await this.redis.del(redisKey);
-      this.logger.log(`[NavalBattle] 🔄 Reconnection detected | player=${player_id} | room=${room_id}`);
+      this.logger.log(`[NavalBattle] 🔄 Reconnection detected via JOIN | player=${player_id} | room=${room_id}`);
     }
 
+    await this.syncPlayerState(client, room_id, player_id);
+  }
+
+  private async syncPlayerState(client: Socket, room_id: string, player_id: string) {
+    const lang = this.getLang(client);
     if (!room_id) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (room.status === RoomStatus.FINISHED) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
@@ -180,7 +223,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
 
       let shotFrom = 'Unknown';
-      if (room.status === 'started') {
+      if (room.status === RoomStatus.STARTED) {
         const sockets = await this.server.in(room_id).fetchSockets();
         const activeTimerSocket = sockets.find(s => turnTimers.has(s.id) && !(s as any).data.isSpectator);
         if (activeTimerSocket) {
@@ -191,7 +234,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       }
 
       return client.emit('naval-battle', { success: true, data: {
-        waitingForOpponent: false, gameStarted: room.status === 'started',
+        waitingForOpponent: false, gameStarted: room.status === RoomStatus.STARTED,
         yourTurn: false, turnTimerSeconds: 30,
         isSpectator: true, spectatorsCount: room.spectators.length,
         player1, player2, shotFrom, turnOf: shotFrom,
@@ -205,10 +248,59 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       client.to(room_id).emit('naval-battle', { success: true, data: { opponentJoined: true, opponentName: username }, messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })] });
     }
 
-    const myPlacement = await this.placementModel.findOne({ room_id, player_id });
+    const p1Id = room.players[0]?.playerId?.toString();
+    const p2Id = room.players[1]?.playerId?.toString();
+    const player1 = p1Id ? await this.getCachedUsername(p1Id) : 'Unknown';
+    const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
+    const opponent_id = room.players.find((p: any) => p.playerId.toString() !== player_id)?.playerId?.toString();
+
+    const roomObjId = new Types.ObjectId(room_id);
+    const playerObjId = new Types.ObjectId(player_id);
+    const opponentObjId = opponent_id ? new Types.ObjectId(opponent_id) : null;
+
+    const [myPlacement, opponentPlacement, timeLeft, lastMoveIndexStr] = await Promise.all([
+      this.placementModel.findOne({ room_id: roomObjId, player_id: playerObjId }),
+      opponentObjId ? this.placementModel.findOne({ room_id: roomObjId, player_id: opponentObjId }) : null,
+      this.redis.get(`timer:naval-battle:${room_id}`),
+      this.redis.get(`last_move_index:naval-battle:${room_id}:${player_id}`)
+    ]);
+
     if (myPlacement) {
-      const isMyTurn = client.data.myTurn;
-      return client.emit('naval-battle', { success: true, data: { ships: myPlacement.ships, shotsFired: myPlacement.shotsFired, status: myPlacement.status, waitingForOpponent: room.status === 'waiting', gameStarted: room.status === 'started', yourTurn: isMyTurn, turnTimerSeconds: 30, isSpectator: false }, messages: [this.i18n.translate('ws.games.roomReconnected', lang)] });
+      const history = room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: i === 0 ? player1 : player2 })));
+      
+      let missedShots = [];
+      if (lastMoveIndexStr) {
+        const lastIndex = parseInt(lastMoveIndexStr);
+        missedShots = history.slice(lastIndex);
+        await this.redis.del(`last_move_index:naval-battle:${room_id}:${player_id}`);
+      }
+
+      const sockets = await this.server.in(room_id).fetchSockets();
+      const opponentSocket = sockets.find(s => (s as any).data.player_id === opponent_id && !(s as any).data.isSpectator);
+      const isOpponentTurn = opponentSocket && turnTimers.has(opponentSocket.id);
+      const isMyTurn = !isOpponentTurn && room.status === RoomStatus.STARTED;
+
+      if (isMyTurn) {
+        const remaining = Number(timeLeft) || 30;
+        this.startTimer(client, room_id, remaining);
+        await this.redis.del(`timer:naval-battle:${room_id}`);
+      }
+
+      return client.emit('naval-battle', { success: true, data: {
+        ships: myPlacement.ships,
+        shotsFired: myPlacement.shotsFired,
+        shotsReceived: opponentPlacement?.shotsFired || [],
+        status: myPlacement.status,
+        waitingForOpponent: room.status === RoomStatus.WAITING,
+        gameStarted: room.status === RoomStatus.STARTED,
+        yourTurn: isMyTurn,
+        turnTimerSeconds: 30,
+        isSpectator: false,
+        player1, player2,
+        turnOf: isMyTurn ? player1 : player2,
+        history,
+        missedShots
+      }, messages: [this.i18n.translate('ws.games.roomReconnected', lang)] });
     }
 
     client.emit('naval-battle', { success: true, data: { waitingForOpponent: true, isSpectator: false }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
@@ -218,8 +310,11 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   async handlePlaceShips(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; placements: any[] }) {
     const lang = this.getLang(client);
     const room_id = payload.room_id || client.data.room_id;
-    if (!room_id || !payload.placements) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
-    const ships = payload.placements;
+    const ships = payload.placements || (payload as any).ships;
+    if (!room_id || !ships) {
+      this.logger.warn(`[NavalBattle] ❌ Invalid place_ships payload | player=${client.data.player_id} | payload=${JSON.stringify(payload)} | socketRoom=${client.data.room_id}`);
+      return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+    }
     const player_id = client.data.player_id;
 
     const room = await this.roomModel.findById(room_id);
@@ -240,7 +335,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       const startedRoom = await this.roomModel.findById(room_id).populate('game_id');
       if (!startedRoom) return;
       
-      await this.roomModel.updateOne({ _id: room_id }, { $set: { status: 'started' } });
+      await this.roomModel.updateOne({ _id: room_id }, { $set: { status: 'started', turn_start_time: new Date() } });
       await this.placementModel.updateMany({ room_id }, { status: 'ready' });
       
       const timerSeconds = (startedRoom.game_id as any)?.turn_timer_seconds ?? 30;
@@ -265,8 +360,18 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   async handleFire(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; target: { row: number, col: number } }) {
     const lang = this.getLang(client);
     const room_id = payload.room_id || client.data.room_id;
-    if (!room_id || !payload.target) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
-    const { row, col } = payload.target;
+    let { target } = payload;
+    
+    // Support flattened row/col (compatibility)
+    if (!target && (payload as any).row !== undefined && (payload as any).col !== undefined) {
+      target = { row: Number((payload as any).row), col: Number((payload as any).col) };
+    }
+
+    if (!room_id || !target) {
+      this.logger.warn(`[NavalBattle] ❌ Invalid fire payload | player=${client.data.player_id} | payload=${JSON.stringify(payload)} | socketRoom=${client.data.room_id}`);
+      return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+    }
+    const { row, col } = target;
     const player_id = client.data.player_id;
     
     if (client.data.isSpectator) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
@@ -350,10 +455,17 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     const sockets = await this.server.in(room_id).fetchSockets();
     
     clearTimer(client.id);
+    
+    // Always update turn_start_time on any shot attempt to match timer reset
+    room.turn_start_time = new Date();
+    await room.save();
+
     if (keepTurn) this.startTimer(client, room_id, timerSeconds);
     else {
       const oppSocket = sockets.find(s => (s as any).data.player_id === opponent?.playerId.toString());
-      if (oppSocket) this.startTimer(oppSocket as unknown as Socket, room_id, timerSeconds);
+      if (opponent && oppSocket) {
+        this.startTimer(oppSocket as unknown as Socket, room_id, 30);
+      }
     }
 
     const p1Id = room.players[0]?.playerId?.toString();
@@ -386,6 +498,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   public startTimer(socket: Socket, room_id: string, seconds: number) {
+    if (!socket?.id) return;
     clearTimer(socket.id);
     const t = setTimeout(async () => {
       const room = await this.roomModel.findById(room_id);

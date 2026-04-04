@@ -309,12 +309,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     }
   }
 
+
   @SubscribeMessage('move')
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
-    this.logger.log(`[Chess] ♟ Move received | room=${payload?.room_id} | player=${client.data.player_id}`);
     const room_id = payload.room_id || client.data.room_id;
+    this.logger.log(`[Chess] ♟ Move received | room=${room_id} | player=${client.data.player_id} | payload=${JSON.stringify(payload)}`);
     const { promotion } = payload;
     let { from, to } = payload;
 
@@ -327,6 +328,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const playerNum = client.data.playerNum || 1;
     if (!room_id || !from || !to) {
+      this.logger.warn(`[Chess] ❌ Invalid move payload (missing fields) | player=${client.data.player_id} | room_id=${room_id} | payload=${JSON.stringify(payload)} | socketRoom=${client.data.room_id}`);
       return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
     }
 
@@ -339,6 +341,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const move = legalMoves.find((m: any) => m.to.row === to.row && m.to.col === to.col);
     if (!move) {
       const inCheck = isCheck(playerColor, game.board, game.toObject() as any);
+      this.logger.warn(`[Chess] ❌ Illegal move | player=${client.data.player_id} | from=[${from.row},${from.col}] | to=[${to.row},${to.col}] | inCheck=${inCheck}`);
       return client.emit('chess', {
         success: false,
         messages: [this.i18n.translate(inCheck ? 'ws.chess.illegalMoveInCheck' : 'ws.chess.illegalMove', lang)],
@@ -367,6 +370,10 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const room = await this.roomModel.findById(room_id);
     if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    
+    if (room.status === 'finished') {
+      return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+    }
 
     if (result.finished) {
       room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
@@ -435,6 +442,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const lang = this.getLang(client);
     return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.chessAutoTurn', lang)] });
   }
+
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {
     clearTimer(socket.id);
