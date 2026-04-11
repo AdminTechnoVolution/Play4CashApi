@@ -1,0 +1,118 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
+import { UserRepository } from './user.repository';
+import { BusinessException } from '../../common/exceptions/business.exception';
+
+@Injectable()
+export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
+  constructor(
+    private readonly userRepo: UserRepository,
+    @InjectModel('AppConfig') private readonly appConfigModel: Model<any>,
+    @InjectModel('Room') private readonly roomModel: Model<any>,
+  ) {}
+
+  async getProfile(userId: string): Promise<any> {
+    const user = await this.userRepo.findByIdSelect(userId, '-created_at');
+    if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+
+    let withdrawal_daily_limit = 10000;
+    try {
+      const config = await this.appConfigModel.findOne({ key: 'global' }).lean();
+      if (config) withdrawal_daily_limit = (config as any).withdrawal_daily_limit ?? 10000;
+    } catch { /* use default */ }
+
+    const profile = user as any;
+    profile.limits = { daily_withdrawal: withdrawal_daily_limit };
+    return profile;
+  }
+
+  async getHistory(userId: string, lang = 'en'): Promise<any[]> {
+    const rooms = await this.roomModel
+      .find({ status: 'finished', 'players.playerId': new Types.ObjectId(userId) })
+      .populate('game_id', 'name socket_code')
+      .populate('players.playerId', 'username')
+      .populate('winner', 'username')
+      .sort({ finished_at: -1 })
+      .lean();
+
+    return rooms.map((room: any) => {
+      const isWinner = room.winner && room.winner._id.toString() === userId;
+      const isDraw = !room.winner && room.status === 'finished' &&
+        ['stalemate', 'insufficient_material', 'draw'].includes(room.winner_reason);
+
+      let prize = 0;
+      let resultKey = 'lose';
+      if (isWinner) {
+        prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
+        resultKey = 'win';
+      } else if (isDraw) {
+        prize = room.bet_amount;
+        resultKey = 'draw';
+      }
+
+      const opponent = room.players.find((p: any) => p.playerId?._id?.toString() !== userId);
+
+      let gameName = 'Unknown';
+      if (room.game_id?.name) {
+        gameName = room.game_id.name[lang] || room.game_id.name['en'] || room.game_id.name['es'] || 'Unknown';
+      }
+
+      const reason = room.winner_reason || (isWinner ? 'win' : isDraw ? 'draw' : 'forfeit');
+
+      return {
+        room_id: room._id,
+        room_code: room.code,
+        game_name: gameName,
+        game_code: room.game_id?.socket_code || 'unknown',
+        bet_amount: room.bet_amount,
+        result: resultKey,
+        prize: prize > 0 ? prize : isDraw ? room.bet_amount : null,
+        winner_reason: reason,
+        opponent: opponent ? { username: opponent.playerId?.username } : null,
+        finished_at: room.finished_at,
+        date: room.finished_at,
+      };
+    });
+  }
+
+  async registerUser(email: string, username: string, referred_by?: string): Promise<void> {
+    const existing = await this.userRepo.findByEmail(email.toLowerCase());
+    if (existing) throw new BusinessException('user.exist', 400);
+    await this.userRepo.create({
+      email: email.toLowerCase(),
+      username,
+      referred_by,
+      status: 'active',
+    } as any);
+  }
+
+  async verifyCode(email: string, verification_code: string): Promise<void> {
+    // Stub: verifyCode flow not fully implemented in this migration
+    throw new BusinessException('ERROR_VERIFICATIONCODE_RESPONSE', 400);
+  }
+
+  async registerWallet(
+    userId: string,
+    coin: string,
+    network: string,
+    wallet: string,
+  ): Promise<void> {
+    const user = await this.userRepo.updateById(userId, {
+      wallet_address: { coin: coin.toUpperCase(), network, wallet },
+    });
+    if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+  }
+
+  async updateProfile(userId: string, update: { username?: string }): Promise<any> {
+    const user = await this.userRepo.updateById(userId, update);
+    if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+    return user;
+  }
+
+  async getTotalBalances(): Promise<any> {
+    return this.userRepo.getTotalBalances();
+  }
+}
