@@ -399,12 +399,20 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       });
     }
   
+    const p1Name = await this.getCachedUsername(game.player1_id.toString());
+    const p2Name = await this.getCachedUsername(game.player2_id.toString());
+
     for (const s of sockets) {
       if (s.id === client.id) continue;
       const sIsSpectator = (s as any).data.isSpectator || false;
       const sLang = this.getLang(s as unknown as Socket);
       const sData: any = { board, pendingCaptures, yourTurn: false, turnTimerSeconds: remaining, outcome: '', isPlayerOne: (s as any).data.playerNum === 1, isSpectator: sIsSpectator };
-      if (sIsSpectator) sData.turnOf = playerNum === 1 ? 'Player 1' : 'Player 2';
+      if (sIsSpectator) {
+        sData.player1 = p1Name;
+        sData.player2 = p2Name;
+        sData.shotFrom = playerNum === 1 ? p1Name : p2Name;
+        sData.turnOf = playerNum === 1 ? p1Name : p2Name; // During chain jump or mustEndTurn, it's still the moving player's logically defined turn in this emit
+      }
       (s as unknown as Socket).emit('halma', { 
         success: true, 
         data: sData, 
@@ -512,6 +520,9 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         return;
     }
 
+    const p1NameUser = await this.getCachedUsername(game.player1_id.toString());
+    const p2NameUser = await this.getCachedUsername(game.player2_id.toString());
+
     for (const s of sockets) {
       const sPNum = (s as any).data.playerNum || 2;
       const sIsSpectator = (s as any).data.isSpectator || false;
@@ -519,6 +530,11 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const sLang = this.getLang(s as unknown as Socket);
       const msg = sIsSpectator ? [this.i18n.translate('ws.games.turnEnded', sLang)] : [(isMyTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.opponentEndedTurn', sLang))];
       const sData: any = { board: game.board, yourTurn: isMyTurn, turnTimerSeconds: timerSec, outcome: '', isPlayerOne: sPNum === 1, isSpectator: sIsSpectator };
+      if (sIsSpectator) {
+        sData.player1 = p1NameUser;
+        sData.player2 = p2NameUser;
+        sData.turnOf = game.current_player === 1 ? p1NameUser : p2NameUser;
+      }
       (s as unknown as Socket).emit('halma', { success: true, data: sData, messages: msg });
     }
   }

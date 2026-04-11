@@ -556,7 +556,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       if (currentPlayerId !== player_id) return;
 
       const lang = this.getLang(socket);
-      socket.emit('domino', { success: false, data: { gameEnded: true, outcome: 'timeout_loss', youWon: false, reason: 'timeout', isSpectator: false }, messages: [this.i18n.translate('ws.domino.timeout', lang)] });
+      socket.emit('domino', { success: true, data: { gameEnded: true, outcome: 'timeout_loss', youWon: false, reason: 'timeout', isSpectator: false }, messages: [this.i18n.translate('ws.domino.timeout', lang)] });
       socket.data.eliminationReason = 'timeout';
       
       // Permanently eliminate
