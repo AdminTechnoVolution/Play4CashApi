@@ -32,11 +32,31 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis);
   }
 
-  handleConnection(client: Socket) {
-    // Store the client's preferred language from the handshake
-    const lang = (client.handshake.headers['accept-language'] as string) || 'en';
+  private getLang(client: Socket): string {
     const supported = ['es', 'en', 'fr', 'de', 'it', 'pt'];
-    client.data.lang = supported.includes(lang) ? lang : 'en';
+    
+    // 1. Priority: query parameter (e.g. ?lang=es)
+    const queryLang = client.handshake?.query?.lang as string;
+    if (queryLang && supported.includes(queryLang.toLowerCase())) {
+      return queryLang.toLowerCase();
+    }
+
+    // 2. Stored data
+    if (client.data?.lang && supported.includes(client.data.lang)) {
+      return client.data.lang;
+    }
+
+    // 3. Fallback: accept-language header
+    const headerLang = client.handshake.headers['accept-language'] as string;
+    if (headerLang && supported.includes(headerLang.toLowerCase())) {
+      return headerLang.toLowerCase();
+    }
+
+    return 'en';
+  }
+
+  handleConnection(client: Socket) {
+    client.data.lang = this.getLang(client);
     this.logger.log(`[Chat] Connected: ${client.id} | lang=${client.data.lang}`);
   }
 
@@ -81,7 +101,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       const pid = (s as any).data.player_id;
       if (pid === sender_id) continue; // skip sender
 
-      const recipientLang = (s as any).data.lang || 'en';
+      const recipientLang = this.getLang(s as unknown as Socket);
       const localizedText = greeting.text?.[recipientLang] || greeting.text?.en || '';
 
       (s as unknown as Socket).emit('chat', {
@@ -97,7 +117,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     // Confirm to sender
-    const senderLang = client.data.lang || 'en';
+    const senderLang = this.getLang(client);
     client.emit('chat', {
       success: true,
       data: {
