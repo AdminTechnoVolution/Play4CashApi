@@ -29,7 +29,7 @@ export class RoomController {
 
   // GET /api/rooms/stats — public live stats (no auth needed)
   @Get('stats')
-  @ApiOperation({ summary: 'Get live stats: online players, active games, total bets' })
+  @ApiOperation({ summary: 'Get live stats: online players, active games, sum of per-room stake (bet_amount), not × players' })
   getLiveStats() {
     return this.roomService.getLiveStats();
   }

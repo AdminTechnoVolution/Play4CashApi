@@ -44,11 +44,11 @@ export class RoomService {
       }
     }
 
-    // Sum total bet amount from active rooms
-    const activeRooms = await this.roomModel.find({ status: 'started' }).select('bet_amount players').lean();
+    // Per-room stake (bet_amount) once per game — not multiplied by player count
+    const activeRooms = await this.roomModel.find({ status: 'started' }).select('bet_amount').lean();
     let totalBetAmount = 0;
     for (const room of activeRooms) {
-      totalBetAmount += (room.bet_amount || 0) * (room.players?.length || 0);
+      totalBetAmount += room.bet_amount || 0;
     }
 
     return {
