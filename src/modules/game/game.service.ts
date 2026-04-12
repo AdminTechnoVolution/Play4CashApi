@@ -2,17 +2,34 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Game, GameDocument } from './schemas/game.schema';
+import { Room, RoomDocument, RoomStatus } from '../room/schemas/room.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
 
 @Injectable()
 export class GameService {
   constructor(
     @InjectModel(Game.name) private readonly gameModel: Model<GameDocument>,
+    @InjectModel(Room.name) private readonly roomModel: Model<RoomDocument>,
   ) {}
 
   async findAll(lang = 'en'): Promise<any[]> {
-    const data = await this.gameModel.find({ active: true }).select('-created_at').lean();
-    return this.localizeGames(data, lang);
+    const [data, activeRoomCounts] = await Promise.all([
+      this.gameModel.find({ active: true }).select('-created_at').lean(),
+      this.roomModel.aggregate([
+        { $match: { status: { $ne: RoomStatus.FINISHED } } },
+        { $group: { _id: '$game_id', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const countMap = new Map<string, number>(
+      activeRoomCounts.map((r) => [r._id.toString(), r.count]),
+    );
+
+    const games = this.localizeGames(data, lang);
+    return games.map((g) => ({
+      ...g,
+      activeRooms: countMap.get(g._id.toString()) ?? 0,
+    }));
   }
 
   async findById(id: string, lang = 'en'): Promise<any> {
