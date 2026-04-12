@@ -83,7 +83,7 @@ export class UserService {
   async registerUser(email: string, username: string, referred_by?: string): Promise<void> {
     const existing = await this.userRepo.findByEmail(email.toLowerCase());
     if (existing) throw new BusinessException('user.exist', 400);
-    const normalized = username.trim().slice(0, 10);
+    const normalized = username.trim().slice(0, 20);
     await this.userRepo.create({
       email: email.toLowerCase(),
       username: normalized,
@@ -112,7 +112,7 @@ export class UserService {
   async updateProfile(userId: string, update: { username?: string }): Promise<any> {
     const payload = { ...update };
     if (payload.username !== undefined) {
-      payload.username = payload.username.trim().slice(0, 10);
+      payload.username = payload.username.trim().slice(0, 20);
     }
     const user = await this.userRepo.updateById(userId, payload);
     if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);

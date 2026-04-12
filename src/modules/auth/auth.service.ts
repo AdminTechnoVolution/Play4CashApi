@@ -43,18 +43,18 @@ export class AuthService {
 
     if (!user) {
       this.logger.log(`[AuthService] User NOT found, auto-registering... | email=${email}`);
-      // Auto-register: valid Google account without an existing profile (username max 10 chars)
-      const base = (name || 'user').replace(/\s+/g, '_').toLowerCase().slice(0, 10) || 'user';
+      // Auto-register: valid Google account without an existing profile (username max 20 chars)
+      const base = (name || 'user').replace(/\s+/g, '_').toLowerCase().slice(0, 20) || 'user';
       let username = base;
       for (let i = 0; i < 25; i++) {
         const taken = await this.userRepo.findByUsername(username);
         if (!taken) break;
         const suffix = String(Math.floor(Math.random() * 10000));
-        const prefix = base.slice(0, Math.max(1, 10 - suffix.length));
-        username = (prefix + suffix).slice(0, 10);
+        const prefix = base.slice(0, Math.max(1, 20 - suffix.length));
+        username = (prefix + suffix).slice(0, 20);
       }
       if (await this.userRepo.findByUsername(username)) {
-        username = `u${Date.now()}`.slice(-10);
+        username = `u${Date.now()}`.slice(-20);
       }
       user = await this.userRepo.create({ email, username, status: 'active' as any });
       this.logger.log(`[AuthService] Auto-registration SUCCESS | userId=${user._id}`);

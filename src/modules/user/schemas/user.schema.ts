@@ -26,7 +26,7 @@ export class User {
   @Prop({ required: true, unique: true })
   email: string;
 
-  @Prop({ required: true, maxlength: 10 })
+  @Prop({ required: true, maxlength: 20 })
   username: string;
 
   @Prop({ type: WalletAddress, _id: false })

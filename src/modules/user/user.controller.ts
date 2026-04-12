@@ -16,12 +16,12 @@ class RegisterWalletDto {
 }
 
 class UpdateProfileDto {
-  @ApiProperty({ required: false }) @IsOptional() @IsString() @MinLength(3) @MaxLength(10) username?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MinLength(3) @MaxLength(20) username?: string;
 }
 
 class RegisterUserDto {
   @ApiProperty() @IsEmail() email: string;
-  @ApiProperty() @IsString() @MinLength(3) @MaxLength(10) username: string;
+  @ApiProperty() @IsString() @MinLength(3) @MaxLength(20) username: string;
   @ApiProperty({ required: false }) @IsOptional() @IsString() referred_by?: string;
 }
 
