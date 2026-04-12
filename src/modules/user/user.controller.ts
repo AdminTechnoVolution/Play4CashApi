@@ -6,7 +6,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { I18nService } from '../../common/i18n/i18n.service';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 class RegisterWalletDto {
@@ -16,12 +16,12 @@ class RegisterWalletDto {
 }
 
 class UpdateProfileDto {
-  @ApiProperty({ required: false }) @IsOptional() @IsString() @MinLength(3) username?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MinLength(3) @MaxLength(10) username?: string;
 }
 
 class RegisterUserDto {
   @ApiProperty() @IsEmail() email: string;
-  @ApiProperty() @IsString() @MinLength(3) username: string;
+  @ApiProperty() @IsString() @MinLength(3) @MaxLength(10) username: string;
   @ApiProperty({ required: false }) @IsOptional() @IsString() referred_by?: string;
 }
 
