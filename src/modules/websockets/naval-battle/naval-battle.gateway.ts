@@ -13,6 +13,7 @@ import { BattleshipPlacement, BattleshipPlacementDocument } from '../../naval-ba
 import { Room, RoomStatus, RoomPlayer } from '../../room/schemas/room.schema';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { I18nService } from '../../../common/i18n/i18n.service';
+import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -167,8 +168,8 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     room.finished_at = new Date();
     await room.save();
 
-    const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
+    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
+    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -425,8 +426,9 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     if (allSunk) {
       room.status = 'finished'; room.winner = new Types.ObjectId(player_id); room.winner_reason = 'normal'; room.finished_at = new Date();
       await room.save();
-      const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-      await this.userModel.updateOne({ _id: player_id }, { $inc: { balance: prize } });
+      const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
+      const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
+      await this.userModel.updateOne({ _id: player_id }, { $inc: { balance: grossPayout } });
       
       const p1Id = room.players[0]?.playerId?.toString();
       const player1 = await this.getCachedUsername(p1Id);
@@ -439,7 +441,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         const sLang = this.getLang(s as unknown as Socket);
         const pid = (s as any).data.player_id;
         const isWinner = pid === player_id;
-        const sData: any = { outcome: isWinner ? 'win' : 'lose', youWon: isWinner && !sIsSpectator, winner: isWinner ? (sIsSpectator ? winnerUsername : player_id) : (sIsSpectator ? winnerUsername : player_id), reason: 'normal', row, col, shipType, prize: isWinner ? prize : 0, yourTurn: false, gameEnded: true, isSpectator: sIsSpectator };
+        const sData: any = { outcome: isWinner ? 'win' : 'lose', youWon: isWinner && !sIsSpectator, winner: isWinner ? (sIsSpectator ? winnerUsername : player_id) : (sIsSpectator ? winnerUsername : player_id), reason: 'normal', row, col, shipType, prize: isWinner ? displayPrize : 0, yourTurn: false, gameEnded: true, isSpectator: sIsSpectator };
         if (sIsSpectator) { sData.player1 = player1; sData.player2 = player2; sData.shotFrom = winnerUsername; sData.turnOf = winnerUsername; sData.winner = winnerUsername; }
         
         let msg = '';
@@ -516,8 +518,9 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       if (winnerId) {
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = 'timeout'; room.finished_at = new Date();
         await room.save();
-        const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
+        const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
+        const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
+        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
         
         const winnerUsername = await this.getCachedUsername(winnerId.toString());
         const sockets = await this.server.in(room_id).fetchSockets();
@@ -528,7 +531,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
           const sIsSpectator = (s as any).data.isSpectator || false;
           (s as unknown as Socket).emit('naval-battle', {
             success: true,
-            data: { gameEnded: true, outcome: isWinner ? 'win' : 'timeout_loss', youWon: isWinner && !sIsSpectator, winner: sIsSpectator ? winnerUsername : winnerId, reason: 'timeout', prize: isWinner ? prize : 0, isSpectator: sIsSpectator },
+            data: { gameEnded: true, outcome: isWinner ? 'win' : 'timeout_loss', youWon: isWinner && !sIsSpectator, winner: sIsSpectator ? winnerUsername : winnerId, reason: 'timeout', prize: isWinner ? displayPrize : 0, isSpectator: sIsSpectator },
             messages: sIsSpectator ? [this.i18n.translate('ws.games.winsTimeout', sLang, { username: winnerUsername })] : [isWinner ? this.i18n.translate('ws.games.timeoutWin', sLang) : this.i18n.translate('ws.games.timeoutLoss', sLang)]
           });
         }

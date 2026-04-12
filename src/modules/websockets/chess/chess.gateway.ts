@@ -12,6 +12,7 @@ import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { ChessGame, ChessGameDocument } from './schemas/chess-game.schema';
 import { I18nService } from '../../../common/i18n/i18n.service';
+import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
 import {
   createInitialBoard,
   getLegalMoves,
@@ -151,9 +152,9 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     room.finished_at = new Date();
     await room.save();
 
-    const numPlayers = room.players.length;
-    const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
+    const pc = room.players.length;
+    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, pc);
+    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -395,8 +396,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       if (result.winner) {
         const winnerId = result.winner === 1 ? game.player1_id : game.player2_id;
         room.winner = winnerId;
-        const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
+        const grossPayout = winnerGrossPayout(
+          room.bet_amount,
+          room.house_edge,
+          room.players.length,
+        );
+        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
       }
       await room.save();
       clearTimer(client.id);
@@ -410,6 +415,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const player1Name = p1Id ? await this.getCachedUsername(p1Id) : 'Unknown';
     const player2Name = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
     const shotFrom = movingPlayerUsername;
+
+    const displayPrize = winnerDisplayedPrize(
+      room.bet_amount,
+      room.house_edge,
+      room.players.length,
+    );
 
     const inCheckNow = isCheck(game.current_player === 1 ? COLORS.WHITE : COLORS.BLACK, nextBoard, nextState);
     const myCastling = this.getCastlingAvailable(nextBoard, nextState, playerNum as 1 | 2);
@@ -429,7 +440,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         gameEnded: result.finished, 
         winner: result.winner === 1 ? game.player1_id : (result.winner === 2 ? game.player2_id : null), 
         reason: result.reason, isPlayerOne: sPNum === 1, playingWhite: sPNum === 1, 
-        prize: (result.finished && isWinner) ? (room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100))) : (isDraw ? room.bet_amount : 0), 
+        prize: (result.finished && isWinner) ? displayPrize : 0, 
         castlingAvailable: sIsSpectator ? { white: { short: true, long: true }, black: { short: true, long: true } } : this.getCastlingAvailable(nextBoard, nextState, sPNum as 1 | 2),
         isSpectator: sIsSpectator
       };
@@ -470,8 +481,17 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       if (room && room.status === 'started') {
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = 'timeout'; room.finished_at = new Date();
         await room.save();
-        const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
+        const grossPayout = winnerGrossPayout(
+          room.bet_amount,
+          room.house_edge,
+          room.players.length,
+        );
+        const displayPrize = winnerDisplayedPrize(
+          room.bet_amount,
+          room.house_edge,
+          room.players.length,
+        );
+        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
         
         const sockets = await this.server.in(room_id).fetchSockets();
         const winnerUsername = await this.getCachedUsername(winnerId.toString());
@@ -484,7 +504,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
             success: true,
             data: {
               gameEnded: true, outcome: isWinnerFound ? 'win' : 'timeout_loss', youWon: isWinnerFound && !sIsSpectator,
-              winner: sIsSpectator ? winnerUsername : winnerId, reason: 'timeout', prize: isWinnerFound ? prize : 0, isSpectator: sIsSpectator
+              winner: sIsSpectator ? winnerUsername : winnerId, reason: 'timeout', prize: isWinnerFound ? displayPrize : 0, isSpectator: sIsSpectator
             },
             messages: sIsSpectator ? [this.i18n.translate('ws.games.winsTimeout', sLang, { username: winnerUsername })] : [isWinnerFound ? this.i18n.translate('ws.games.timeoutWin', sLang) : this.i18n.translate('ws.games.timeoutLoss', sLang)]
           });

@@ -13,6 +13,7 @@ import { RoomsGateway } from '../rooms/rooms.gateway';
 import { HalmaGame, HalmaGameDocument } from './schemas/halma-game.schema';
 import { createHalmaBoard, isValidStep, isValidJump, canJumpFurther, HalmaBoard, P1_NORMAL, P2_NORMAL, P1_KING, P2_KING, isOwner } from './halma-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
+import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -116,8 +117,8 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     room.finished_at = new Date();
     await room.save();
 
-    const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: prize } });
+    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
+    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -490,11 +491,20 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           const winnerId = automatedWinner === 1 ? game.player1_id : game.player2_id;
           room.winner = winnerId; room.winner_reason = winReason;
           await room.save();
-          const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-          await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
+          const grossPayout = winnerGrossPayout(
+            room.bet_amount,
+            room.house_edge,
+            room.players.length,
+          );
+          await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
         }
 
         const winnerUsername = !isDraw ? await this.getCachedUsername((automatedWinner === 1 ? game.player1_id : game.player2_id).toString()) : null;
+        const displayPrize = winnerDisplayedPrize(
+          room.bet_amount,
+          room.house_edge,
+          room.players.length,
+        );
 
         for (const s of sockets) {
           const sIsSpectator = (s as any).data.isSpectator || false;
@@ -505,7 +515,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
             board: game.board, gameEnded: true, outcome: isDraw ? 'draw' : (isWinner ? 'win' : 'lose'), youWon: !isDraw && isWinner && !sIsSpectator,
             winner: isDraw ? null : (sIsSpectator ? winnerUsername : (automatedWinner === 1 ? game.player1_id : game.player2_id)), 
             reason: isDraw ? 'draw' : winReason, 
-            prize: isDraw ? room.bet_amount : (isWinner ? (room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100))) : 0), 
+            prize: isDraw ? 0 : (isWinner ? displayPrize : 0), 
             isSpectator: sIsSpectator
           };
           
@@ -550,8 +560,17 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       if (room && room.status === 'started') {
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = 'timeout'; room.finished_at = new Date();
         await room.save();
-        const prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
-        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: prize } });
+        const grossPayout = winnerGrossPayout(
+          room.bet_amount,
+          room.house_edge,
+          room.players.length,
+        );
+        const displayPrize = winnerDisplayedPrize(
+          room.bet_amount,
+          room.house_edge,
+          room.players.length,
+        );
+        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
         
         const sockets = await this.server.in(room_id).fetchSockets();
         const winnerUsername = await this.getCachedUsername(winnerId.toString());
@@ -564,7 +583,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
             success: true,
             data: {
               gameEnded: true, outcome: isWinnerFound ? 'win' : 'timeout_loss', youWon: isWinnerFound && !sIsSpectator,
-              winner: sIsSpectator ? winnerUsername : winnerId, reason: 'timeout', prize: isWinnerFound ? prize : 0, isSpectator: sIsSpectator
+              winner: sIsSpectator ? winnerUsername : winnerId, reason: 'timeout', prize: isWinnerFound ? displayPrize : 0, isSpectator: sIsSpectator
             },
             messages: sIsSpectator ? [this.i18n.translate('ws.games.winsTimeout', sLang, { username: winnerUsername })] : [isWinnerFound ? this.i18n.translate('ws.games.timeoutWin', sLang) : this.i18n.translate('ws.games.timeoutLoss', sLang)]
           });

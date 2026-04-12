@@ -13,6 +13,7 @@ import { RoomsGateway } from '../rooms/rooms.gateway';
 import { DominoGame, DominoGameDocument } from './schemas/domino-game.schema';
 import { deal, getStartingPlayerIndex, getNextActivePlayerIndex, hasValidMoves, validateMove, getDominoGameResult } from './domino-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
+import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -365,8 +366,12 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
         if (result.winner) {
           room.winner = new Types.ObjectId(result.winner);
-          const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
-          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
+          const grossPayout = winnerGrossPayout(
+            room.bet_amount,
+            room.house_edge,
+            room.players.length,
+          );
+          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: grossPayout } });
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -400,7 +405,10 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         const isMyTurn = !sIsSpectator && pid === nextPlayerId;
         const isWinner = !sIsSpectator && result.winner === pid;
         const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
-        const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+        const prize =
+          isWinner && room
+            ? winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length)
+            : 0;
 
         const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: flippedTile, lastSide: side, lastPlayer: player_id, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason, prize, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, handCount, isSpectator: sIsSpectator };
         if (sIsSpectator) { sData.shotFrom = shotFrom; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = result.winner ? await this.getCachedUsername(result.winner) : null; }
@@ -496,8 +504,12 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
         if (result.winner) {
           room.winner = new Types.ObjectId(result.winner);
-          const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
-          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
+          const grossPayout = winnerGrossPayout(
+            room.bet_amount,
+            room.house_edge,
+            room.players.length,
+          );
+          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: grossPayout } });
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -529,7 +541,10 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         const sIsMyTurn = !sIsSpectator && pid === nextPlayerId;
         const isWinner = !sIsSpectator && result.winner === pid;
         const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
-        const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+        const prize =
+          isWinner && room
+            ? winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length)
+            : 0;
 
         const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, lastTile: null, lastSide: null, lastPlayer: player_id, passed: true, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason, prize, yourTurn: sIsMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, handCount, isSpectator: sIsSpectator };
         if (sIsSpectator) { sData.shotFrom = shotFrom; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = result.winner ? await this.getCachedUsername(result.winner) : null; }
@@ -608,8 +623,12 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         room.status = 'finished'; room.winner_reason = result.reason || reason; room.finished_at = new Date();
         if (result.winner) {
           room.winner = new Types.ObjectId(result.winner);
-          const prize = (room.bet_amount * room.players.length) * (1 - room.house_edge / 100);
-          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: prize } });
+          const grossPayout = winnerGrossPayout(
+            room.bet_amount,
+            room.house_edge,
+            room.players.length,
+          );
+          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: grossPayout } });
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -641,7 +660,10 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         const sIsMyTurn = !sIsSpectator && pid === nextPlayerId;
         const isWinner = !sIsSpectator && result.winner === pid;
         const outcome = isWinner ? 'win' : (result.finished && result.winner ? 'lose' : (result.finished ? 'draw' : ''));
-        const prize = isWinner ? (room.bet_amount * room.players.length) * (1 - room.house_edge / 100) : 0;
+        const prize =
+          isWinner && room
+            ? winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length)
+            : 0;
 
         const sData: any = { board: game.board, hand: myHand, boneyardCount: game.boneyard.length, yourTurn: !result.finished && sIsMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: nextUsername, playerEliminated: eliminatedUsername, eliminationReason: reason, gameEnded: result.finished, outcome, youWon: isWinner, winner: result.winner, reason: result.reason || reason, prize, handCount, isSpectator: sIsSpectator };
         if (sIsSpectator) { sData.shotFrom = eliminatedUsername; sData.turnOf = nextUsername; if (result.finished && result.winner) sData.winner = result.winner ? await this.getCachedUsername(result.winner) : null; }

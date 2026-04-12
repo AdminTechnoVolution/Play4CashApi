@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { UserRepository } from './user.repository';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { winnerDisplayedPrize } from '../../common/utils/game-prize.util';
 
 @Injectable()
 export class UserService {
@@ -43,13 +44,14 @@ export class UserService {
       const isDraw = !room.winner && room.status === 'finished' &&
         ['stalemate', 'insufficient_material', 'draw'].includes(room.winner_reason);
 
-      let prize = 0;
+      let prize: number | null = null;
       let resultKey = 'lose';
+      const playerCount = Array.isArray(room.players) ? room.players.length : 2;
       if (isWinner) {
-        prize = room.bet_amount + (room.bet_amount * (1 - room.house_edge / 100));
+        prize = winnerDisplayedPrize(room.bet_amount, room.house_edge, playerCount);
         resultKey = 'win';
       } else if (isDraw) {
-        prize = room.bet_amount;
+        prize = 0;
         resultKey = 'draw';
       }
 
@@ -69,7 +71,7 @@ export class UserService {
         game_code: room.game_id?.socket_code || 'unknown',
         bet_amount: room.bet_amount,
         result: resultKey,
-        prize: prize > 0 ? prize : isDraw ? room.bet_amount : null,
+        prize,
         winner_reason: reason,
         opponent: opponent ? { username: opponent.playerId?.username } : null,
         finished_at: room.finished_at,

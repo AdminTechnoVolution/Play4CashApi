@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Room, RoomDocument, RoomStatus } from './schemas/room.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { winnerGrossPayout, winnerDisplayedPrize } from '../../common/utils/game-prize.util';
 import { RoomsGateway } from '../websockets/rooms/rooms.gateway';
 import { NavalBattleGateway } from '../websockets/naval-battle/naval-battle.gateway';
 import { HalmaGateway } from '../websockets/halma/halma.gateway';
@@ -353,8 +354,17 @@ export class RoomService {
           (roomInfo as any).finished_at = new Date();
           await roomInfo.save();
 
-          const prize = roomInfo.bet_amount * (numPlayersAtStart - roomInfo.house_edge / 100);
-          await this.userModel.updateOne({ _id: winner_id }, { $inc: { balance: prize } });
+          const grossPayout = winnerGrossPayout(
+            roomInfo.bet_amount,
+            roomInfo.house_edge,
+            numPlayersAtStart,
+          );
+          const displayPrize = winnerDisplayedPrize(
+            roomInfo.bet_amount,
+            roomInfo.house_edge,
+            numPlayersAtStart,
+          );
+          await this.userModel.updateOne({ _id: winner_id }, { $inc: { balance: grossPayout } });
 
           const gameId = (roomInfo.game_id as any)?._id?.toString() || (roomInfo.game_id as any)?.toString();
           if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
@@ -365,7 +375,7 @@ export class RoomService {
           
           const playerPayload = { 
             success: true, 
-            data: { gameEnded: true, outcome: 'forfeit', youWon: true, winner: winner_id, reason: 'forfeit', prize, isSpectator: false }, 
+            data: { gameEnded: true, outcome: 'forfeit', youWon: true, winner: winner_id, reason: 'forfeit', prize: displayPrize, isSpectator: false }, 
             messages: ['Opponent disconnected. You win by forfeit!'] 
           };
           const spectatorPayload = { 
