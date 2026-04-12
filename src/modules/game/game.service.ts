@@ -26,8 +26,9 @@ export class GameService {
     );
 
     const games = this.localizeGames(data, lang);
-    return games.map((g) => ({
+    return games.map((g: any) => ({
       ...g,
+      houseEdge: g.house_edge,
       activeRooms: countMap.get(g._id.toString()) ?? 0,
     }));
   }
