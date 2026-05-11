@@ -11,6 +11,7 @@ import * as jwt from 'jsonwebtoken';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { REDIS_CLIENT } from '../redis/redis.module';
 import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
+import { jwtVerifyOptions, isAccessTokenPayload } from '../auth/jwt-token.util';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -21,7 +22,6 @@ export class AuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    // Skip for @Public() routes
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -36,15 +36,18 @@ export class AuthGuard implements CanActivate {
 
     if (!token) throw new UnauthorizedException('ERROR_AUTH');
 
-    // 1. Verify JWT signature
-    let payload: any;
+    let payload: jwt.JwtPayload & Record<string, unknown>;
     try {
-      payload = jwt.verify(token, this.config.get<string>('jwt.secret')!);
+      payload = jwt.verify(token, this.config.get<string>('jwt.secret')!, jwtVerifyOptions(this.config)) as jwt.JwtPayload &
+        Record<string, unknown>;
     } catch {
       throw new UnauthorizedException('ERROR_AUTH');
     }
 
-    // 2. Verify token is still active in Redis (not revoked)
+    if (!isAccessTokenPayload(payload)) {
+      throw new UnauthorizedException('ERROR_AUTH');
+    }
+
     const exists = await this.redis.exists(`${REDIS_KEY_ACCESS_TOKEN}${token}`);
     if (exists !== 1) throw new UnauthorizedException('ERROR_AUTH');
 

@@ -6,6 +6,17 @@ export default () => ({
     secret: process.env.JWT_SECRET_KEY,
     accessTtlSecs: parseInt(process.env.JWT_ACCESS_TOKEN_TTL_SECS || '3600', 10),
     refreshTtlSecs: parseInt(process.env.JWT_REFRESH_TOKEN_TTL_SECS || '86400', 10),
+    issuer: process.env.JWT_ISSUER || 'play4cash-api',
+    audience: process.env.JWT_AUDIENCE || 'play4cash-clients',
+  },
+  auth: {
+    /** HttpOnly cookie for refresh token (browser clients). Name must match PWA expectations if overridden. */
+    refreshCookieName: process.env.AUTH_REFRESH_COOKIE_NAME || 'p4c_refresh',
+    /** Use `none` when the SPA is on a different site than the API (requires secure cookies). */
+    refreshCookieSameSite: (process.env.AUTH_REFRESH_COOKIE_SAMESITE || 'lax') as 'lax' | 'strict' | 'none',
+    refreshCookieSecure:
+      process.env.AUTH_REFRESH_COOKIE_SECURE === 'true' ||
+      process.env.NODE_ENV === 'production',
   },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID,
@@ -36,5 +47,15 @@ export default () => ({
   swagger: {
     enabled: process.env.ENABLE_SWAGGER === 'true',
     password: process.env.SWAGGER_PASSWORD,
+  },
+  gateway: {
+    /** Shared secret the gateway sets on proxied requests (header below). Empty = do not use secret-based trust. */
+    trustSecret: process.env.GATEWAY_INTERNAL_SECRET || '',
+    trustHeaderName: (process.env.GATEWAY_TRUST_HEADER_NAME || 'x-gateway-internal').toLowerCase(),
+    /** Comma-separated IPs allowed to send x-gateway-user without the secret (e.g. gateway pod IP). */
+    trustedIps: (process.env.TRUSTED_GATEWAY_IPS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
 });

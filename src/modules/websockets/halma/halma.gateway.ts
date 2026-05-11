@@ -46,7 +46,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     private readonly i18n: I18nService,
   ) {}
 
-  afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
+  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
   handleConnection(client: Socket) { this.logger.log(`[Halma] Connected: ${client.id}`); }
 

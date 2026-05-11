@@ -1,24 +1,20 @@
 import { ConfigService } from '@nestjs/config';
-import { Injectable } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
 import { Server, Socket } from 'socket.io';
-import { REDIS_CLIENT } from '../redis/redis.module';
-import { Inject } from '@nestjs/common';
 import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
+import { jwtVerifyOptions, isAccessTokenPayload } from '../auth/jwt-token.util';
 
 /**
  * Registers a socket.io USE middleware on the given server/namespace
  * that authenticates the connection on connect (not per-message).
- * This mirrors the original Express socket.io auth middleware behavior.
  *
  * Usage in gateway afterInit(server: Server):
  *   applyWsAuth(server, this.config, this.redis);
  */
-export function applyWsAuth(
-  server: Server,
-  jwtSecret: string,
-  redis: any,
-): void {
+export function applyWsAuth(server: Server, config: ConfigService, redis: any): void {
+  const jwtSecret = config.get<string>('jwt.secret')!;
+  const verifyOpts = jwtVerifyOptions(config);
+
   server.use(async (socket: Socket, next) => {
     let token: string =
       (socket.handshake.auth?.token as string) ||
@@ -28,10 +24,14 @@ export function applyWsAuth(
     if (token.startsWith('Bearer ')) token = token.slice(7);
     if (!token) return next(new Error('ERROR_AUTH'));
 
-    let payload: any;
+    let payload: jwt.JwtPayload & Record<string, unknown>;
     try {
-      payload = jwt.verify(token, jwtSecret) as any;
+      payload = jwt.verify(token, jwtSecret, verifyOpts) as jwt.JwtPayload & Record<string, unknown>;
     } catch {
+      return next(new Error('ERROR_AUTH'));
+    }
+
+    if (!isAccessTokenPayload(payload)) {
       return next(new Error('ERROR_AUTH'));
     }
 
@@ -42,7 +42,6 @@ export function applyWsAuth(
       return next(new Error('ERROR_AUTH'));
     }
 
-    // Set player identity once on connection — available in ALL event handlers
     socket.data.player_id = payload.id;
     socket.data.token = token;
     next();

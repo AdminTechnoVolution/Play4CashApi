@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Put, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserService } from './user.service';
 import { AdminGuard } from '../../common/guards/admin.guard';
@@ -65,6 +66,7 @@ export class UserController {
   }
 
   // POST /api/user/register  (public)
+  @Throttle({ default: { limit: 20, ttl: 900_000 } })
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.OK)
@@ -88,6 +90,7 @@ export class UserController {
   }
 
   // POST /api/user/verify-code  (public)
+  @Throttle({ default: { limit: 30, ttl: 900_000 } })
   @Public()
   @Post('verify-code')
   @HttpCode(HttpStatus.OK)

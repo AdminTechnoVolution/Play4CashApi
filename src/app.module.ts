@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import configuration from './common/config/configuration';
@@ -57,12 +57,9 @@ import { GreetingModule } from './modules/greeting/greeting.module';
     // ─── Scheduling (cron jobs) ───────────────────────────────────────────────
     ScheduleModule.forRoot(),
 
-    // ─── Rate Limiting ────────────────────────────────────────────────────────
-    ThrottlerModule.forRoot([
-      { name: 'short', ttl: 1000, limit: 10 },       // 10 req/sec
-      { name: 'medium', ttl: 60_000, limit: 300 },   // 300 req/min
-      { name: 'login', ttl: 900_000, limit: 20 },    // 20 req/15 min (login)
-    ]),
+    // ─── Rate Limiting (global) ───────────────────────────────────────────────
+    // Per-route overrides use @Throttle(). Auth-sensitive routes use stricter limits in controllers.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
 
     // Feature Modules
     TxMessageModule,
@@ -80,6 +77,7 @@ import { GreetingModule } from './modules/greeting/greeting.module';
     GreetingModule,
   ],
   providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },

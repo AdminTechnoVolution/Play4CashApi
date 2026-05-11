@@ -42,7 +42,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     private readonly i18n: I18nService,
   ) {}
 
-  afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
+  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
   async handleConnection(client: Socket) { 
     const player_id = client.data.player_id;

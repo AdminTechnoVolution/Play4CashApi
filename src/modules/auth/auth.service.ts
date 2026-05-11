@@ -2,10 +2,33 @@ import { Injectable, Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OAuth2Client } from 'google-auth-library';
 import * as jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import { REDIS_CLIENT } from '../../common/redis/redis.module';
-import { REDIS_KEY_ACCESS_TOKEN, REDIS_KEY_REFRESH_TOKEN } from '../../common/constants/redis-keys.constants';
+import {
+  REDIS_KEY_ACCESS_TOKEN,
+  REDIS_KEY_REFRESH_TOKEN,
+  REDIS_KEY_SESSION_FAMILY,
+  REDIS_KEY_FAMILY_REFRESHES,
+  REDIS_KEY_FAMILY_ACCESSES,
+} from '../../common/constants/redis-keys.constants';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { UserRepository } from '../user/user.repository';
+import { UserRole } from '../user/schemas/user.schema';
+import { jwtVerifyOptions, isRefreshTokenPayload } from '../../common/auth/jwt-token.util';
+
+interface SessionFamilyValue {
+  userId: string;
+  currentJti: string;
+}
+
+interface AccessPayload {
+  id: string;
+  email: string;
+  username: string;
+  name?: string;
+  role: 'admin' | 'user';
+  familyId: string;
+}
 
 @Injectable()
 export class AuthService {
@@ -21,8 +44,7 @@ export class AuthService {
   }
 
   // ─── Login (Google OAuth) ───────────────────────────────────────────────────
-  async loginUser(googleToken: string, lang = 'en'): Promise<any> {
-    this.logger.log(`[AuthService] Starting loginUser...`);
+  async loginUser(googleToken: string): Promise<any> {
     let googlePayload: any;
     try {
       const ticket = await this.googleClient.verifyIdToken({
@@ -30,9 +52,7 @@ export class AuthService {
         audience: this.config.get<string>('google.clientId')!,
       });
       googlePayload = ticket.getPayload();
-      this.logger.log(`[AuthService] Google token verified | email=${googlePayload.email}`);
-    } catch (err) {
-      this.logger.error(`[AuthService] Google token verification FAILED | error=${err.message}`);
+    } catch {
       throw new BusinessException('ERROR_LOGIN', 401);
     }
 
@@ -42,8 +62,6 @@ export class AuthService {
     let user = await this.userRepo.findByEmail(email);
 
     if (!user) {
-      this.logger.log(`[AuthService] User NOT found, auto-registering... | email=${email}`);
-      // Auto-register: valid Google account without an existing profile (username max 20 chars)
       const base = (name || 'user').replace(/\s+/g, '_').toLowerCase().slice(0, 20) || 'user';
       let username = base;
       for (let i = 0; i < 25; i++) {
@@ -57,77 +75,203 @@ export class AuthService {
         username = `u${Date.now()}`.slice(-20);
       }
       user = await this.userRepo.create({ email, username, status: 'active' as any });
-      this.logger.log(`[AuthService] Auto-registration SUCCESS | userId=${user._id}`);
-    } else {
-      this.logger.log(`[AuthService] User found | userId=${user._id} | status=${user.status}`);
     }
 
     if (user.status !== 'active') {
-      this.logger.warn(`[AuthService] Login DENIED | user is not active | userId=${user._id}`);
       throw new BusinessException('ERROR_LOGIN', 401);
     }
 
-    const accessTtl = this.config.get<number>('jwt.accessTtlSecs')!;
-    const refreshTtl = this.config.get<number>('jwt.refreshTtlSecs')!;
+    const role = this.resolveRole(user.role, email);
+    const familyId = randomUUID();
+    const userId = String(user._id);
 
-    const userPayload = { id: user._id, email: user.email, username: user.username, name };
-    const refreshPayload = { ...userPayload, hash: this.generateHash() };
+    const accessPayload: AccessPayload = { id: userId, email: user.email, username: user.username, name, role, familyId };
+    const { token: accessToken, jti: accessJti } = await this.issueAccessToken(accessPayload);
+    const { token: refreshToken, jti: refreshJti } = await this.issueRefreshToken(accessPayload);
 
-    const token = await this.issueToken(userPayload, accessTtl, REDIS_KEY_ACCESS_TOKEN);
-    const refreshToken = await this.issueToken(refreshPayload, refreshTtl, REDIS_KEY_REFRESH_TOKEN);
-    
-    this.logger.log(`[AuthService] Login SUCCESS | userId=${user._id} | Tokens issued`);
-    return { success: true, messages: [], data: { token, refreshToken } };
+    await this.persistFamily(familyId, userId, refreshJti, refreshToken, accessToken);
+    this.logger.log(`[AuthService] Login OK userId=${userId} family=${familyId}`);
+
+    return { success: true, messages: [], data: { token: accessToken, refreshToken } };
   }
 
-  // ─── Refresh Token ──────────────────────────────────────────────────────────
+  // ─── Refresh Token (with reuse detection) ──────────────────────────────────
   async refreshToken(currentRefreshToken: string): Promise<any> {
-    const exists = await this.redis.exists(`${REDIS_KEY_REFRESH_TOKEN}${currentRefreshToken}`);
-    if (exists !== 1) throw new BusinessException('ERROR_AUTH', 401);
-
-    let payload: any;
+    const secret = this.config.get<string>('jwt.secret')!;
+    let payload: jwt.JwtPayload & Record<string, unknown>;
     try {
-      payload = jwt.verify(currentRefreshToken, this.config.get<string>('jwt.secret')!);
+      payload = jwt.verify(currentRefreshToken, secret, jwtVerifyOptions(this.config)) as jwt.JwtPayload &
+        Record<string, unknown>;
     } catch {
       throw new BusinessException('ERROR_AUTH', 401);
     }
 
+    if (!isRefreshTokenPayload(payload) || !payload.familyId || !payload.jti) {
+      throw new BusinessException('ERROR_AUTH', 401);
+    }
+
+    const familyId = String(payload.familyId);
+    const presentedJti = String(payload.jti);
+    const familyKey = `${REDIS_KEY_SESSION_FAMILY}${familyId}`;
+
+    const familyRaw: string | null = await this.redis.get(familyKey);
+    if (!familyRaw) {
+      // Family revoked (logout or reuse already detected): reject without rotating.
+      throw new BusinessException('ERROR_AUTH', 401);
+    }
+
+    let family: SessionFamilyValue;
+    try {
+      family = JSON.parse(familyRaw) as SessionFamilyValue;
+    } catch {
+      await this.revokeFamily(familyId);
+      throw new BusinessException('ERROR_AUTH', 401);
+    }
+
+    if (family.currentJti !== presentedJti) {
+      this.logger.warn(`[AuthService] Refresh reuse detected family=${familyId} → revoking session`);
+      await this.revokeFamily(familyId);
+      throw new BusinessException('ERROR_AUTH', 401);
+    }
+
+    const inAllowlist = await this.redis.exists(`${REDIS_KEY_REFRESH_TOKEN}${currentRefreshToken}`);
+    if (inAllowlist !== 1) {
+      this.logger.warn(`[AuthService] Refresh jti matches family but token missing in allowlist → revoke family=${familyId}`);
+      await this.revokeFamily(familyId);
+      throw new BusinessException('ERROR_AUTH', 401);
+    }
+
+    // Rotate: remove old refresh from allowlist + family set
     await this.redis.del(`${REDIS_KEY_REFRESH_TOKEN}${currentRefreshToken}`);
+    await this.redis.sRem(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, currentRefreshToken);
 
-    const accessTtl = this.config.get<number>('jwt.accessTtlSecs')!;
+    // Re-resolve role from DB so demotions/promotions take effect on next refresh.
+    const userDoc = await this.userRepo.findById(family.userId);
+    const role = this.resolveRole(userDoc?.role, (payload.email as string)?.toLowerCase());
+
+    const next: AccessPayload = {
+      id: family.userId,
+      email: String(payload.email),
+      username: String(payload.username),
+      name: (payload.name as string) || '',
+      role,
+      familyId,
+    };
+
+    const { token: newAccess } = await this.issueAccessToken(next);
+    const { token: newRefresh, jti: newRefreshJti } = await this.issueRefreshToken(next);
+
+    family.currentJti = newRefreshJti;
     const refreshTtl = this.config.get<number>('jwt.refreshTtlSecs')!;
+    await this.redis.setEx(familyKey, refreshTtl, JSON.stringify(family));
+    await this.redis.sAdd(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, newRefresh);
+    await this.redis.expire(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, refreshTtl);
+    await this.redis.sAdd(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, newAccess);
+    await this.redis.expire(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, refreshTtl);
 
-    const userPayload = { id: payload.id, email: payload.email, username: payload.username, name: payload.name };
-    const refreshPayload = { ...userPayload, hash: this.generateHash() };
-
-    const token = await this.issueToken(userPayload, accessTtl, REDIS_KEY_ACCESS_TOKEN);
-    const newRefreshToken = await this.issueToken(refreshPayload, refreshTtl, REDIS_KEY_REFRESH_TOKEN);
-
-    return { success: true, messages: [], data: { token, refreshToken: newRefreshToken } };
+    return { success: true, messages: [], data: { token: newAccess, refreshToken: newRefresh } };
   }
 
   // ─── Logout ─────────────────────────────────────────────────────────────────
-  async logoutUser(accessToken: string, refreshToken: string): Promise<void> {
+  async logoutUser(accessToken: string, refreshToken?: string): Promise<void> {
     try {
-      await Promise.all([
-        this.redis.del(`${REDIS_KEY_REFRESH_TOKEN}${refreshToken}`),
-        this.redis.del(`${REDIS_KEY_ACCESS_TOKEN}${accessToken}`),
-      ]);
+      let familyId: string | undefined;
+      if (accessToken) {
+        try {
+          const decoded = jwt.decode(accessToken) as { familyId?: string } | null;
+          familyId = decoded?.familyId;
+        } catch { /* ignore */ }
+      }
+      if (!familyId && refreshToken) {
+        try {
+          const decoded = jwt.decode(refreshToken) as { familyId?: string } | null;
+          familyId = decoded?.familyId;
+        } catch { /* ignore */ }
+      }
+      if (familyId) {
+        await this.revokeFamily(familyId);
+      } else {
+        const ops: Promise<unknown>[] = [];
+        if (refreshToken) ops.push(this.redis.del(`${REDIS_KEY_REFRESH_TOKEN}${refreshToken}`));
+        if (accessToken) ops.push(this.redis.del(`${REDIS_KEY_ACCESS_TOKEN}${accessToken}`));
+        if (ops.length) await Promise.all(ops);
+      }
     } catch (err) {
       this.logger.error(`Error during logout: ${err}`);
     }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
-  private async issueToken(payload: object, ttlSecs: number, redisPrefix: string): Promise<string> {
-    const token = jwt.sign(payload, this.config.get<string>('jwt.secret')!, {
-      expiresIn: ttlSecs,
-    });
-    await this.redis.setEx(`${redisPrefix}${token}`, ttlSecs, JSON.stringify(payload));
-    return token;
+  private resolveRole(dbRole: string | undefined, email: string | undefined): 'admin' | 'user' {
+    if (dbRole === UserRole.ADMIN) return 'admin';
+    const adminEmails = (this.config.get<string[]>('admin.emails') || []).map((e) => e.toLowerCase());
+    if (email && adminEmails.includes(email)) return 'admin';
+    return 'user';
   }
 
-  private generateHash(): string {
-    return Math.random().toString(36).substring(2, 15);
+  private async issueAccessToken(base: AccessPayload): Promise<{ token: string; jti: string }> {
+    const ttl = this.config.get<number>('jwt.accessTtlSecs')!;
+    return this.signToken({ ...base, typ: 'access' }, ttl, REDIS_KEY_ACCESS_TOKEN);
+  }
+
+  private async issueRefreshToken(base: AccessPayload): Promise<{ token: string; jti: string }> {
+    const ttl = this.config.get<number>('jwt.refreshTtlSecs')!;
+    return this.signToken({ ...base, typ: 'refresh' }, ttl, REDIS_KEY_REFRESH_TOKEN);
+  }
+
+  private async signToken(
+    payload: Record<string, unknown>,
+    ttlSecs: number,
+    redisPrefix: string,
+  ): Promise<{ token: string; jti: string }> {
+    const secret = this.config.get<string>('jwt.secret')!;
+    const issuer = this.config.get<string>('jwt.issuer')!;
+    const audience = this.config.get<string>('jwt.audience')!;
+    const jti = randomUUID();
+    const fullPayload = { ...payload, jti };
+    const token = jwt.sign(fullPayload, secret, {
+      expiresIn: ttlSecs,
+      issuer,
+      audience,
+      subject: String(payload.id),
+    });
+    await this.redis.setEx(`${redisPrefix}${token}`, ttlSecs, JSON.stringify(fullPayload));
+    return { token, jti };
+  }
+
+  private async persistFamily(
+    familyId: string,
+    userId: string,
+    refreshJti: string,
+    refreshToken: string,
+    accessToken: string,
+  ): Promise<void> {
+    const refreshTtl = this.config.get<number>('jwt.refreshTtlSecs')!;
+    const family: SessionFamilyValue = { userId, currentJti: refreshJti };
+    await this.redis.setEx(`${REDIS_KEY_SESSION_FAMILY}${familyId}`, refreshTtl, JSON.stringify(family));
+    await this.redis.sAdd(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, refreshToken);
+    await this.redis.expire(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, refreshTtl);
+    await this.redis.sAdd(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, accessToken);
+    await this.redis.expire(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, refreshTtl);
+  }
+
+  private async revokeFamily(familyId: string): Promise<void> {
+    try {
+      const refreshSet = `${REDIS_KEY_FAMILY_REFRESHES}${familyId}`;
+      const accessSet = `${REDIS_KEY_FAMILY_ACCESSES}${familyId}`;
+      const [refreshes, accesses]: [string[], string[]] = await Promise.all([
+        this.redis.sMembers(refreshSet),
+        this.redis.sMembers(accessSet),
+      ]);
+      const ops: Promise<unknown>[] = [];
+      for (const t of refreshes || []) ops.push(this.redis.del(`${REDIS_KEY_REFRESH_TOKEN}${t}`));
+      for (const t of accesses || []) ops.push(this.redis.del(`${REDIS_KEY_ACCESS_TOKEN}${t}`));
+      ops.push(this.redis.del(refreshSet));
+      ops.push(this.redis.del(accessSet));
+      ops.push(this.redis.del(`${REDIS_KEY_SESSION_FAMILY}${familyId}`));
+      await Promise.all(ops);
+    } catch (err) {
+      this.logger.error(`Error revoking family ${familyId}: ${err}`);
+    }
   }
 }

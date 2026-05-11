@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { UNO_SOCKET_CODE, isValidUnoPlayerCount } from '../../common/constants/uno-game.constants';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Room, RoomDocument, RoomStatus } from './schemas/room.schema';
@@ -9,6 +10,7 @@ import { NavalBattleGateway } from '../websockets/naval-battle/naval-battle.gate
 import { HalmaGateway } from '../websockets/halma/halma.gateway';
 import { ChessGateway } from '../websockets/chess/chess.gateway';
 import { DominoGateway } from '../websockets/domino/domino.gateway';
+import { UnoGateway } from '../websockets/uno/uno.gateway';
 
 @Injectable()
 export class RoomService {
@@ -24,6 +26,7 @@ export class RoomService {
     private readonly halmaGateway: HalmaGateway,
     private readonly chessGateway: ChessGateway,
     private readonly dominoGateway: DominoGateway,
+    private readonly unoGateway: UnoGateway,
   ) {}
 
   // ── LIVE STATS ─────────────────────────────────────────────────────────────
@@ -35,6 +38,7 @@ export class RoomService {
       this.halmaGateway.server?.fetchSockets() || [],
       this.chessGateway.server?.fetchSockets() || [],
       this.dominoGateway.server?.fetchSockets() || [],
+      this.unoGateway.server?.fetchSockets() || [],
     ]);
     const uniquePlayerIds = new Set<string>();
     for (const sockets of allSockets) {
@@ -120,6 +124,14 @@ export class RoomService {
     if (!game) throw new BusinessException('ERROR_NOT_FOUND', 404);
     if (betAmount < game.min_bet) throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
 
+    const effectivePlayerLimit = playerLimit ?? game.max_players;
+    if (effectivePlayerLimit < game.min_players || effectivePlayerLimit > game.max_players) {
+      throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
+    }
+    if (game.socket_code === UNO_SOCKET_CODE && !isValidUnoPlayerCount(effectivePlayerLimit)) {
+      throw new BusinessException('ERROR_UNO_INVALID_PLAYER_LIMIT', 400);
+    }
+
     const user = await this.userModel.findById(userId);
     if (!user || user.balance < betAmount) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
 
@@ -133,7 +145,7 @@ export class RoomService {
       bet_amount: betAmount,
       house_edge: game.house_edge,
       public: isPublic,
-      player_limit: playerLimit || game.max_players,
+      player_limit: effectivePlayerLimit,
       players: [{ playerId: new Types.ObjectId(userId), ready: false }],
     }) as any;
 
@@ -268,6 +280,7 @@ export class RoomService {
       await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', commonPayload, commonPayload);
       await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload, commonPayload);
       await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload, commonPayload);
+      await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', commonPayload, commonPayload);
 
       return updated;
     }
@@ -331,6 +344,7 @@ export class RoomService {
         await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', playerPayload, spectatorPayload);
         await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
         await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', playerPayload, spectatorPayload);
       }
       return updated;
     }
@@ -340,10 +354,13 @@ export class RoomService {
       const numPlayersAtStart = roomInfo.players.length;
       const gameSocketCode = (roomInfo.game_id as any)?.socket_code;
       const isDomino = gameSocketCode === 'domino';
+      const isUno = gameSocketCode === 'uno';
 
       if (numPlayersAtStart > 2 && isDomino) {
         // Multi-player game: eliminate the player, let others continue
         await this.dominoGateway.eliminatePlayer(roomId, userId, 'forfeit');
+      } else if (numPlayersAtStart > 2 && isUno) {
+        await this.unoGateway.eliminatePlayer(roomId, userId, 'forfeit');
       } else {
         // Standard 1v1 forfeit (or multi-player where only 2 were left)
         const winner_id = roomInfo.players.find((p: any) => p.playerId.toString() !== userId)?.playerId;
@@ -388,6 +405,7 @@ export class RoomService {
           await this.emitToOthers(this.halmaGateway, roomId, userId, 'halma', playerPayload, spectatorPayload);
           await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
           await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
+          await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', playerPayload, spectatorPayload);
         }
       }
     }
@@ -541,5 +559,6 @@ export class RoomService {
     this.halmaGateway.server.to(roomId).emit('halma', payload);
     this.chessGateway.server.to(roomId).emit('chess', payload);
     this.dominoGateway.server.to(roomId).emit('domino', payload);
+    this.unoGateway.server.to(roomId).emit('uno', payload);
   }
 }

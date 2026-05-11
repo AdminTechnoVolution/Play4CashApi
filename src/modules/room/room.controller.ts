@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Headers, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { RoomService } from './room.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -6,7 +6,7 @@ import type { JwtPayload } from '../../common/decorators/current-user.decorator'
 import { IsBoolean, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { AdminGuard } from '../../common/guards/admin.guard';
-import { UseGuards } from '@nestjs/common';
+import { Public } from '../../common/decorators/public.decorator';
 import { BattleshipPlacementDto } from './dtos/battleship-placement.dto';
 
 class CreateRoomDto {
@@ -28,6 +28,7 @@ export class RoomController {
   constructor(private readonly roomService: RoomService) {}
 
   // GET /api/rooms/stats — public live stats (no auth needed)
+  @Public()
   @Get('stats')
   @ApiOperation({ summary: 'Get live stats: online players, active games, sum of per-room stake (bet_amount), not × players' })
   getLiveStats() {

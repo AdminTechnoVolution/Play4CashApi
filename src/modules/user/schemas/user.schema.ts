@@ -9,6 +9,11 @@ export enum UserStatus {
   INACTIVE = 'inactive',
 }
 
+export enum UserRole {
+  USER = 'user',
+  ADMIN = 'admin',
+}
+
 @Schema({ versionKey: false })
 export class WalletAddress {
   @Prop({ uppercase: true })
@@ -54,6 +59,14 @@ export class User {
     lowercase: true,
   })
   status: UserStatus;
+
+  @Prop({
+    type: String,
+    enum: Object.values(UserRole),
+    default: UserRole.USER,
+    lowercase: true,
+  })
+  role: UserRole;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

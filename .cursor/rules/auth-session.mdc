@@ -1,0 +1,101 @@
+---
+description: Play4Cash API — authentication, JWT, refresh family, guards (post-hardening)
+alwaysApply: true
+---
+
+# Play4Cash API — Session & Auth Contract
+
+This repo is the NestJS API. The session architecture was hardened in a multi-repo sweep
+across `Play4CashPWA`, `Play4CashApi`, `Play4CashGateway`. Keep these invariants when
+editing auth/guards/JWT/session code.
+
+## JWT contract
+
+- Signed with `JWT_SECRET`. Always include `issuer=JWT_ISSUER`, `audience=JWT_AUDIENCE`,
+  `subject=userId`.
+- Payload **must** carry `typ: 'access' | 'refresh'`, `jti` (UUID v4), `familyId` (UUID v4
+  per login), and `role: 'admin' | 'user'`.
+- Verification helpers live in `src/common/auth/jwt-token.util.ts`
+  (`jwtVerifyOptions`, `isAccessTokenPayload`, `isRefreshTokenPayload`). Use them — don't
+  re-implement.
+- **Never set both `jti` in payload and `jwtid` in options** — `jsonwebtoken` rejects it.
+  Set `jti` in payload only.
+
+## Refresh-token reuse detection (session families)
+
+In `src/modules/auth/auth.service.ts`:
+
+- Every login creates a `familyId`. Redis keys (constants in
+  `src/common/constants/redis-keys.constants.ts`):
+  - `sessionFamilies:<familyId>` → `{ userId, currentJti }`
+  - `familyRefreshes:<familyId>` (set) / `familyAccesses:<familyId>` (set) — for cascade revoke
+  - `accessTokens:<token>` / `refreshTokens:<token>` — TTL allowlist
+- On refresh: verify JWT → ensure family exists → ensure `payload.jti === family.currentJti`
+  → ensure token still in `refreshTokens:` allowlist → rotate. **Any mismatch revokes the
+  whole family** (`revokeFamily`).
+- Logout revokes the whole family too (looks up `familyId` from access or refresh token).
+
+## Guards
+
+- **Global**: `ThrottlerGuard` → `AuthGuard`. Order matters; both wired in `app.module.ts`
+  via `APP_GUARD`.
+- **`AuthGuard`** (`src/common/guards/auth.guard.ts`): verifies JWT (with iss/aud), checks
+  `typ === 'access'`, checks `accessTokens:<token>` in Redis, sets `req.user` and `req.token`.
+  Skips routes marked `@Public()`.
+- **`AdminGuard`** (`src/common/guards/admin.guard.ts`): thin — just reads `req.user.role`
+  (or falls back to `ADMIN_EMAILS`). No JWT/Redis re-verification.
+- **`RolesGuard`** (`src/common/guards/roles.guard.ts`) + `@Roles('admin'|'user')` decorator:
+  prefer this for new code.
+- **`WsAuthMiddleware`** (`src/common/guards/ws-auth.middleware.ts`): mirrors `AuthGuard` for
+  Socket.IO. All WS gateways call `applyWsAuth(server, this.config, this.redis)` — not the
+  raw secret.
+
+## Roles in DB
+
+- `User` schema (`src/modules/user/schemas/user.schema.ts`) has `role: UserRole` with default
+  `user`. Login/refresh re-resolve role from DB, falling back to `ADMIN_EMAILS` allowlist
+  (legacy). The signed `role` claim drives `AdminGuard`/`RolesGuard`.
+
+## Refresh cookie
+
+- Helpers in `src/modules/auth/auth-cookie.util.ts`. Controller (`auth.controller.ts`)
+  always (a) reads refresh from `dto.refreshToken || cookie`, (b) sets the cookie on
+  login/refresh, (c) clears on logout and on the public endpoint
+  `POST /api/login/invalidate-browser-session`.
+- `AUTH_REFRESH_COOKIE_SAMESITE=none` forces `secure: true`.
+
+## Gateway trust
+
+- `src/common/middleware/strip-untrusted-gateway-user.middleware.ts` strips `x-gateway-user`
+  unless the request carries the `GATEWAY_INTERNAL_SECRET` on `GATEWAY_TRUST_HEADER_NAME`
+  (default `x-gateway-internal`) or comes from `TRUSTED_GATEWAY_IPS`. The trust header is
+  always removed before downstream handlers run.
+
+## Rate limiting
+
+- Global throttler in `app.module.ts` (`ThrottlerModule.forRoot`, 300/min default).
+- Stricter `@Throttle` on `POST /api/login`, `/api/login/refresh`,
+  `/api/login/invalidate-browser-session`, `/api/user/register`, `/api/user/verify-code`.
+- `app.set('trust proxy', 1)` in `main.ts` for accurate IPs behind the Gateway.
+
+## Tests
+
+- Unit tests use ts-jest, no DB/Redis. See:
+  `src/common/auth/jwt-token.util.spec.ts`,
+  `src/modules/auth/auth-cookie.util.spec.ts`,
+  `src/common/middleware/strip-untrusted-gateway-user.middleware.spec.ts`,
+  `src/common/guards/roles.guard.spec.ts`,
+  `src/modules/auth/auth.service.spec.ts` (in-memory Redis mock).
+- Run with `--forceExit` to avoid open-handle hangs.
+
+## Forbidden patterns
+
+- ❌ Verifying JWTs without `jwtVerifyOptions(config)` (issuer/audience).
+- ❌ Reusing `jwtid` option when payload has `jti`.
+- ❌ Issuing refresh tokens without registering them under a `sessionFamilies:` entry.
+- ❌ Adding `@UseGuards(AdminGuard)` to a `@Public()` route.
+- ❌ Logging access/refresh token bytes (use `event=… reason=…` structured logs only).
+
+## Reference docs
+
+`docs/SECURITY-ENV.md` is the canonical cross-repo env matrix.

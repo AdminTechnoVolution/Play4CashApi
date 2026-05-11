@@ -29,7 +29,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   ) {}
 
   afterInit(server: Server) {
-    applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis);
+    applyWsAuth(server, this.config, this.redis);
   }
 
   private getLang(client: Socket): string {

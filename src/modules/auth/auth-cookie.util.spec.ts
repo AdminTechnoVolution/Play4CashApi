@@ -1,0 +1,118 @@
+import type { ConfigService } from '@nestjs/config';
+import type { Response } from 'express';
+import {
+  readCookieFromHeader,
+  refreshCookieName,
+  buildRefreshCookieOptions,
+  buildClearRefreshCookieOptions,
+  setRefreshCookie,
+  clearRefreshCookie,
+} from './auth-cookie.util';
+
+function configMock(values: Record<string, unknown>): ConfigService {
+  return { get: <T>(key: string) => values[key] as T } as unknown as ConfigService;
+}
+
+function resMock(): Response & { cookie: jest.Mock; clearCookie: jest.Mock } {
+  return {
+    cookie: jest.fn(),
+    clearCookie: jest.fn(),
+  } as unknown as Response & { cookie: jest.Mock; clearCookie: jest.Mock };
+}
+
+describe('auth-cookie.util', () => {
+  describe('readCookieFromHeader', () => {
+    it('returns undefined when header is empty', () => {
+      expect(readCookieFromHeader(undefined, 'p4c_rt')).toBeUndefined();
+      expect(readCookieFromHeader('', 'p4c_rt')).toBeUndefined();
+    });
+    it('parses a single cookie', () => {
+      expect(readCookieFromHeader('p4c_rt=abc', 'p4c_rt')).toBe('abc');
+    });
+    it('parses among multiple cookies, ignoring whitespace', () => {
+      expect(readCookieFromHeader('foo=1; p4c_rt=xyz ; bar=2', 'p4c_rt')).toBe('xyz');
+    });
+    it('returns undefined when cookie not present', () => {
+      expect(readCookieFromHeader('foo=1; bar=2', 'p4c_rt')).toBeUndefined();
+    });
+    it('decodes percent-encoded values', () => {
+      expect(readCookieFromHeader('p4c_rt=a%20b', 'p4c_rt')).toBe('a b');
+    });
+    it('ignores malformed parts without "="', () => {
+      expect(readCookieFromHeader('garbage; p4c_rt=ok', 'p4c_rt')).toBe('ok');
+    });
+  });
+
+  describe('refreshCookieName', () => {
+    it('reads from config', () => {
+      expect(refreshCookieName(configMock({ 'auth.refreshCookieName': 'p4c_rt' }))).toBe('p4c_rt');
+    });
+  });
+
+  describe('buildRefreshCookieOptions', () => {
+    it('returns httpOnly options with TTL in ms', () => {
+      const opts = buildRefreshCookieOptions(
+        configMock({
+          'jwt.refreshTtlSecs': 60,
+          'auth.refreshCookieSameSite': 'lax',
+          'auth.refreshCookieSecure': false,
+        }),
+      );
+      expect(opts).toMatchObject({
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60_000,
+      });
+    });
+    it('forces secure=true when sameSite=none', () => {
+      const opts = buildRefreshCookieOptions(
+        configMock({
+          'jwt.refreshTtlSecs': 1,
+          'auth.refreshCookieSameSite': 'none',
+          'auth.refreshCookieSecure': false,
+        }),
+      );
+      expect(opts.secure).toBe(true);
+      expect(opts.sameSite).toBe('none');
+    });
+  });
+
+  describe('buildClearRefreshCookieOptions', () => {
+    it('omits maxAge but keeps cookie attributes', () => {
+      const opts = buildClearRefreshCookieOptions(
+        configMock({
+          'auth.refreshCookieSameSite': 'strict',
+          'auth.refreshCookieSecure': true,
+        }),
+      );
+      expect(opts).toEqual({
+        httpOnly: true,
+        secure: true,
+        sameSite: 'strict',
+        path: '/',
+      });
+    });
+  });
+
+  describe('setRefreshCookie / clearRefreshCookie', () => {
+    const cfg = configMock({
+      'auth.refreshCookieName': 'p4c_rt',
+      'jwt.refreshTtlSecs': 30,
+      'auth.refreshCookieSameSite': 'lax',
+      'auth.refreshCookieSecure': false,
+    });
+
+    it('sets the named cookie with refresh options', () => {
+      const res = resMock();
+      setRefreshCookie(res, cfg, 'tok');
+      expect(res.cookie).toHaveBeenCalledWith('p4c_rt', 'tok', expect.objectContaining({ httpOnly: true }));
+    });
+    it('clears the named cookie with clear options', () => {
+      const res = resMock();
+      clearRefreshCookie(res, cfg);
+      expect(res.clearCookie).toHaveBeenCalledWith('p4c_rt', expect.objectContaining({ httpOnly: true }));
+    });
+  });
+});

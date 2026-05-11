@@ -1,28 +1,35 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
+import { createStripUntrustedGatewayUserMiddleware } from './common/middleware/strip-untrusted-gateway-user.middleware';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
+
+  app.set('trust proxy', 1);
 
   // ─── Security Headers ─────────────────────────────────────────────────────
   app.use(helmet());
+
+  // ─── Strip spoofed gateway identity unless trust secret / IP matches ───────
+  app.use(createStripUntrustedGatewayUserMiddleware(config));
 
   // ─── Systematic Request Tracer ──────────────────────────────────────────
   app.use((req: any, _res: any, next: any) => {
     const method = req.method;
     const url = req.url;
-    const gatewayUser = req.headers['x-gateway-user'] || 'Not found';
+    const gatewayCtx = req.headers['x-gateway-user'] ? 'present' : 'absent';
     const bodySize = req.headers['content-length'] || '0';
     const contentType = req.headers['content-type'] || 'None';
     const startTime = Date.now();
 
-    console.log(`[Tracer] INCOMING: ${method} ${url} | Size=${bodySize} | Type=${contentType} | GatewayUser=${gatewayUser}`);
+    console.log(`[Tracer] INCOMING: ${method} ${url} | Size=${bodySize} | Type=${contentType} | GatewayCtx=${gatewayCtx}`);
 
     _res.on('finish', () => {
       const duration = Date.now() - startTime;
@@ -41,9 +48,7 @@ async function bootstrap(): Promise<void> {
   // ─── NoSQL Injection Protection ───────────────────────────────────────────
   // Custom wrapper for Express 5 compatibility (req.query is read-only)
   app.use((req: any, _res: any, next: any) => {
-    console.log(`[Tracer] ENTERING NoSQL Protection | RequestBody=${!!req.body}`);
     if (req.body) {
-      console.log(`[Tracer] Sanitizing body...`);
       req.body = mongoSanitize.sanitize(req.body);
     }
     if (req.params) req.params = mongoSanitize.sanitize(req.params);

@@ -61,7 +61,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     private readonly i18n: I18nService,
   ) {}
 
-  afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
+  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
   /** Compute castling availability for a given player */
   private getCastlingAvailable(board: Board, state: GameState, playerNum: 1 | 2) {

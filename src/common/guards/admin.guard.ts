@@ -1,49 +1,29 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  ForbiddenException,
-  Inject,
-  Injectable,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as jwt from 'jsonwebtoken';
-import { REDIS_CLIENT } from '../redis/redis.module';
-import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
+import type { JwtPayload } from '../decorators/current-user.decorator';
 
+/**
+ * Authorizes admin-only endpoints. Relies on `AuthGuard` having already verified the JWT and
+ * populated `req.user`. Considers `role==='admin'` from the signed payload OR `ADMIN_EMAILS`
+ * legacy allowlist (for users predating the DB `role` field).
+ *
+ * Prefer `@Roles('admin')` + `RolesGuard` for new code.
+ */
 @Injectable()
 export class AdminGuard implements CanActivate {
-  constructor(
-    private readonly config: ConfigService,
-    @Inject(REDIS_CLIENT) private readonly redis: any,
-  ) {}
+  constructor(private readonly config: ConfigService) {}
 
-  async canActivate(context: ExecutionContext): Promise<boolean> {
+  canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
-    const authHeader: string = request.headers['authorization'] || '';
-    const token = authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7)
-      : authHeader;
+    const user = request.user as JwtPayload | undefined;
+    if (!user) throw new ForbiddenException('ERROR_AUTH');
 
-    if (!token) throw new ForbiddenException('ERROR_AUTH');
+    if (user.role === 'admin') return true;
 
-    // 1. Verify JWT and extract email
-    let payload: any;
-    try {
-      payload = jwt.verify(token, this.config.get<string>('jwt.secret')!);
-    } catch {
-      throw new ForbiddenException('ERROR_AUTH');
-    }
+    const adminEmails = (this.config.get<string[]>('admin.emails') || []).map((e) => e.toLowerCase());
+    const email = (user.email || '').toLowerCase();
+    if (email && adminEmails.includes(email)) return true;
 
-    // 2. Verify email is in admin list
-    const adminEmails = this.config.get<string[]>('admin.emails') || [];
-    if (!payload.email || !adminEmails.includes(payload.email.toLowerCase())) {
-      throw new ForbiddenException('ERROR_AUTH');
-    }
-
-    // 3. Verify token is still active in Redis
-    const exists = await this.redis.exists(`${REDIS_KEY_ACCESS_TOKEN}${token}`);
-    if (exists !== 1) throw new ForbiddenException('ERROR_AUTH');
-
-    return true;
+    throw new ForbiddenException('ERROR_AUTH');
   }
 }

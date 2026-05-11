@@ -20,7 +20,7 @@ export class RpsGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     @Inject(REDIS_CLIENT) private readonly redis: any,
   ) {}
 
-  afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
+  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
   handleConnection(client: Socket) { this.logger.log(`[RPS] Connected: ${client.id}`); }
   handleDisconnect(client: Socket) {

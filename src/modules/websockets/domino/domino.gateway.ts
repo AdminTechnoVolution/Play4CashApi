@@ -65,7 +65,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     throw lastError;
   }
 
-  afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
+  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
   handleConnection(client: Socket) { this.logger.log(`[Domino] Connected: ${client.id}`); }
 

@@ -23,7 +23,7 @@ export class RoomsGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     @Inject(REDIS_CLIENT) private readonly redis: any,
   ) {}
 
-  afterInit(server: Server) { applyWsAuth(server, this.config.get<string>('jwt.secret')!, this.redis); }
+  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
   handleConnection(client: Socket) { this.logger.log(`[Rooms] Connected: ${client.id}`); }
   handleDisconnect(client: Socket) { this.logger.log(`[Rooms] Disconnected: ${client.id}`); }

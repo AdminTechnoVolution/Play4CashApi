@@ -1,0 +1,75 @@
+---
+description: Workflow obligatorio del agente para cada petición (API NestJS)
+alwaysApply: true
+---
+
+# Workflow del agente — Play4CashApi
+
+Aplica este flujo en **cada petición**, sin excepción.
+
+## 1. Antes de tocar código — cargar contexto
+
+1. **Lee siempre** la regla compañera `auth-session.mdc` (esta carpeta) si la petición toca
+   autenticación, JWT, guards, refresh, roles, websockets, gateway trust, rate limiting o
+   redis-keys.
+2. **Revisa skills relevantes** en `.agents/skills/`:
+   - `create-collection/SKILL.md` — agregar un nuevo juego/módulo (schema, lógica, gateway).
+   - `create-websocket-gateway/SKILL.md` — agregar un gateway WS o feature realtime.
+   - `create-skill/SKILL.md` — solo si vas a crear una skill nueva.
+   No leas todas siempre; usa la descripción para filtrar.
+3. Si la tarea tiene >2 pasos, crea un `TodoWrite`.
+
+## 2. Implementar
+
+- Respeta el contrato definido en `auth-session.mdc` (JWT con `typ/jti/familyId`, families
+  en Redis, `AuthGuard` global, `AdminGuard`/`RolesGuard` thin, cookie httpOnly, etc.).
+- Para WS, **siempre** usa `applyWsAuth(server, this.config, this.redis)` — no la firma
+  vieja con secret crudo.
+- Usa `jwtVerifyOptions(config)` para todo `jwt.verify` (issuer + audience).
+- **Nunca** pongas `jti` en payload Y `jwtid` en options del `jwt.sign` a la vez.
+
+## 3. Verificar antes de cerrar — obligatorio
+
+```bash
+npx tsc --noEmit
+```
+
+Si tocaste lógica con tests existentes:
+
+```bash
+npx jest --no-coverage --forceExit
+```
+
+Si el cambio afecta build:
+
+```bash
+npm run build
+```
+
+El hook `stop` (en `.cursor/hooks.json`) corre `tsc --noEmit` automáticamente. Si falla,
+**no cierres la respuesta** sin arreglarlo.
+
+Reglas de tests:
+- Las pruebas con `ts-jest` pueden tener cold start de >60s. Usa `--forceExit`.
+- No introduzcas tests que requieran Mongo/Redis reales — mockéalos como en
+  `src/modules/auth/auth.service.spec.ts`.
+
+## 4. Guardar memoria de los ajustes
+
+Al final de cada petición que modifique código de auth/guards/sessions/JWT/gateway:
+
+1. Actualiza `auth-session.mdc` si el cambio contradice o extiende lo escrito ahí.
+2. Si la decisión es trans-repo (claims JWT, prefijos Redis, env vars, paths públicos),
+   replica en `docs/SECURITY-ENV.md` de los tres repos y en `auth-session.mdc` de los repos
+   afectados.
+3. Si la decisión es nueva y no encaja, añade nueva regla `.cursor/rules/*.mdc`
+   (`alwaysApply: true`, <80 líneas, con ejemplos concretos).
+
+## 5. Patrones prohibidos universales
+
+- ❌ Commits sin pedirlo explícitamente.
+- ❌ `tsc` o `jest` con errores ignorados.
+- ❌ `AdminGuard` o `RolesGuard` sobre `@Public()`.
+- ❌ Loggear bytes de access/refresh tokens.
+- ❌ Crear archivos nuevos cuando puedes editar uno existente.
+- ❌ Saltar la sección 3 (Verificar).
