@@ -109,7 +109,59 @@ export class RoomService {
     };
   }
 
+  // ── ACTIVE ROOM FOR USER ───────────────────────────────────────────────────
+
+  /**
+   * Phase C: returns the room the user is currently participating in (status =
+   * waiting or started), if any. Backed by the partial unique index, so this is
+   * O(1). Used by the PWA on login/home boot to redirect a player back into the
+   * match they last left.
+   *
+   * Shape: `{ success: true, data: <enrichedRoom | null> }`.
+   */
+  async getActiveRoomForUser(userId: string, lang = 'en'): Promise<any> {
+    const active = await this.roomModel
+      .findOne({
+        'players.playerId': new Types.ObjectId(userId),
+        status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
+      })
+      .populate('game_id', '-created_at')
+      .populate('players.playerId', 'username')
+      .lean();
+    if (!active) {
+      return { success: true, messages: [], data: null };
+    }
+    const [enriched] = this.localizeRooms([active], lang);
+    return { success: true, messages: [], data: enriched };
+  }
+
   // ── CREATE ROOM ─────────────────────────────────────────────────────────────
+
+  /**
+   * Phase C: translate Mongo duplicate-key errors raised by the partial unique
+   * index `players_playerId_active_unique` into a domain-friendly exception.
+   * Includes the currently active room id so the PWA can redirect there directly.
+   */
+  private async raiseIfAlreadyInActiveRoom(userId: string, err: unknown): Promise<never> {
+    // Mongo dup-key. We only translate when the failing index is the one we own —
+    // otherwise rethrow so genuine collisions (e.g. `code` collision) are not masked.
+    const e = err as { code?: number; message?: string };
+    if (e?.code === 11000 && /players_playerId_active_unique/.test(e.message || '')) {
+      const active = await this.roomModel
+        .findOne({
+          'players.playerId': new Types.ObjectId(userId),
+          status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
+        })
+        .select('_id game_id status')
+        .lean();
+      throw new BusinessException('ERROR_USER_ALREADY_IN_ROOM', 409, {
+        activeRoomId: active?._id?.toString() ?? null,
+        gameId: (active as any)?.game_id?.toString() ?? null,
+        status: active?.status ?? null,
+      });
+    }
+    throw err as Error;
+  }
 
   async createRoom(
     userId: string,
@@ -138,16 +190,25 @@ export class RoomService {
     const { randomBytes } = await import('crypto');
     const code = randomBytes(8).toString('hex');
 
-    const room = await this.roomModel.create({
-      name: name || undefined,
-      code,
-      game_id: new Types.ObjectId(gameId),
-      bet_amount: betAmount,
-      house_edge: game.house_edge,
-      public: isPublic,
-      player_limit: effectivePlayerLimit,
-      players: [{ playerId: new Types.ObjectId(userId), ready: false }],
-    }) as any;
+    let room: any;
+    try {
+      room = await this.roomModel.create({
+        name: name || undefined,
+        code,
+        game_id: new Types.ObjectId(gameId),
+        bet_amount: betAmount,
+        house_edge: game.house_edge,
+        public: isPublic,
+        player_limit: effectivePlayerLimit,
+        players: [{ playerId: new Types.ObjectId(userId), ready: false }],
+      });
+    } catch (err) {
+      // Phase C: partial unique index on `players.playerId` (active rooms only)
+      // catches a user who already has an open room. Translates Mongo's E11000 to
+      // ERROR_USER_ALREADY_IN_ROOM with the existing roomId for client redirect.
+      await this.raiseIfAlreadyInActiveRoom(userId, err);
+      throw err as Error; // unreachable — raiseIfAlreadyInActiveRoom always throws.
+    }
 
     const populated = await this.roomModel
       .findById(room._id)
@@ -173,16 +234,24 @@ export class RoomService {
     const user = await this.userModel.findById(userId);
     if (!user || user.balance < roomInfo.bet_amount) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
 
-    const room = await this.roomModel.findOneAndUpdate(
-      {
-        _id: roomId,
-        status: 'waiting',
-        [`players.${maxPlayers - 1}`]: { $exists: false },
-        'players.playerId': { $ne: new Types.ObjectId(userId) },
-      },
-      { $push: { players: { playerId: new Types.ObjectId(userId), ready: false } } },
-      { returnDocument: 'after' },
-    ).populate('game_id');
+    let room: any;
+    try {
+      room = await this.roomModel.findOneAndUpdate(
+        {
+          _id: roomId,
+          status: 'waiting',
+          [`players.${maxPlayers - 1}`]: { $exists: false },
+          'players.playerId': { $ne: new Types.ObjectId(userId) },
+        },
+        { $push: { players: { playerId: new Types.ObjectId(userId), ready: false } } },
+        { returnDocument: 'after' },
+      ).populate('game_id');
+    } catch (err) {
+      // Phase C: partial unique index can fire here if the user already has
+      // an open room (waiting or started). Translate to ERROR_USER_ALREADY_IN_ROOM.
+      await this.raiseIfAlreadyInActiveRoom(userId, err);
+      throw err as Error;
+    }
 
     if (!room) {
       const current = await this.roomModel.findById(roomId);
@@ -362,14 +431,35 @@ export class RoomService {
       } else if (numPlayersAtStart > 2 && isUno) {
         await this.unoGateway.eliminatePlayer(roomId, userId, 'forfeit');
       } else {
-        // Standard 1v1 forfeit (or multi-player where only 2 were left)
+        // Standard 1v1 forfeit (or multi-player where only 2 were left).
+        //
+        // Phase A hardening: previous version did `findOne → mutate → save()`, which
+        // allowed two concurrent leaveRoom calls (double-tap, retry) to both observe
+        // `status === 'started'` and BOTH credit the winner. We now use an atomic
+        // `findOneAndUpdate` keyed on `status: 'started'` so only the first caller
+        // performs the payout; concurrent callers see `null` and exit idempotently.
         const winner_id = roomInfo.players.find((p: any) => p.playerId.toString() !== userId)?.playerId;
         if (winner_id) {
-          roomInfo.status = RoomStatus.FINISHED as any;
-          (roomInfo as any).winner = winner_id;
-          (roomInfo as any).winner_reason = 'forfeit';
-          (roomInfo as any).finished_at = new Date();
-          await roomInfo.save();
+          const finalized = await this.roomModel.findOneAndUpdate(
+            { _id: new Types.ObjectId(roomId), status: RoomStatus.STARTED },
+            {
+              $set: {
+                status: RoomStatus.FINISHED,
+                winner: winner_id,
+                winner_reason: 'forfeit',
+                finished_at: new Date(),
+              },
+            },
+            { returnDocument: 'after' },
+          );
+          if (!finalized) {
+            // Another caller already finalized this room. Return the current state
+            // and skip the payout/broadcast.
+            this.logger.debug(
+              `[Room] leaveRoom forfeit skipped (already finalized) | room=${roomId} | user=${userId}`,
+            );
+            return roomInfo;
+          }
 
           const grossPayout = winnerGrossPayout(
             roomInfo.bet_amount,

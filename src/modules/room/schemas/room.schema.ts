@@ -53,3 +53,17 @@ RoomSchema.index({ status: 1 });
 RoomSchema.index({ winner: 1 });
 RoomSchema.index({ 'players.playerId': 1 });
 RoomSchema.index({ 'players.playerId': 1, game_id: 1 });
+
+// Phase C: one-active-room-per-user. A user can appear in at most one room whose
+// status is still `waiting` or `started`. The partial filter excludes `finished`
+// rooms so historical participation never blocks new joins. If the user is already
+// in an open room and tries to create/join another, Mongo throws E11000 and the
+// service layer translates it into ERROR_USER_ALREADY_IN_ROOM.
+RoomSchema.index(
+  { 'players.playerId': 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] } },
+    name: 'players_playerId_active_unique',
+  },
+);

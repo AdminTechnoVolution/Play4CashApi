@@ -2,8 +2,9 @@ import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -19,7 +20,7 @@ const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
 
 @WebSocketGateway({ namespace: '/halma', cors: { origin: '*', credentials: true } })
-export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(HalmaGateway.name);
   private usernameCache = new Map<string, string>();
@@ -44,7 +45,13 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     private readonly roomsGateway: RoomsGateway,
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
+    private readonly grace: GracePeriodService,
   ) {}
+
+  /** Phase B: register the forfeit handler with the distributed grace sweeper. */
+  onModuleInit() {
+    this.grace.registerHandler('halma', (playerId, roomId) => this.executeForfeit(roomId, playerId));
+  }
 
   afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
@@ -70,36 +77,34 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate({ _id: roomObjId, 'players.playerId': playerObjId }, { $pull: { players: { playerId: playerObjId } } }, { returnDocument: 'after' });
-      if (updated?.players.length === 0) await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
-      else client.to(room_id).emit('halma', { success: true, data: { opponentLeft: true }, messages: ['Opponent left.'] });
+      const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+      if (updated?.players.length === 0) {
+        await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
+        // Phase D: keep the lobby in sync when the last player leaves an empty waiting room.
+        if (gameIdForLobby) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
+      } else {
+        client.to(room_id).emit('halma', { success: true, data: { opponentLeft: true }, messages: ['Opponent left.'] });
+        // Phase D: broadcast the new player count so the lobby join button updates.
+        if (gameIdForLobby) {
+          const populated = await this.roomModel
+            .findById(roomObjId)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+          if (populated) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomUpdated', populated);
+        }
+      }
       return;
     }
     if (room.status === 'started') {
-      const redisKey = `grace_period:halma:${player_id}`;
+      // Phase B: distributed grace. `MIN_GRACE_SECS` floor of 30 s; restart-safe.
       const game = await this.halmaModel.findOne({ room_id: roomObjId });
-      let gracePeriod = 60;
-
-      if (game) {
-        const turnStart = game.turn_start_time?.getTime();
+      let remainingTurnSecs = 0;
+      if (game?.turn_start_time) {
         const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
-        if (turnStart) {
-          const elapsed = Date.now() - turnStart;
-          gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
-        }
+        remainingTurnSecs = Math.ceil((limit - (Date.now() - game.turn_start_time.getTime())) / 1000);
       }
-
-      await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
-      this.logger.log(`[Halma] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod}`);
-
-      // Schedule definitive forfeit
-      setTimeout(async () => {
-        const stillDisconnected = await this.redis.get(redisKey);
-        if (stillDisconnected) {
-          this.logger.log(`[Halma] 🚪 Grace period EXPIRED, forfeiting player=${player_id}`);
-          await this.redis.del(redisKey);
-          await this.executeForfeit(room_id, player_id);
-        }
-      }, gracePeriod * 1000);
+      await this.grace.start('halma', player_id, room_id, Math.max(60, remainingTurnSecs));
     }
   }
 
@@ -139,18 +144,9 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
     const player_id = client.data.player_id;
-    let room_id = payload?.room_id;
-
-    // Check for reconnection session in Redis
-    const redisKey = `grace_period:halma:${player_id}`;
-    const reconData = await this.redis.get(redisKey);
-
-    if (reconData) {
-      const parsed = JSON.parse(reconData);
-      room_id = parsed.room_id;
-      await this.redis.del(redisKey);
-      this.logger.log(`[Halma] 🔄 Reconnection detected | player=${player_id} | room=${room_id}`);
-    }
+    const room_id = payload?.room_id;
+    // Phase B: cancel any open disconnect grace via the distributed service.
+    await this.grace.cancel('halma', player_id);
 
     if (!room_id) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     
@@ -207,9 +203,19 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const game = await this.halmaModel.findOne({ room_id });
       if (game) {
         const isMyTurn = game.current_player === playerNum;
-        const now = new Date();
-        const elapsed = Math.floor((now.getTime() - game.turn_start_time.getTime()) / 1000);
-        const remaining = Math.max(0, 30 - elapsed);
+        const totalTimerSeconds = (room.game_id as any)?.turn_timer_seconds || 30;
+        const elapsed = game.turn_start_time
+          ? Math.floor((Date.now() - game.turn_start_time.getTime()) / 1000)
+          : 0;
+        const remaining = Math.max(5, totalTimerSeconds - elapsed);
+        // Phase B: re-arm the server-side turn timer for the reconnecting player so
+        // a sustained disconnect doesn't translate into "free time" once they
+        // reconnect — without this the only timeout enforcement was the in-process
+        // setTimeout created when the turn first started, which is wiped on pod
+        // restart and never restarts on rejoin.
+        if (isMyTurn) {
+          this.startTimer(client, room_id, remaining);
+        }
         return client.emit('halma', { success: true, messages: [], data: {
           board: game.board,
           yourTurn: isMyTurn, turnTimerSeconds: remaining,
@@ -230,31 +236,68 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
 
     if (socketsInRoom.length >= maxPlayers && room.status === 'waiting') {
+      // Phase A hardening: only start when the room actually has the expected number of
+      // distinct players. Defeats the "two tabs from the same account" socket-count race.
+      if (room.players.length < maxPlayers || !room.players[0]?.playerId || !room.players[1]?.playerId) {
+        return;
+      }
       const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
       if (!started) return;
 
       const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
-      const [player1User, player2User] = await Promise.all([
-        this.userModel.findById(p1id),
-        this.userModel.findById(p2id)
-      ]);
+      const paid: any[] = [];
 
-      const p1Balance = player1User?.balance || 0;
-      const p2Balance = player2User?.balance || 0;
+      // Phase A hardening: atomic deduction with $gte + compensation if the deal or
+      // model.create fails. Replaces the previous read-then-updateOne pattern that
+      // could overdraw and silently lose stake on a create failure.
+      const compensate = async (errKey: string, reason: string) => {
+        this.logger.error(`event=halma_start_failed room=${room_id} reason=${reason}`);
+        for (const pid of paid) {
+          await this.userModel
+            .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+            .catch((e) => this.logger.error(`[Halma] Refund failed | player=${pid}`, e));
+        }
+        await this.halmaModel
+          .deleteOne({ room_id: new Types.ObjectId(room_id) })
+          .catch((e) => this.logger.error(`[Halma] Game cleanup failed | room=${room_id}`, e));
+        await this.roomModel
+          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+          .catch((e) => this.logger.error(`[Halma] Room status reset failed | room=${room_id}`, e));
+        this.server
+          .to(room_id)
+          .emit('halma', { success: false, messages: [this.i18n.translate(errKey, lang)] });
+      };
 
-      if (p1Balance < room.bet_amount || p2Balance < room.bet_amount) {
-        this.server.to(room_id).emit('halma', { success: false, messages: [this.i18n.translate('ws.games.insufficientBalance', 'en')] });
-        await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
+      const deduct1 = await this.userModel.findOneAndUpdate(
+        { _id: p1id, balance: { $gte: room.bet_amount } },
+        { $inc: { balance: -room.bet_amount } },
+        { returnDocument: 'after' },
+      );
+      if (!deduct1) {
+        await compensate('ws.games.insufficientBalance', 'p1_insufficient');
         return;
       }
+      paid.push(p1id);
 
-      await Promise.all([
-        this.userModel.updateOne({ _id: p1id }, { $inc: { balance: -room.bet_amount } }),
-        this.userModel.updateOne({ _id: p2id }, { $inc: { balance: -room.bet_amount } }),
-      ]);
+      const deduct2 = await this.userModel.findOneAndUpdate(
+        { _id: p2id, balance: { $gte: room.bet_amount } },
+        { $inc: { balance: -room.bet_amount } },
+        { returnDocument: 'after' },
+      );
+      if (!deduct2) {
+        await compensate('ws.games.insufficientBalance', 'p2_insufficient');
+        return;
+      }
+      paid.push(p2id);
 
       const board = createHalmaBoard();
-      await this.halmaModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, turn_start_time: new Date() });
+      try {
+        await this.halmaModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, turn_start_time: new Date() });
+      } catch (e) {
+        this.logger.error(`[Halma] Game create failed | room=${room_id}`, e);
+        await compensate('ws.games.matchmakingError', 'game_create_failed');
+        return;
+      }
 
       for (const s of socketsInRoom) {
         const sIsSpectator = (s as any).data.isSpectator || false;

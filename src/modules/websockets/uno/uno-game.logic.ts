@@ -33,6 +33,31 @@ export function isColoredNumberCard(card: string): boolean {
   return /^[RGBY][0-9]$/.test(card);
 }
 
+/**
+ * Mattel scoring: when a hand ends, the winner collects the sum of every other player's
+ * remaining cards. Numbered cards are face value; Skip/Reverse/+2 are 20 each; Wild and
+ * Wild +4 are 50 each.
+ *
+ * Used to drive multi-round matches where the first player to reach the match target
+ * (default 200) wins the whole match and takes the pot.
+ */
+export function cardScoreValue(card: string): number {
+  if (card === 'W' || card === 'W4') return 50;
+  // Action cards
+  if (/^[RGBY](Skip|Reverse|Draw2)$/.test(card)) return 20;
+  // Numbered colored card
+  const m = /^[RGBY]([0-9])$/.exec(card);
+  if (m) return Number(m[1]);
+  // Unknown encoding — treat as 0 to avoid distorting the match score on bad data.
+  return 0;
+}
+
+export function sumHandScore(hand: string[]): number {
+  let total = 0;
+  for (const c of hand) total += cardScoreValue(c);
+  return total;
+}
+
 export interface UnoDealResult {
   hands: Record<string, string[]>;
   drawPile: string[];
@@ -256,8 +281,26 @@ export interface UnoEngineState {
   currentPlayerIndex: number;
   direction: 1 | -1;
   currentColor: UnoColor;
+  /**
+   * Cards the current player must draw from a freshly-played +2 / +4 (no stacking — they
+   * cannot be deferred or chained). Always 0, 2, or 4. Only `applyTakeDrawStack` can
+   * resolve it; any other action throws `MUST_TAKE_STACK`.
+   */
   drawStackPending: number;
   eliminatedPlayers: string[];
+  /**
+   * Players who currently hold UNO status (declared "UNO" while at exactly 1 card).
+   * Auto-cleared when the player's hand grows back to ≥2 cards.
+   */
+  unoCalled: string[];
+  /**
+   * Player who just emptied their hand to 1 card without declaring UNO. Any other player
+   * may `applyChallengeUnoMiss` against them until the next state-mutating action closes
+   * the window. The offender themselves may `applyCallUno` to clear it before being caught.
+   */
+  pendingUnoOffender: string | null;
+  /** Last player who played, drew, or took the stack. Drives PWA "X jugó +2" UI hints. */
+  lastActionPlayerId: string | null;
 }
 
 export function cloneEngineState(s: UnoEngineState): UnoEngineState {
@@ -271,6 +314,9 @@ export function cloneEngineState(s: UnoEngineState): UnoEngineState {
     currentColor: s.currentColor,
     drawStackPending: s.drawStackPending,
     eliminatedPlayers: [...s.eliminatedPlayers],
+    unoCalled: [...s.unoCalled],
+    pendingUnoOffender: s.pendingUnoOffender,
+    lastActionPlayerId: s.lastActionPlayerId,
   };
 }
 
@@ -289,7 +335,14 @@ function assertCurrentPlayer(state: UnoEngineState, playerId: string): void {
   }
 }
 
-export type PlayUnoOptions = { chosenColor?: UnoColor };
+export type PlayUnoOptions = {
+  chosenColor?: UnoColor;
+  /**
+   * If true and this play leaves the player at exactly 1 card, the player is added to
+   * `unoCalled` atomically (no challenge window opens). False/undefined opens the window.
+   */
+  callUno?: boolean;
+};
 
 export function validatePlay(
   state: UnoEngineState,
@@ -312,21 +365,19 @@ export function validatePlay(
     return { ok: false, reason: 'INVALID_CARD_INDEX' };
   }
 
+  // Stacking +2/+4 is disabled by product decision (Mattel-official). With a pending
+  // draw stack the only legal action is `applyTakeDrawStack`.
+  if (state.drawStackPending > 0) {
+    return { ok: false, reason: 'MUST_TAKE_STACK' };
+  }
+
   const card = hand[cardIndex];
   const top = topDiscard(state);
-  const pending = state.drawStackPending;
-
-  if (pending > 0) {
-    if (!isDrawStackResponderCard(card)) {
-      return { ok: false, reason: 'MUST_RESPOND_DRAW_STACK' };
-    }
-  } else {
-    if (!canPlayCardOnDiscard(card, top, state.currentColor)) {
-      return { ok: false, reason: 'NO_MATCH' };
-    }
-    if (isWildDrawFour(card) && handHasColor(hand, state.currentColor)) {
-      return { ok: false, reason: 'WILD4_ILLEGAL_HAS_COLOR' };
-    }
+  if (!canPlayCardOnDiscard(card, top, state.currentColor)) {
+    return { ok: false, reason: 'NO_MATCH' };
+  }
+  if (isWildDrawFour(card) && handHasColor(hand, state.currentColor)) {
+    return { ok: false, reason: 'WILD4_ILLEGAL_HAS_COLOR' };
   }
 
   if ((card === 'W' || card === 'W4') && !options.chosenColor) {
@@ -338,6 +389,12 @@ export function validatePlay(
 
 /**
  * Apply a validated play. Returns new state and optional winner if hand emptied.
+ *
+ * UNO-call semantics: if the play leaves the player at exactly 1 card and `callUno` is
+ * not true, a "miss" window opens (`pendingUnoOffender = playerId`) that any other player
+ * can punish via `applyChallengeUnoMiss`. The offender can also self-clear via
+ * `applyCallUno` before being caught. The window stays open until the NEXT state-mutating
+ * action (play / draw / take_stack / pass), which closes it deterministically.
  */
 export function applyPlay(
   state: UnoEngineState,
@@ -349,6 +406,11 @@ export function applyPlay(
   if (!v.ok) throw new Error(v.reason);
 
   const next = cloneEngineState(state);
+
+  // Any new action closes the previous miss-window (deterministic deadline).
+  next.pendingUnoOffender = null;
+  next.lastActionPlayerId = playerId;
+
   const hand = [...next.hands[playerId]];
   const [card] = hand.splice(cardIndex, 1);
   next.hands[playerId] = hand;
@@ -363,26 +425,43 @@ export function applyPlay(
   }
   next.currentColor = newColor;
 
-  const pending = next.drawStackPending;
-  if (pending > 0) {
-    if (isColoredDrawTwo(card)) next.drawStackPending = pending + 2;
-    else if (isWildDrawFour(card)) next.drawStackPending = pending + 4;
-  } else {
-    if (isColoredDrawTwo(card)) next.drawStackPending = 2;
-    else if (isWildDrawFour(card)) next.drawStackPending = 4;
-    else next.drawStackPending = 0;
-  }
+  // Without stacking, +2 and +4 just open the pending counter for the next player.
+  if (isColoredDrawTwo(card)) next.drawStackPending = 2;
+  else if (isWildDrawFour(card)) next.drawStackPending = 4;
+  else next.drawStackPending = 0;
 
   const active = activePlayerCount(next.playerIds, next.eliminatedPlayers);
 
   if (hand.length === 0) {
-    return { state: next, winnerId: playerId };
-  }
-
-  const stackJustGrew = isColoredDrawTwo(card) || isWildDrawFour(card);
-  if (stackJustGrew && next.drawStackPending > 0) {
-    advanceTurnAfterCard(next);
-    return { state: next };
+    // The player can only legally reach 0 cards if they had UNO declared, so we don't
+    // award a win to anyone who skipped the call. The gateway's
+    // `applyChallengeUnoMiss` is unreachable here because the same play action would
+    // have closed the window, so we instead enforce the call inline:
+    if (!next.unoCalled.includes(playerId) && !options.callUno) {
+      // Treat as miss: deal 2 to the player and refuse the win. The play was legal but
+      // the call was missed. Keep card on discard, restore from drawpile.
+      const { drawn, drawPile, discardPile } = drawNCards(next.drawPile, next.discardPile, 2);
+      next.drawPile = drawPile;
+      next.discardPile = discardPile;
+      next.hands[playerId] = [...next.hands[playerId], ...drawn];
+      next.unoCalled = next.unoCalled.filter((id) => id !== playerId);
+      next.pendingUnoOffender = null;
+      // Action effects (skip/reverse/draw stack) still apply to the next player.
+    } else {
+      next.unoCalled = next.unoCalled.filter((id) => id !== playerId);
+      return { state: next, winnerId: playerId };
+    }
+  } else if (hand.length === 1) {
+    if (options.callUno) {
+      if (!next.unoCalled.includes(playerId)) next.unoCalled = [...next.unoCalled, playerId];
+      next.pendingUnoOffender = null;
+    } else {
+      next.unoCalled = next.unoCalled.filter((id) => id !== playerId);
+      next.pendingUnoOffender = playerId;
+    }
+  } else {
+    // Hand is 2+ now (or back to 2+ via missed-call penalty above): cannot hold UNO.
+    next.unoCalled = next.unoCalled.filter((id) => id !== playerId);
   }
 
   if (isSkipCard(card)) {
@@ -427,13 +506,6 @@ function advanceSkip(state: UnoEngineState, activeCount: number): void {
   advanceTurnNormal(state);
 }
 
-/**
- * After +2 / +4 that adds to stack, move to next player (they must respond or take cards).
- */
-function advanceTurnAfterCard(state: UnoEngineState): void {
-  advanceTurnNormal(state);
-}
-
 export function validateTakeDrawStack(state: UnoEngineState, playerId: string): { ok: true } | { ok: false; reason: string } {
   try {
     assertCurrentPlayer(state, playerId);
@@ -443,20 +515,12 @@ export function validateTakeDrawStack(state: UnoEngineState, playerId: string): 
   if (state.drawStackPending <= 0) {
     return { ok: false, reason: 'NO_DRAW_STACK' };
   }
-
-  const hand = state.hands[playerId] || [];
-  for (const c of hand) {
-    if (isDrawStackResponderCard(c)) {
-      return { ok: false, reason: 'MUST_PLAY_OR_PASS_ONLY_IF_NO_RESPONSE' };
-    }
-  }
-
+  // No "must respond" check — stacking is disabled, take is the only legal action.
   return { ok: true };
 }
 
 /**
- * Player takes the accumulated draw stack (no +2/W4 in hand to respond).
- * Resets stack, advances turn.
+ * Player takes the pending +2/+4. Resets stack, advances turn.
  */
 export function applyTakeDrawStack(
   state: UnoEngineState,
@@ -467,39 +531,17 @@ export function applyTakeDrawStack(
   if (!v.ok) throw new Error(v.reason);
 
   const next = cloneEngineState(state);
+  next.pendingUnoOffender = null;
+  next.lastActionPlayerId = playerId;
+
   const n = next.drawStackPending;
   const { drawn, drawPile, discardPile } = drawNCards(next.drawPile, next.discardPile, n, shuffleFn);
   next.drawPile = drawPile;
   next.discardPile = discardPile;
   next.hands[playerId] = [...(next.hands[playerId] || []), ...drawn];
   next.drawStackPending = 0;
-  advanceTurnNormal(next);
-  return { state: next };
-}
-
-/**
- * Optional: take stack even when you could play a responder (explicit "accept" from client).
- * Same as applyTakeDrawStack but skips the "must not hold responder" check.
- */
-export function applyTakeDrawStackForced(
-  state: UnoEngineState,
-  playerId: string,
-  shuffleFn: ShuffleFn = shuffleUnoDeck,
-): { state: UnoEngineState } {
-  try {
-    assertCurrentPlayer(state, playerId);
-  } catch {
-    throw new Error('NOT_YOUR_TURN');
-  }
-  if (state.drawStackPending <= 0) throw new Error('NO_DRAW_STACK');
-
-  const next = cloneEngineState(state);
-  const n = next.drawStackPending;
-  const { drawn, drawPile, discardPile } = drawNCards(next.drawPile, next.discardPile, n, shuffleFn);
-  next.drawPile = drawPile;
-  next.discardPile = discardPile;
-  next.hands[playerId] = [...(next.hands[playerId] || []), ...drawn];
-  next.drawStackPending = 0;
+  // Player just received cards: cannot still hold UNO.
+  next.unoCalled = next.unoCalled.filter((id) => id !== playerId);
   advanceTurnNormal(next);
   return { state: next };
 }
@@ -538,9 +580,13 @@ export function applyDrawOne(
   if (drawn.length === 0) throw new Error('DECK_EMPTY');
 
   const next = cloneEngineState(state);
+  next.pendingUnoOffender = null;
+  next.lastActionPlayerId = playerId;
   next.drawPile = drawPile;
   next.discardPile = discardPile;
   next.hands[playerId] = [...(next.hands[playerId] || []), ...drawn];
+  // Hand grew, so any prior UNO declaration is invalidated.
+  next.unoCalled = next.unoCalled.filter((id) => id !== playerId);
   return { state: next };
 }
 
@@ -564,8 +610,59 @@ export function applyPassTurn(state: UnoEngineState, playerId: string): UnoEngin
   const v = validatePassTurn(state, playerId);
   if (!v.ok) throw new Error(v.reason);
   const next = cloneEngineState(state);
+  next.pendingUnoOffender = null;
+  next.lastActionPlayerId = playerId;
   advanceTurnNormal(next);
   return next;
+}
+
+// ── UNO call / challenge ────────────────────────────────────────────────────
+
+/**
+ * Player declares UNO to clear the miss-window opened by their previous play.
+ * Valid ONLY if `pendingUnoOffender === playerId`. Any other state throws.
+ */
+export function applyCallUno(state: UnoEngineState, playerId: string): UnoEngineState {
+  if (state.pendingUnoOffender !== playerId) {
+    throw new Error('UNO_CALL_NOT_ALLOWED');
+  }
+  const next = cloneEngineState(state);
+  next.pendingUnoOffender = null;
+  if (!next.unoCalled.includes(playerId)) {
+    next.unoCalled = [...next.unoCalled, playerId];
+  }
+  return next;
+}
+
+/**
+ * Any active (non-eliminated) player accuses `accusedId` of failing to call UNO. The
+ * accusation is only valid while `pendingUnoOffender === accusedId`. On success the
+ * offender draws 2 and the window closes.
+ */
+export function applyChallengeUnoMiss(
+  state: UnoEngineState,
+  accuserId: string,
+  accusedId: string,
+  shuffleFn: ShuffleFn = shuffleUnoDeck,
+): { state: UnoEngineState; success: boolean } {
+  if (!state.playerIds.includes(accuserId)) {
+    throw new Error('INVALID_ACCUSER');
+  }
+  if (state.eliminatedPlayers.includes(accuserId)) {
+    throw new Error('ELIMINATED');
+  }
+  if (state.pendingUnoOffender !== accusedId) {
+    return { state, success: false };
+  }
+  const next = cloneEngineState(state);
+  next.pendingUnoOffender = null;
+  const { drawn, drawPile, discardPile } = drawNCards(next.drawPile, next.discardPile, 2, shuffleFn);
+  next.drawPile = drawPile;
+  next.discardPile = discardPile;
+  next.hands[accusedId] = [...(next.hands[accusedId] || []), ...drawn];
+  // Penalised player no longer holds UNO (hand is now 3+).
+  next.unoCalled = next.unoCalled.filter((id) => id !== accusedId);
+  return { state: next, success: true };
 }
 
 export function engineStateFromDeal(
@@ -582,5 +679,8 @@ export function engineStateFromDeal(
     currentColor: deal.currentColor,
     drawStackPending: 0,
     eliminatedPlayers: [],
+    unoCalled: [],
+    pendingUnoOffender: null,
+    lastActionPlayerId: null,
   };
 }

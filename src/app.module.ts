@@ -24,6 +24,8 @@ import { EmailModule } from './common/email/email.module';
 import { I18nModule } from './common/i18n/i18n.module';
 import { GreetingModule } from './modules/greeting/greeting.module';
 import { AppVersionModule } from './modules/app-version/app-version.module';
+import { GracePeriodModule } from './common/grace-period/grace-period.module';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -77,6 +79,8 @@ import { AppVersionModule } from './modules/app-version/app-version.module';
     I18nModule,
     GreetingModule,
     AppVersionModule,
+    GracePeriodModule,
+    IdempotencyModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

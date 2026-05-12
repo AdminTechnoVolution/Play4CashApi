@@ -2,8 +2,9 @@ import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -34,7 +35,7 @@ function clearTimer(socketId: string) {
 }
 
 @WebSocketGateway({ namespace: '/chess', cors: { origin: '*', credentials: true } })
-export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(ChessGateway.name);
   private usernameCache = new Map<string, string>();
@@ -59,7 +60,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     private readonly roomsGateway: RoomsGateway,
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
+    private readonly grace: GracePeriodService,
   ) {}
+
+  /** Phase B: register the forfeit handler with the distributed grace sweeper. */
+  onModuleInit() {
+    this.grace.registerHandler('chess', (playerId, roomId) => this.executeForfeit(roomId, playerId));
+  }
 
   afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
@@ -99,43 +106,41 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         { returnDocument: 'after' },
       );
       if (!updated) return;
+      const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (updated.players.length === 0) {
         await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
         this.server.serverSideEmit?.('roomDeleted', { id: room_id });
+        // Phase D: broadcast to lobby subscribers (rooms namespace) as well, not
+        // just to chess-namespace peers.
+        if (gameIdForLobby) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
       } else {
         const sLang = this.getLang(client);
         client.to(room_id).emit('chess', { success: true, messages: [this.i18n.translate('ws.games.opponentLeft', sLang)], data: { opponentLeft: true, waitingForOpponent: true } });
+        // Phase D: refresh lobby player count.
+        if (gameIdForLobby) {
+          const populated = await this.roomModel
+            .findById(roomObjId)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+          if (populated) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomUpdated', populated);
+        }
       }
       return;
     }
 
     if (room.status === 'started') {
-      const redisKey = `grace_period:chess:${player_id}`;
-      // Calculate remaining turn time if game supports it, otherwise default 60s
+      // Phase B: distributed grace via Mongo + sweep cron. The service clamps to
+      // `MIN_GRACE_SECS` (30 s) so a disconnect at the tail end of a turn still gives
+      // the mobile user the product-minimum window to reconnect.
       const game = await this.chessGameModel.findOne({ room_id: roomObjId });
-      let gracePeriod = 60;
-      
+      let remainingTurnSecs = 0;
       if (game) {
         const turnStart = game.turn_start_time?.getTime();
         const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
-        if (turnStart) {
-          const elapsed = Date.now() - turnStart;
-          gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
-        }
+        if (turnStart) remainingTurnSecs = Math.ceil((limit - (Date.now() - turnStart)) / 1000);
       }
-
-      await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
-      this.logger.log(`[Chess] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod}`);
-
-      // Schedule definitive forfeit if not reconnected
-      setTimeout(async () => {
-        const stillDisconnected = await this.redis.get(redisKey);
-        if (stillDisconnected) {
-          this.logger.log(`[Chess] 🚪 Grace period EXPIRED, forfeiting player=${player_id}`);
-          await this.redis.del(redisKey);
-          await this.executeForfeit(room_id, player_id);
-        }
-      }, gracePeriod * 1000);
+      await this.grace.start('chess', player_id, room_id, Math.max(60, remainingTurnSecs));
     }
   }
 
@@ -176,17 +181,9 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const lang = this.getLang(client);
     const player_id = client.data.player_id;
 
-    // Check for reconnection session in Redis
-    let room_id = payload?.room_id;
-    const redisKey = `grace_period:chess:${player_id}`;
-    const reconData = await this.redis.get(redisKey);
-
-    if (reconData) {
-      const parsed = JSON.parse(reconData);
-      room_id = parsed.room_id;
-      await this.redis.del(redisKey);
-      this.logger.log(`[Chess] 🔄 Reconnection detected | player=${player_id} | room=${room_id}`);
-    }
+    const room_id = payload?.room_id;
+    // Phase B: cancel any open disconnect grace via the distributed service.
+    await this.grace.cancel('chess', player_id);
 
     if (!room_id) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     
@@ -276,32 +273,78 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     }
 
     if (socketsInRoom.length >= 2 && room.status === 'waiting') {
+      // Phase A hardening: require the room's `players` collection to be full as well —
+      // not just the socket count — to defeat the double-tab race where a single user's
+      // two sockets satisfy the count while `players[1]` is undefined.
+      if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId) {
+        return;
+      }
       const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
       if (!started) return;
 
       const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
-      const [player1User, player2User] = await Promise.all([
-        this.userModel.findById(p1id),
-        this.userModel.findById(p2id)
-      ]);
+      const paid: any[] = [];
 
-      const p1Balance = player1User?.balance || 0;
-      const p2Balance = player2User?.balance || 0;
+      // Phase A hardening: atomic deduction with $gte balance guard. Refund + revert
+      // status if any participant lacks funds, the deal fails, or chessGameModel.create
+      // throws. Never leave a player charged without a game.
+      const compensate = async (errKey: string, reason: string) => {
+        this.logger.error(`event=chess_start_failed room=${room_id} reason=${reason}`);
+        for (const pid of paid) {
+          await this.userModel
+            .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+            .catch((e) => this.logger.error(`[Chess] Refund failed | player=${pid}`, e));
+        }
+        await this.chessGameModel
+          .deleteOne({ room_id: new Types.ObjectId(room_id) })
+          .catch((e) => this.logger.error(`[Chess] Game cleanup failed | room=${room_id}`, e));
+        await this.roomModel
+          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+          .catch((e) => this.logger.error(`[Chess] Room status reset failed | room=${room_id}`, e));
+        this.server
+          .to(room_id)
+          .emit('chess', { success: false, messages: [this.i18n.translate(errKey, lang)] });
+      };
 
-      if (p1Balance < room.bet_amount || p2Balance < room.bet_amount) {
-        if (player1User && p1Balance >= room.bet_amount) { /* dummy */ }
-        await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
-        this.server.to(room_id).emit('chess', { success: false, messages: [this.i18n.translate('ws.games.insufficientBalance', lang)] });
+      const deduct1 = await this.userModel.findOneAndUpdate(
+        { _id: p1id, balance: { $gte: room.bet_amount } },
+        { $inc: { balance: -room.bet_amount } },
+        { returnDocument: 'after' },
+      );
+      if (!deduct1) {
+        await compensate('ws.games.insufficientBalance', 'p1_insufficient');
         return;
       }
+      paid.push(p1id);
 
-      await Promise.all([
-        this.userModel.updateOne({ _id: p1id }, { $inc: { balance: -room.bet_amount } }),
-        this.userModel.updateOne({ _id: p2id }, { $inc: { balance: -room.bet_amount } }),
-      ]);
+      const deduct2 = await this.userModel.findOneAndUpdate(
+        { _id: p2id, balance: { $gte: room.bet_amount } },
+        { $inc: { balance: -room.bet_amount } },
+        { returnDocument: 'after' },
+      );
+      if (!deduct2) {
+        await compensate('ws.games.insufficientBalance', 'p2_insufficient');
+        return;
+      }
+      paid.push(p2id);
 
       const board = createInitialBoard();
-      await this.chessGameModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null, turn_start_time: new Date() });
+      try {
+        await this.chessGameModel.create({
+          room_id,
+          player1_id: p1id,
+          player2_id: p2id,
+          board,
+          current_player: 1,
+          castling_rights: { wK: true, wQ: true, bK: true, bQ: true },
+          en_passant_target: null,
+          turn_start_time: new Date(),
+        });
+      } catch (e) {
+        this.logger.error(`[Chess] Game create failed | room=${room_id}`, e);
+        await compensate('ws.games.matchmakingError', 'game_create_failed');
+        return;
+      }
       const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
 
       const initialState: GameState = { current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null };

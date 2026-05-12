@@ -2,9 +2,11 @@ import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
+import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
@@ -20,6 +22,9 @@ import {
   applyTakeDrawStack,
   applyDrawOne,
   applyPassTurn,
+  applyCallUno,
+  applyChallengeUnoMiss,
+  sumHandScore,
   UnoEngineState,
   UnoColor,
 } from './uno-game.logic';
@@ -35,8 +40,13 @@ const clearTimer = (id: string) => {
   }
 };
 
+/** Default match-target. Set `UNO_MATCH_TARGET` env var to override globally. */
+const DEFAULT_MATCH_TARGET = 200;
+/** Seconds between rounds before auto-start kicks in. */
+const BETWEEN_ROUNDS_SECONDS = 8;
+
 @WebSocketGateway({ namespace: '/uno', cors: { origin: '*', credentials: true } })
-export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(UnoGateway.name);
   private usernameCache = new Map<string, string>();
@@ -49,7 +59,19 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     private readonly roomsGateway: RoomsGateway,
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
+    private readonly grace: GracePeriodService,
   ) {}
+
+  /**
+   * Phase B: register the forfeit handler that the global grace-period sweeper will
+   * call when a UNO disconnect grace expires. Distributed safe: the sweeper acquires a
+   * Mongo lock per row, so the handler runs exactly once across all replicas.
+   */
+  onModuleInit() {
+    this.grace.registerHandler('uno', (playerId, roomId) =>
+      this.eliminatePlayer(roomId, playerId, 'forfeit'),
+    );
+  }
 
   private async runWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
     let lastError: any;
@@ -130,8 +152,14 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         { returnDocument: 'after' },
       );
       if (!updated) return;
+      const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (updated.players.length === 0) {
         await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
+        // Phase D: tell every lobby subscriber that this empty waiting room is gone so
+        // their RoomsPage filters it out without polling.
+        if (gameIdForLobby) {
+          this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
+        }
       } else {
         const username = await this.getCachedUsername(player_id);
         const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
@@ -147,6 +175,18 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
           },
           messages: [this.i18n.translate('ws.domino.playerLeftWaiting', lang, { username })],
         });
+        // Phase D: broadcast the new player count to the lobby so the join button
+        // re-enables for other users the moment a seat opens up.
+        if (gameIdForLobby) {
+          const populated = await this.roomModel
+            .findById(roomObjId)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+          if (populated) {
+            this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomUpdated', populated);
+          }
+        }
       }
       return;
     }
@@ -159,28 +199,21 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       }
 
       const game = await this.unoModel.findOne({ room_id: roomObjId });
-      let gracePeriod = 60;
+      let remainingTurnSecs = 0;
       if (game) {
         const idsStr = game.player_ids.map((p: any) => p.toString());
         const currentId = idsStr[game.current_player_index];
         if (currentId === player_id) {
           const turnStart = game.turn_start_time?.getTime() ?? Date.now();
           const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
-          gracePeriod = Math.max(5, Math.ceil((limit - (Date.now() - turnStart)) / 1000));
+          remainingTurnSecs = Math.ceil((limit - (Date.now() - turnStart)) / 1000);
         }
       }
 
-      const redisKey = `grace_period:uno:${player_id}`;
-      await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
-      this.logger.log(`[UNO] Grace period | player=${player_id} | room=${room_id} | ${gracePeriod}s`);
-
-      setTimeout(async () => {
-        const still = await this.redis.get(redisKey);
-        if (still) {
-          await this.redis.del(redisKey);
-          await this.eliminatePlayer(room_id, player_id, 'forfeit');
-        }
-      }, gracePeriod * 1000);
+      // Phase B: use the distributed grace service. The service clamps to
+      // `MIN_GRACE_SECS` (30 s) — so a player who blips out at the very end of a turn
+      // still gets the product-minimum window to reconnect, not the previous 5 s.
+      await this.grace.start('uno', player_id, room_id, Math.max(60, remainingTurnSecs));
     }
   }
 
@@ -190,13 +223,9 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const player_id = client.data.player_id;
     let room_id = payload?.room_id;
 
-    const reconKey = `grace_period:uno:${player_id}`;
-    const recon = await this.redis.get(reconKey);
-    if (recon) {
-      room_id = JSON.parse(recon).room_id;
-      await this.redis.del(reconKey);
-      this.logger.log(`[UNO] Reconnect | player=${player_id} | room=${room_id}`);
-    }
+    // Phase B: cancel any open disconnect grace. The Mongo upsert key is
+    // (game_name, player_id), so this also covers reconnects from a different device.
+    await this.grace.cancel('uno', player_id);
 
     if (!room_id) {
       return client.emit('uno', {
@@ -291,6 +320,25 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
   /** Idempotent start when the room is full and still waiting */
   private async tryStartUnoGame(room_id: string, lang: string) {
+    // Phase C: gate on the persisted player count, not the socket count. A single
+    // user opening multiple tabs can satisfy `socketsInRoom.length >= maxPlayers`
+    // even though only one slot is actually filled in `room.players`. Without this
+    // guard, `playerIds.map(...)` below included `undefined` entries which then
+    // either tried to deduct from a non-existent user or produced a corrupt game.
+    const preRoom = await this.roomModel.findById(room_id).populate('game_id', 'max_players');
+    if (!preRoom) return;
+    const expectedPlayers = preRoom.player_limit || (preRoom.game_id as any)?.max_players || 0;
+    if (
+      expectedPlayers === 0 ||
+      preRoom.players.length < expectedPlayers ||
+      preRoom.players.some((p: any) => !p?.playerId)
+    ) {
+      this.logger.warn(
+        `event=uno_start_aborted room=${room_id} reason=not_enough_distinct_players players=${preRoom.players.length} expected=${expectedPlayers}`,
+      );
+      return;
+    }
+
     const started = await this.roomModel.findOneAndUpdate(
       { _id: room_id, status: 'waiting' },
       { $set: { status: 'started' } },
@@ -326,37 +374,84 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       return;
     }
 
+    /**
+     * Single compensating action. Refunds every paid player, reverts room status to
+     * waiting, deletes any partial game document, and notifies the room. Called from
+     * every failure branch below so we never leave players charged without a game.
+     */
+    const compensate = async (reason: string, errKey: string) => {
+      this.logger.error(`event=uno_start_failed room=${room_id} reason=${reason}`);
+      for (const pid of paid) {
+        await this.userModel
+          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+          .catch((e) => this.logger.error(`[UNO] Refund failed | player=${pid}`, e));
+      }
+      await this.unoModel
+        .deleteOne({ room_id: new Types.ObjectId(room_id) })
+        .catch((e) => this.logger.error(`[UNO] Game cleanup failed | room=${room_id}`, e));
+      await this.roomModel
+        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+        .catch((e) => this.logger.error(`[UNO] Room status reset failed | room=${room_id}`, e));
+      this.server.to(room_id).emit('uno', {
+        success: false,
+        messages: [this.i18n.translate(errKey, lang)],
+      });
+    };
+
     const playerIdStrs = playerIds.map((p: any) => p.toString());
     let deal;
     try {
       deal = dealUnoInitialState(playerIdStrs);
     } catch (e) {
       this.logger.error(`[UNO] Deal failed | room=${room_id}`, e);
-      for (const pid of paid) await this.userModel.updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } });
-      await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
-      this.server.to(room_id).emit('uno', {
-        success: false,
-        messages: [this.i18n.translate('ws.games.matchmakingError', lang)],
-      });
+      await compensate('deal_failed', 'ws.games.matchmakingError');
       return;
     }
 
-    await this.unoModel.create({
-      room_id: new Types.ObjectId(room_id),
-      player_ids: playerIds,
-      hands: deal.hands,
-      draw_pile: deal.drawPile,
-      discard_pile: deal.discardPile,
-      current_player_index: 0,
-      direction: 1,
-      current_color: deal.currentColor,
-      draw_stack_pending: 0,
-      eliminated_players: [],
-      turn_start_time: new Date(),
-    });
+    const matchTarget = Math.max(
+      50,
+      Math.min(500, Number(this.config.get('UNO_MATCH_TARGET')) || DEFAULT_MATCH_TARGET),
+    );
+    const initialScores: Record<string, number> = {};
+    for (const id of playerIdStrs) initialScores[id] = 0;
 
-    const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return;
+    let game;
+    try {
+      game = await this.unoModel.create({
+        room_id: new Types.ObjectId(room_id),
+        player_ids: playerIds,
+        hands: deal.hands,
+        draw_pile: deal.drawPile,
+        discard_pile: deal.discardPile,
+        current_player_index: 0,
+        direction: 1,
+        current_color: deal.currentColor,
+        draw_stack_pending: 0,
+        eliminated_players: [],
+        turn_start_time: new Date(),
+        uno_called: [],
+        pending_uno_offender: null,
+        last_action_player_id: null,
+        match_scores: initialScores,
+        round_number: 1,
+        match_target_score: matchTarget,
+        match_winner_id: null,
+        between_rounds: false,
+        next_round_starts_at: null,
+        players_ready_for_next: [],
+        round_history: [],
+      });
+    } catch (e) {
+      this.logger.error(`[UNO] Game create failed | room=${room_id}`, e);
+      await compensate('game_create_failed', 'ws.games.matchmakingError');
+      return;
+    }
+
+    if (!game) {
+      // Defensive: `create()` returned without throwing but produced no doc (driver edge).
+      await compensate('game_create_returned_null', 'ws.games.matchmakingError');
+      return;
+    }
 
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -413,7 +508,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   @SubscribeMessage('play_card')
   async handlePlayCard(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { room_id?: string; card_index: number; chosen_color?: string },
+    @MessageBody()
+    payload: { room_id?: string; card_index: number; chosen_color?: string; call_uno?: boolean },
   ) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
@@ -441,6 +537,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       chosen = c as UnoColor;
     }
 
+    const callUno = payload?.call_uno === true;
+
     await this.runWithRetry(async () => {
       const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
       if (!room || room.status !== 'started') {
@@ -455,7 +553,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       let nextState: UnoEngineState;
       let winnerId: string | undefined;
       try {
-        const r = applyPlay(engine, player_id, cardIndex, { chosenColor: chosen });
+        const r = applyPlay(engine, player_id, cardIndex, { chosenColor: chosen, callUno });
         nextState = r.state;
         winnerId = r.winnerId;
       } catch (e: any) {
@@ -473,6 +571,154 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
       await this.broadcastUnoGameState(room_id, room, game);
     });
+  }
+
+  @SubscribeMessage('call_uno')
+  async handleCallUno(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id?: string }) {
+    const lang = this.getLang(client);
+    if (client.data.isSpectator) {
+      return client.emit('uno', {
+        success: false,
+        messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)],
+      });
+    }
+    const room_id = payload?.room_id || client.data.room_id;
+    const player_id = client.data.player_id;
+    if (!room_id) {
+      return client.emit('uno', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    }
+
+    await this.runWithRetry(async () => {
+      const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
+      if (!room || room.status !== 'started') {
+        return client.emit('uno', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+      }
+      const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game) {
+        return client.emit('uno', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+      }
+
+      const engine = this.gameToEngine(game);
+      let nextState: UnoEngineState;
+      try {
+        nextState = applyCallUno(engine, player_id);
+      } catch (e: any) {
+        const key = this.unoReasonToMessageKey(e?.message || '');
+        return client.emit('uno', { success: false, messages: [this.i18n.translate(key, lang)] });
+      }
+
+      this.applyEngineToGameNoTurnReset(game, nextState);
+      await game.save();
+      await this.broadcastUnoGameState(room_id, room, game, { unoCallerId: player_id });
+    });
+  }
+
+  @SubscribeMessage('challenge_uno_miss')
+  async handleChallengeUnoMiss(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { room_id?: string; offender_id: string },
+  ) {
+    const lang = this.getLang(client);
+    if (client.data.isSpectator) {
+      return client.emit('uno', {
+        success: false,
+        messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)],
+      });
+    }
+    const room_id = payload?.room_id || client.data.room_id;
+    const player_id = client.data.player_id;
+    const offender_id = payload?.offender_id;
+    if (!room_id || !offender_id) {
+      return client.emit('uno', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    }
+
+    await this.runWithRetry(async () => {
+      const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
+      if (!room || room.status !== 'started') {
+        return client.emit('uno', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+      }
+      const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game) {
+        return client.emit('uno', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+      }
+
+      const engine = this.gameToEngine(game);
+      let nextState: UnoEngineState;
+      let success: boolean;
+      try {
+        const r = applyChallengeUnoMiss(engine, player_id, offender_id);
+        nextState = r.state;
+        success = r.success;
+      } catch (e: any) {
+        const key = this.unoReasonToMessageKey(e?.message || '');
+        return client.emit('uno', { success: false, messages: [this.i18n.translate(key, lang)] });
+      }
+
+      if (!success) {
+        return client.emit('uno', {
+          success: false,
+          messages: [this.i18n.translate('ws.uno.challengeFail', lang)],
+        });
+      }
+
+      this.applyEngineToGameNoTurnReset(game, nextState);
+      await game.save();
+      const offenderName = await this.getCachedUsername(offender_id);
+      const accuserName = await this.getCachedUsername(player_id);
+      await this.broadcastUnoGameState(room_id, room, game, {
+        challenge: { accuserId: player_id, accuserName, offenderId: offender_id, offenderName },
+      });
+    });
+  }
+
+  /**
+   * Player taps "ready" on the between-rounds scoreboard. When every active player has
+   * sent it, the next round starts immediately (skipping the auto-start countdown).
+   */
+  @SubscribeMessage('start_next_round')
+  async handleStartNextRound(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id?: string }) {
+    const lang = this.getLang(client);
+    if (client.data.isSpectator) {
+      return client.emit('uno', {
+        success: false,
+        messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)],
+      });
+    }
+    const room_id = payload?.room_id || client.data.room_id;
+    const player_id = client.data.player_id;
+    if (!room_id) {
+      return client.emit('uno', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    }
+
+    let everyoneReady = false;
+    await this.runWithRetry(async () => {
+      const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (!game || !game.between_rounds || game.match_winner_id) return;
+
+      const ready = new Set([...(game.players_ready_for_next || []), player_id]);
+      const eligible = (game.player_ids as any[])
+        .map((p) => p.toString())
+        .filter((id) => !(game.eliminated_players || []).includes(id));
+      game.players_ready_for_next = Array.from(ready);
+      game.markModified('players_ready_for_next');
+      await game.save();
+
+      everyoneReady = eligible.every((id) => ready.has(id));
+    });
+
+    if (everyoneReady) {
+      await this.startNextRound(room_id, /* triggeredByReady */ true);
+    } else {
+      // Re-broadcast the scoreboard so the UI can show the new "ready" tick on this seat.
+      const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
+      const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
+      if (room && game) {
+        const winnerEntry = (game.round_history || [])[game.round_history?.length - 1 || 0];
+        if (winnerEntry) {
+          await this.broadcastRoundEnd(room_id, room, game, winnerEntry.winnerId, winnerEntry.scoreDealt);
+        }
+      }
+    }
   }
 
   @SubscribeMessage('take_draw_stack')
@@ -615,10 +861,24 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       currentColor: game.current_color as UnoColor,
       drawStackPending: game.draw_stack_pending ?? 0,
       eliminatedPlayers: [...(game.eliminated_players || [])],
+      unoCalled: [...(game.uno_called || [])],
+      pendingUnoOffender: game.pending_uno_offender ?? null,
+      lastActionPlayerId: game.last_action_player_id ?? null,
     };
   }
 
   private applyEngineToGame(game: UnoGameDocument, eng: UnoEngineState): void {
+    this.copyEngineFields(game, eng);
+    game.turn_start_time = new Date();
+  }
+
+  /** Same as `applyEngineToGame` but doesn't reset the turn timer. Used for UNO-call /
+   *  challenge events that don't end the current turn. */
+  private applyEngineToGameNoTurnReset(game: UnoGameDocument, eng: UnoEngineState): void {
+    this.copyEngineFields(game, eng);
+  }
+
+  private copyEngineFields(game: UnoGameDocument, eng: UnoEngineState): void {
     const m = new Map<string, string[]>();
     for (const [k, v] of Object.entries(eng.hands)) m.set(k, [...v]);
     game.hands = m as any;
@@ -629,25 +889,29 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     game.current_color = eng.currentColor;
     game.draw_stack_pending = eng.drawStackPending;
     game.eliminated_players = eng.eliminatedPlayers;
-    game.turn_start_time = new Date();
+    game.uno_called = eng.unoCalled;
+    game.pending_uno_offender = eng.pendingUnoOffender;
+    game.last_action_player_id = eng.lastActionPlayerId;
     game.markModified('hands');
+    game.markModified('uno_called');
   }
 
   private unoReasonToMessageKey(reason: string): string {
     const map: Record<string, string> = {
       NOT_YOUR_TURN: 'ws.games.notYourTurn',
       NO_MATCH: 'ws.uno.noMatch',
-      MUST_RESPOND_DRAW_STACK: 'ws.uno.mustRespondDrawStack',
+      MUST_TAKE_STACK: 'ws.uno.mustTakeStack',
       WILD4_ILLEGAL_HAS_COLOR: 'ws.uno.wild4Illegal',
       CHOSEN_COLOR_REQUIRED: 'ws.uno.chosenColorRequired',
       INVALID_CARD_INDEX: 'ws.uno.invalidCard',
       ELIMINATED: 'ws.uno.eliminated',
       NO_DRAW_STACK: 'ws.uno.noDrawStack',
-      MUST_PLAY_OR_PASS_ONLY_IF_NO_RESPONSE: 'ws.uno.mustPlayStackCard',
       CANNOT_DRAW_WHILE_STACK: 'ws.uno.cannotDrawStack',
       DECK_EMPTY: 'ws.uno.deckEmpty',
       MUST_RESOLVE_STACK: 'ws.uno.mustResolveStack',
       HAS_LEGAL_PLAY: 'ws.uno.hasLegalPlay',
+      UNO_CALL_NOT_ALLOWED: 'ws.uno.callNotAllowed',
+      INVALID_ACCUSER: 'ws.uno.invalidAccuser',
     };
     return map[reason] || 'ws.games.invalidMove';
   }
@@ -657,13 +921,29 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     for (const s of sockets) clearTimer(s.id);
   }
 
-  private async broadcastUnoGameState(room_id: string, room: any, game: UnoGameDocument): Promise<void> {
-    await this.clearTimersInRoom(room_id);
+  private async broadcastUnoGameState(
+    room_id: string,
+    room: any,
+    game: UnoGameDocument,
+    extras?: {
+      unoCallerId?: string;
+      challenge?: { accuserId: string; accuserName: string; offenderId: string; offenderName: string };
+    },
+    roundStartExtras?: { message: string; roundNumber: number },
+  ): Promise<void> {
+    // UNO-call / challenge events do not change whose turn it is, so we only reset the
+    // turn timer when the underlying action advanced the play.
+    const turnRelated = !extras?.unoCallerId && !extras?.challenge;
+    if (turnRelated) await this.clearTimersInRoom(room_id);
+
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
     const idsStr = game.player_ids.map((p: any) => p.toString());
     const currentTurnId = idsStr[game.current_player_index];
     const currentTurnUsername = await this.getCachedUsername(currentTurnId);
     const sockets = await this.server.in(room_id).fetchSockets();
+
+    let unoCallerName = '';
+    if (extras?.unoCallerId) unoCallerName = await this.getCachedUsername(extras.unoCallerId);
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
@@ -671,15 +951,63 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       const sSpectator = (s as any).data.isSpectator || false;
       const payload = await this.buildUnoPayloadSync(game, room, pid, sSpectator, timerSec, currentTurnUsername);
       const isMyTurn = !sSpectator && pid === currentTurnId;
+
+      let extraData: Record<string, unknown> = {};
+      let primaryMsg: string;
+      if (extras?.unoCallerId) {
+        extraData = { unoCalled: true, unoCallerId: extras.unoCallerId, unoCallerName };
+        primaryMsg =
+          pid === extras.unoCallerId
+            ? this.i18n.translate('ws.uno.youCalledUno', sLang)
+            : this.i18n.translate('ws.uno.playerCalledUno', sLang, { username: unoCallerName });
+      } else if (extras?.challenge) {
+        extraData = {
+          unoChallenge: {
+            accuserId: extras.challenge.accuserId,
+            accuserName: extras.challenge.accuserName,
+            offenderId: extras.challenge.offenderId,
+            offenderName: extras.challenge.offenderName,
+            penalty: 2,
+          },
+        };
+        primaryMsg =
+          pid === extras.challenge.offenderId
+            ? this.i18n.translate('ws.uno.youWereChallenged', sLang, { username: extras.challenge.accuserName })
+            : pid === extras.challenge.accuserId
+              ? this.i18n.translate('ws.uno.challengeSuccess', sLang, { username: extras.challenge.offenderName })
+              : this.i18n.translate('ws.uno.playerChallenged', sLang, {
+                  accuser: extras.challenge.accuserName,
+                  offender: extras.challenge.offenderName,
+                });
+      } else if (roundStartExtras) {
+        extraData = { roundStarted: true, roundNumber: roundStartExtras.roundNumber };
+        primaryMsg = this.i18n.translate(roundStartExtras.message, sLang, {
+          round: String(roundStartExtras.roundNumber),
+        });
+      } else {
+        primaryMsg = isMyTurn
+          ? this.i18n.translate('ws.games.yourTurn', sLang)
+          : this.i18n.translate('ws.uno.stateUpdated', sLang);
+      }
+
       (s as unknown as Socket).emit('uno', {
         success: true,
-        data: { ...payload, gameStarted: true },
-        messages: [isMyTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.uno.stateUpdated', sLang)],
+        data: { ...payload, ...extraData, gameStarted: true },
+        messages: [primaryMsg],
       });
-      if (isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
+      if (turnRelated && isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
     }
   }
 
+  /**
+   * Called when a hand ends. Awards round points to `winnerId` (Mattel: sum of every other
+   * active player's remaining card values), updates `match_scores`, then either:
+   *   - **Match end**: a player reached `match_target_score`. Performs the payout, marks
+   *     the room finished, and broadcasts the `gameEnded` payload (Phase 1 behavior).
+   *   - **Round end**: nobody hit the target. Sets `between_rounds=true`, schedules the
+   *     auto-start timer, and broadcasts a scoreboard payload. Players can tap "ready"
+   *     via `start_next_round` to skip the wait.
+   */
   private async finalizeUnoRoundWinner(
     room_id: string,
     room: any,
@@ -687,19 +1015,73 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     winnerId: string,
   ): Promise<void> {
     await this.clearTimersInRoom(room_id);
+
+    // ── Score the round ────────────────────────────────────────────────────
+    const idsStr = game.player_ids.map((p: any) => p.toString());
+    const hands = this.getHands(game);
+    let scoreDealt = 0;
+    for (const id of idsStr) {
+      if (id === winnerId) continue;
+      scoreDealt += sumHandScore(hands.get(id) || []);
+    }
+    const scoresMap = this.getMatchScoresMap(game);
+    const newWinnerScore = (scoresMap.get(winnerId) ?? 0) + scoreDealt;
+    scoresMap.set(winnerId, newWinnerScore);
+    game.match_scores = scoresMap;
+    game.markModified('match_scores');
+    game.round_history = [
+      ...(game.round_history || []),
+      { round: game.round_number, winnerId, scoreDealt, endedAt: new Date() },
+    ];
+    game.markModified('round_history');
+
+    const reachedTarget = newWinnerScore >= game.match_target_score;
+
+    if (reachedTarget) {
+      await this.finalizeMatchEnd(room_id, room, game, winnerId);
+      return;
+    }
+
+    // ── Round ends, match continues ────────────────────────────────────────
+    game.between_rounds = true;
+    game.between_rounds_processing = false;
+    const deadline = new Date(Date.now() + BETWEEN_ROUNDS_SECONDS * 1000);
+    game.next_round_starts_at = deadline;
+    game.players_ready_for_next = [];
+    await game.save();
+
+    this.logger.log(
+      `event=uno_round_end room=${room_id} winner=${winnerId} score=${scoreDealt} round=${game.round_number} next_deadline=${deadline.toISOString()}`,
+    );
+
+    // No in-process timer — `processBetweenRoundsTimeouts` cron polls the deadline.
+    await this.broadcastRoundEnd(room_id, room, game, winnerId, scoreDealt);
+  }
+
+  /** Match-final payout. Same behavior as Phase 1's `finalizeUnoRoundWinner`. */
+  private async finalizeMatchEnd(
+    room_id: string,
+    room: any,
+    game: UnoGameDocument,
+    winnerId: string,
+  ): Promise<void> {
+    this.logger.log(`event=uno_match_end room=${room_id} winner=${winnerId} round=${game.round_number}`);
     room.status = 'finished';
     room.winner = new Types.ObjectId(winnerId);
     room.winner_reason = 'win';
     room.finished_at = new Date();
     const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
     await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
+    game.match_winner_id = winnerId;
+    game.between_rounds = false;
+    game.next_round_starts_at = null;
+    await game.save();
     await room.save();
 
     const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
     if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
 
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
-    const idsStr = game.player_ids.map((p: any) => p.toString());
     const currentTurnUsername = await this.getCachedUsername(winnerId);
     const sockets = await this.server.in(room_id).fetchSockets();
     const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
@@ -715,6 +1097,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         data: {
           ...payload,
           gameEnded: true,
+          matchEnded: true,
           youWon: isWinner,
           winner: winnerId,
           prize: isWinner ? displayPrize : 0,
@@ -723,20 +1106,252 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         messages: [
           isWinner
             ? this.i18n.translate('ws.games.win', sLang)
-            : this.i18n.translate('ws.uno.playerWonRound', sLang, { username: await this.getCachedUsername(winnerId) }),
+            : this.i18n.translate('ws.uno.matchWinner', sLang, {
+                username: await this.getCachedUsername(winnerId),
+              }),
         ],
       });
     }
   }
 
+  /** Emits a between-rounds scoreboard payload to every socket in the room. */
+  private async broadcastRoundEnd(
+    room_id: string,
+    room: any,
+    game: UnoGameDocument,
+    winnerId: string,
+    scoreDealt: number,
+  ): Promise<void> {
+    const winnerName = await this.getCachedUsername(winnerId);
+    const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
+    const sockets = await this.server.in(room_id).fetchSockets();
+    for (const s of sockets) {
+      const pid = (s as any).data.player_id;
+      const sLang = this.getLang(s as unknown as Socket);
+      const sSpectator = (s as any).data.isSpectator || false;
+      const payload = await this.buildUnoPayloadSync(game, room, pid, sSpectator, timerSec, winnerName);
+      const wonRound = !sSpectator && pid === winnerId;
+      (s as unknown as Socket).emit('uno', {
+        success: true,
+        data: {
+          ...payload,
+          roundEnded: true,
+          roundWinnerId: winnerId,
+          roundWinnerUsername: winnerName,
+          roundScoreDealt: scoreDealt,
+        },
+        messages: [
+          wonRound
+            ? this.i18n.translate('ws.uno.youWonRound', sLang, { score: String(scoreDealt) })
+            : this.i18n.translate('ws.uno.playerWonRound', sLang, { username: winnerName }),
+        ],
+      });
+    }
+  }
+
+  /**
+   * Deal a fresh round and broadcast the new state.
+   *
+   * **Multi-instance safe.** Callers do not need to coordinate — this method uses
+   * `findOneAndUpdate` to atomically grab the between-rounds lock for the given room.
+   * The first replica to win the update performs the deal and the broadcast; any
+   * concurrent caller (other replica's cron tick, late "ready" vote racing the timer)
+   * gets `null` from the findOneAndUpdate and exits early.
+   *
+   * Called from:
+   *   - `handleStartNextRound` when every active player has tapped "ready"
+   *   - `processBetweenRoundsTimeouts` when the auto-start deadline expires
+   */
+  private async startNextRound(room_id: string, triggeredByReady: boolean): Promise<void> {
+    // Atomic lock acquisition — only one replica/caller wins.
+    const game = await this.unoModel.findOneAndUpdate(
+      {
+        room_id: new Types.ObjectId(room_id),
+        between_rounds: true,
+        between_rounds_processing: false,
+        match_winner_id: null,
+      },
+      { $set: { between_rounds_processing: true } },
+      { returnDocument: 'after' },
+    );
+    if (!game) {
+      // Someone else already dispatched (or match already ended).
+      return;
+    }
+
+    try {
+      const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
+      if (!room || room.status !== 'started') {
+        await this.unoModel.updateOne(
+          { _id: game._id },
+          { $set: { between_rounds_processing: false } },
+        );
+        return;
+      }
+
+      const playerIdStrs = game.player_ids.map((p: any) => p.toString());
+      let deal;
+      try {
+        deal = dealUnoInitialState(playerIdStrs);
+      } catch (e) {
+        this.logger.error(`[UNO] Re-deal failed | room=${room_id}`, e);
+        // Release the lock so another tick can retry.
+        await this.unoModel.updateOne(
+          { _id: game._id },
+          { $set: { between_rounds_processing: false } },
+        );
+        return;
+      }
+
+      const handsMap = new Map<string, string[]>();
+      for (const id of playerIdStrs) handsMap.set(id, [...(deal.hands[id] || [])]);
+      game.hands = handsMap as any;
+      game.draw_pile = deal.drawPile;
+      game.discard_pile = deal.discardPile;
+      game.current_player_index = 0;
+      game.direction = 1;
+      game.current_color = deal.currentColor;
+      game.draw_stack_pending = 0;
+      // Match-level fields persist; per-round fields reset.
+      game.uno_called = [];
+      game.pending_uno_offender = null;
+      game.last_action_player_id = null;
+      game.between_rounds = false;
+      game.between_rounds_processing = false;
+      game.next_round_starts_at = null;
+      game.players_ready_for_next = [];
+      game.round_number += 1;
+      game.turn_start_time = new Date();
+      game.markModified('hands');
+      await game.save();
+
+      this.logger.log(
+        `event=uno_round_auto_start room=${room_id} round=${game.round_number} trigger=${
+          triggeredByReady ? 'ready' : 'timer'
+        }`,
+      );
+
+      await this.broadcastUnoGameState(room_id, room, game, undefined, {
+        message: triggeredByReady ? 'ws.uno.nextRoundStartedReady' : 'ws.uno.nextRoundStarted',
+        roundNumber: game.round_number,
+      });
+    } catch (err) {
+      // Defensive: never leave a room stuck with the lock held.
+      this.logger.error(`[UNO] startNextRound failed | room=${room_id}`, err);
+      await this.unoModel
+        .updateOne({ _id: game._id }, { $set: { between_rounds_processing: false } })
+        .catch(() => {});
+    }
+  }
+
+  /**
+   * Cron tick. Every second, sweep games whose `between_rounds` deadline has passed and
+   * deal the next hand. The atomic lock inside `startNextRound` makes this safe to run
+   * on every replica concurrently — only one will dispatch each game.
+   *
+   * Inactive-room protection: `room.status` is checked inside `startNextRound`, so an
+   * abandoned room never re-deals.
+   */
+  @Cron(CronExpression.EVERY_SECOND)
+  async processBetweenRoundsTimeouts(): Promise<void> {
+    let expired: { room_id: Types.ObjectId }[] = [];
+    try {
+      expired = await this.unoModel
+        .find({
+          between_rounds: true,
+          between_rounds_processing: false,
+          next_round_starts_at: { $lte: new Date() },
+          match_winner_id: null,
+        })
+        .select('room_id')
+        .lean();
+    } catch (err) {
+      this.logger.error('[UNO] Scheduler poll failed', err);
+      return;
+    }
+
+    if (expired.length === 0) return;
+
+    for (const g of expired) {
+      try {
+        await this.startNextRound(g.room_id.toString(), /* triggeredByReady */ false);
+      } catch (err) {
+        this.logger.error(`[UNO] Scheduler dispatch failed | room=${g.room_id}`, err);
+      }
+    }
+  }
+
+  private getMatchScoresMap(game: UnoGameDocument): Map<string, number> {
+    if (game.match_scores instanceof Map) return new Map(game.match_scores);
+    return new Map(Object.entries((game.match_scores as any) || {}).map(([k, v]) => [k, Number(v) || 0]));
+  }
+
+  /**
+   * Resend the current state to a single client. Used on (re)connect and during
+   * reconnect mid-match. If the room is in `between_rounds`, augments the payload
+   * with the round-end metadata so the PWA can render the scoreboard with an accurate
+   * countdown instead of an empty board.
+   */
   private async emitUnoStateToClient(client: Socket, room: any, game: UnoGameDocument, timerSec: number, lang: string) {
     const player_id = client.data.player_id;
     const isSpectator = client.data.isSpectator || false;
     const idsStr = game.player_ids.map((p: any) => p.toString());
     const currentTurnId = idsStr[game.current_player_index];
     const currentTurnUsername = await this.getCachedUsername(currentTurnId);
-    const payload = await this.buildUnoPayloadSync(game, room, player_id, isSpectator, timerSec, currentTurnUsername);
-    client.emit('uno', { success: true, data: payload, messages: [] });
+
+    // Phase B: compute the remaining turn time so the reconnecting client sees an
+    // accurate countdown and the server arms a fresh turn timer for the active
+    // player. Previously this method emitted the full `timerSec` and never called
+    // `startTimer`, so a reconnected player could sit idle forever without
+    // triggering a server-side timeout.
+    let remainingTurnSecs = timerSec;
+    if (game.turn_start_time && !game.between_rounds && !game.match_winner_id) {
+      const elapsed = (Date.now() - new Date(game.turn_start_time).getTime()) / 1000;
+      remainingTurnSecs = Math.max(5, Math.ceil(timerSec - elapsed));
+    }
+
+    const payload = await this.buildUnoPayloadSync(game, room, player_id, isSpectator, remainingTurnSecs, currentTurnUsername);
+
+    let messages: string[] = [];
+    let extra: Record<string, unknown> = {};
+
+    if (game.between_rounds && !game.match_winner_id) {
+      // Reconstruct round-end context from the audit log so the scoreboard shows the
+      // same "Alice won (+35)" header the player would have seen if they were online.
+      const lastRound = (game.round_history || [])[game.round_history?.length - 1 || 0];
+      if (lastRound) {
+        const winnerName = await this.getCachedUsername(lastRound.winnerId);
+        extra = {
+          roundEnded: true,
+          roundWinnerId: lastRound.winnerId,
+          roundWinnerUsername: winnerName,
+          roundScoreDealt: lastRound.scoreDealt,
+        };
+        messages = [
+          this.i18n.translate('ws.uno.playerWonRound', lang, { username: winnerName }),
+        ];
+      }
+    } else if (game.match_winner_id) {
+      // Reconnect after match end — surface the final scoreboard immediately.
+      const winnerName = await this.getCachedUsername(game.match_winner_id);
+      extra = {
+        gameEnded: true,
+        matchEnded: true,
+        winner: game.match_winner_id,
+        youWon: !isSpectator && player_id === game.match_winner_id,
+        outcome: 'win',
+      };
+      messages = [this.i18n.translate('ws.uno.matchWinner', lang, { username: winnerName })];
+    }
+
+    client.emit('uno', { success: true, data: { ...payload, ...extra }, messages });
+
+    // Arm a fresh turn timer on the server if the reconnected client owns the
+    // current turn and the match is actively in play.
+    const isMyTurn = !isSpectator && player_id === currentTurnId;
+    if (isMyTurn && !game.between_rounds && !game.match_winner_id) {
+      this.startTimer(client, (room?._id ?? room?.id ?? '').toString() || client.data.room_id, remainingTurnSecs);
+    }
   }
 
   private async buildUnoPayloadSync(
@@ -760,6 +1375,13 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     for (const id of idsStr) {
       usernames[id] = await this.getCachedUsername(id);
     }
+    const lastActionId = game.last_action_player_id ?? null;
+    const lastActionUsername = lastActionId ? await this.getCachedUsername(lastActionId) : null;
+
+    const scoresMap = this.getMatchScoresMap(game);
+    const matchScores: Record<string, number> = {};
+    for (const id of idsStr) matchScores[id] = scoresMap.get(id) ?? 0;
+
     return {
       hand: isSpectator ? [] : hands.get(viewerPlayerId) || [],
       handCount,
@@ -780,6 +1402,24 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       gameStarted: true,
       isSpectator,
       eliminatedPlayers: game.eliminated_players || [],
+      unoCalled: game.uno_called || [],
+      pendingUnoOffender: game.pending_uno_offender ?? null,
+      lastActionPlayerId: lastActionId,
+      lastActionUsername,
+      // Multi-round (Phase 2)
+      matchScores,
+      roundNumber: game.round_number ?? 1,
+      matchTargetScore: game.match_target_score ?? DEFAULT_MATCH_TARGET,
+      matchWinnerId: game.match_winner_id ?? null,
+      betweenRounds: !!game.between_rounds,
+      nextRoundStartsAt: game.next_round_starts_at ? new Date(game.next_round_starts_at).toISOString() : null,
+      playersReadyForNext: game.players_ready_for_next || [],
+      roundHistory: (game.round_history || []).map((r) => ({
+        round: r.round,
+        winnerId: r.winnerId,
+        scoreDealt: r.scoreDealt,
+        endedAt: r.endedAt ? new Date(r.endedAt).toISOString() : null,
+      })),
     };
   }
 
@@ -853,10 +1493,20 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
           room.winner = new Types.ObjectId(winnerId);
           const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
           await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
+          // Surface match-end state to the schema so reconnecting clients see the right
+          // payload (Phase 3 forfeit policy: any disconnect that leaves a sole survivor
+          // ends the entire match, not just the round).
+          game.match_winner_id = winnerId;
         }
+        game.between_rounds = false;
+        game.between_rounds_processing = false;
+        game.next_round_starts_at = null;
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
+        this.logger.log(
+          `event=uno_match_end_forfeit room=${room_id} winner=${winnerId ?? 'none'} reason=${reason}`,
+        );
       } else {
         await room.save();
       }
@@ -900,6 +1550,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
           data: {
             ...payload,
             gameEnded: finished,
+            matchEnded: finished,
             youWon: isWinner,
             winner: finished && winnerId ? winnerId : undefined,
             prize,

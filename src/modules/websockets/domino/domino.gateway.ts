@@ -2,8 +2,9 @@ import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -19,7 +20,7 @@ const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
 
 @WebSocketGateway({ namespace: '/domino', cors: { origin: '*', credentials: true } })
-export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(DominoGateway.name);
   private usernameCache = new Map<string, string>();
@@ -44,7 +45,19 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     private readonly roomsGateway: RoomsGateway,
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
+    private readonly grace: GracePeriodService,
   ) {}
+
+  /**
+   * Phase B: register the forfeit handler. Domino previously had NO scheduled forfeit
+   * on disconnect (Redis grace key only routed reconnects), leaving matches
+   * indefinitely stuck. This wires up the distributed sweeper.
+   */
+  onModuleInit() {
+    this.grace.registerHandler('domino', (playerId, roomId) =>
+      this.eliminatePlayer(roomId, playerId, 'forfeit'),
+    );
+  }
 
   private async runWithRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
     let lastError;
@@ -90,8 +103,11 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     if (room.status === 'waiting') {
       const updated = await this.roomModel.findOneAndUpdate({ _id: roomObjId, 'players.playerId': playerObjId }, { $pull: { players: { playerId: playerObjId } } }, { returnDocument: 'after' });
       if (!updated) return;
+      const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (updated.players.length === 0) {
         await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
+        // Phase D: lobby must learn that this empty waiting room was deleted.
+        if (gameIdForLobby) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
       } else {
         const username = await this.getCachedUsername(player_id);
         const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
@@ -107,6 +123,15 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
           },
           messages: [this.i18n.translate('ws.domino.playerLeftWaiting', lang, { username })],
         });
+        // Phase D: broadcast the new player count so the lobby join button updates.
+        if (gameIdForLobby) {
+          const populated = await this.roomModel
+            .findById(roomObjId)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+          if (populated) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomUpdated', populated);
+        }
       }
       return;
     }
@@ -118,24 +143,19 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         return;
       }
 
-      // ACCIDENTAL DISCONNECT - Implementation of Grace Period
+      // Phase B: accidental disconnect — distributed grace via GracePeriodService.
+      // Previously Domino only persisted a Redis grace key but never scheduled the
+      // forfeit, so a match could hang indefinitely if the player never came back.
       const game = await this.dominoModel.findOne({ room_id: roomObjId });
+      let remainingTurnSecs = 0;
       if (game) {
-        let gracePeriod = 60; // Default 60s for non-active turn
         const currentPlayerId = game.player_ids[game.current_player_index]?.toString();
-        
-        if (currentPlayerId === player_id) {
-          const now = Date.now();
-          const turnStart = game.turn_start_time.getTime();
+        if (currentPlayerId === player_id && game.turn_start_time) {
           const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
-          const elapsed = now - turnStart;
-          gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
+          remainingTurnSecs = Math.ceil((limit - (Date.now() - game.turn_start_time.getTime())) / 1000);
         }
-
-        const redisKey = `grace_period:domino:${player_id}`;
-        await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
-        this.logger.log(`[Domino] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod}`);
       }
+      await this.grace.start('domino', player_id, room_id, Math.max(60, remainingTurnSecs));
     }
   }
 
@@ -143,18 +163,9 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
     const player_id = client.data.player_id;
-    let room_id = payload?.room_id;
-    
-    // Check for reconnection session in Redis
-    const redisKey = `grace_period:domino:${player_id}`;
-    const reconData = await this.redis.get(redisKey);
-
-    if (reconData) {
-      const parsed = JSON.parse(reconData);
-      room_id = parsed.room_id;
-      await this.redis.del(redisKey);
-      this.logger.log(`[Domino] 🔄 Reconnection detected | player=${player_id} | room=${room_id}`);
-    }
+    const room_id = payload?.room_id;
+    // Phase B: cancel any open disconnect grace via the distributed service.
+    await this.grace.cancel('domino', player_id);
 
     if (!room_id) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     
@@ -214,10 +225,23 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       const isMyTurn = currentTurnPlayerId === player_id;
       const turnUsername = await this.getCachedUsername(currentTurnPlayerId);
       const handCount = Object.fromEntries(Array.from(game.hands.entries()).map(([id, h]) => [id, h.length]));
-      
+
       const playersData: any = {};
       for (let i = 0; i < room.players.length; i++) {
         playersData[`player${i + 1}`] = await this.getCachedUsername(room.players[i].playerId.toString());
+      }
+
+      // Phase B: compute the actual remaining turn time and arm a fresh server-side
+      // timer for the reconnecting player if it's their turn. Previously the client
+      // always saw `turnTimerSeconds: 30`, hiding how much real time was left, and
+      // the in-process turn timeout died when the original socket dropped.
+      const totalTimerSeconds = (room.game_id as any)?.turn_timer_seconds || 30;
+      const elapsed = game.turn_start_time
+        ? Math.floor((Date.now() - game.turn_start_time.getTime()) / 1000)
+        : 0;
+      const remaining = Math.max(5, totalTimerSeconds - elapsed);
+      if (isMyTurn) {
+        this.startTimer(client, room_id, remaining);
       }
 
       this.logger.log(`[Domino] 🏠 Re-joined STARTED game | room=${room_id} | player=${player_id} | asSpectator=${client.data.isSpectator}`);
@@ -226,7 +250,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         success: true, messages: [], data: {
           board: game.board, hand: game.hands.get(player_id) || [],
           boneyardCount: game.boneyard.length,
-          yourTurn: isMyTurn, turnTimerSeconds: 30,
+          yourTurn: isMyTurn, turnTimerSeconds: remaining,
           currentTurnUsername: turnUsername,
           waitingForOpponent: false, gameStarted: true, youWon: false, isSpectator: false,
           handCount,
@@ -257,30 +281,70 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
 
     if (socketsInRoom.length >= maxPlayers && room.status === 'waiting') {
+      // Phase A hardening: gate on DB players, not just socket count.
+      if (room.players.length < maxPlayers) return;
+
       const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
       if (!started) return;
 
       const playerIds = room.players.map((p: any) => p.playerId);
-      let allPaid = true;
       const paid: Types.ObjectId[] = [];
+
+      // Phase A: single compensating action for any post-deduction failure (deal,
+      // domino.create, etc.). Previously a thrown create would silently lose every
+      // player's stake.
+      const compensate = async (errKey: string, reason: string) => {
+        this.logger.error(`event=domino_start_failed room=${room_id} reason=${reason}`);
+        for (const pid of paid) {
+          await this.userModel
+            .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+            .catch((e) => this.logger.error(`[Domino] Refund failed | player=${pid}`, e));
+        }
+        await this.dominoModel
+          .deleteOne({ room_id: new Types.ObjectId(room_id) })
+          .catch((e) => this.logger.error(`[Domino] Game cleanup failed | room=${room_id}`, e));
+        await this.roomModel
+          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+          .catch((e) => this.logger.error(`[Domino] Room status reset failed | room=${room_id}`, e));
+        this.server
+          .to(room_id)
+          .emit('domino', { success: false, messages: [this.i18n.translate(errKey, lang)] });
+      };
+
+      let allPaid = true;
       for (const pid of playerIds) {
         const deducted = await this.userModel.findOneAndUpdate({ _id: pid, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } });
         if (!deducted) { allPaid = false; break; }
         paid.push(pid);
       }
       if (!allPaid) {
-        for (const pid of paid) await this.userModel.updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } });
-        await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
-        this.server.to(room_id).emit('domino', { success: false, messages: [this.i18n.translate('ws.games.insufficientBalance', lang)] });
+        await compensate('ws.games.insufficientBalance', 'insufficient_balance');
         return;
       }
 
-      const { hands, boneyard } = deal(playerIds.map((p: any) => p.toString()));
-      const startIdx = getStartingPlayerIndex(playerIds.map((p: any) => p.toString()), hands);
+      let hands: Map<string, any>;
+      let boneyard: any[];
+      let startIdx: number;
+      try {
+        const dealt = deal(playerIds.map((p: any) => p.toString()));
+        hands = dealt.hands;
+        boneyard = dealt.boneyard;
+        startIdx = getStartingPlayerIndex(playerIds.map((p: any) => p.toString()), hands);
+      } catch (e) {
+        this.logger.error(`[Domino] Deal failed | room=${room_id}`, e);
+        await compensate('ws.games.matchmakingError', 'deal_failed');
+        return;
+      }
 
       const handsRecord: Record<string, any> = {};
       hands.forEach((v, k) => { handsRecord[k] = v; });
-      await this.dominoModel.create({ room_id, player_ids: playerIds, hands: handsRecord, boneyard, current_player_index: startIdx, turn_start_time: new Date() });
+      try {
+        await this.dominoModel.create({ room_id, player_ids: playerIds, hands: handsRecord, boneyard, current_player_index: startIdx, turn_start_time: new Date() });
+      } catch (e) {
+        this.logger.error(`[Domino] Game create failed | room=${room_id}`, e);
+        await compensate('ws.games.matchmakingError', 'game_create_failed');
+        return;
+      }
 
       const timerSec = room.game_id?.turn_timer_seconds ?? 30;
       const startingPlayerId = playerIds[startIdx].toString();

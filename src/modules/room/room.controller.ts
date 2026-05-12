@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { RoomService } from './room.service';
+import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { IsBoolean, IsNumber, IsOptional, IsString, Min } from 'class-validator';
@@ -25,7 +26,18 @@ class SetReadyDto {
 @ApiBearerAuth()
 @Controller('rooms')
 export class RoomController {
-  constructor(private readonly roomService: RoomService) {}
+  constructor(
+    private readonly roomService: RoomService,
+    private readonly idempotency: IdempotencyService,
+  ) {}
+
+  /**
+   * Phase C: only honor well-formed UUID idempotency keys to keep the cache
+   * cardinality bounded and prevent abuse (e.g. a client sending the literal
+   * string "retry" and reusing the same cached response indefinitely).
+   */
+  private static readonly UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
   // GET /api/rooms/stats — public live stats (no auth needed)
   @Public()
@@ -33,6 +45,18 @@ export class RoomController {
   @ApiOperation({ summary: 'Get live stats: online players, active games, sum of per-room stake (bet_amount), not × players' })
   getLiveStats() {
     return this.roomService.getLiveStats();
+  }
+
+  // Phase C: returns the user's currently active room (waiting or started), if any.
+  // The PWA calls this on login/home so it can deep-link a player back into the
+  // match they left without making them search the lobby.
+  @Get('active')
+  @ApiOperation({ summary: 'Get the current user\'s active room (waiting or started), if any' })
+  getActiveRoom(
+    @CurrentUser() user: JwtPayload,
+    @Headers('accept-language') lang: string,
+  ) {
+    return this.roomService.getActiveRoomForUser(user.id, lang || 'en');
   }
 
   // GET /api/rooms/game/:game_id  — matches legacy router.get('/game/:game_id', ...)
@@ -57,12 +81,23 @@ export class RoomController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create a new room' })
-  createRoom(
+  @ApiOperation({ summary: 'Create a new room (supports Idempotency-Key for safe retries)' })
+  async createRoom(
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateRoomDto,
     @Headers('accept-language') lang: string,
+    @Headers('idempotency-key') idempKey?: string,
   ) {
+    // Phase C: if the PWA sends a valid UUID Idempotency-Key, cache the response
+    // so a transparent retry (slow network, timeout, app backgrounded) does NOT
+    // create a second room and a second balance deduction. Falls through to the
+    // direct call when the header is absent or malformed.
+    if (idempKey && RoomController.UUID_RE.test(idempKey)) {
+      const cacheKey = `idem:rooms:create:${user.id}:${idempKey}`;
+      return this.idempotency.getOrSet(cacheKey, IdempotencyService.DEFAULT_TTL_SEC, () =>
+        this.roomService.createRoom(user.id, dto.game_id, dto.bet_amount, dto.public, dto.name, dto.player_limit, lang || 'en'),
+      );
+    }
     return this.roomService.createRoom(user.id, dto.game_id, dto.bet_amount, dto.public, dto.name, dto.player_limit, lang || 'en');
   }
 

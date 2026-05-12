@@ -2,8 +2,9 @@ import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -19,7 +20,7 @@ const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
 
 @WebSocketGateway({ namespace: '/naval-battle', cors: { origin: '*', credentials: true } })
-export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(NavalBattleGateway.name);
   private usernameCache = new Map<string, string>();
@@ -40,7 +41,15 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     private readonly roomsGateway: RoomsGateway,
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
+    private readonly grace: GracePeriodService,
   ) {}
+
+  /** Phase B: register the forfeit handler with the distributed grace sweeper. */
+  onModuleInit() {
+    this.grace.registerHandler('naval-battle', (playerId, roomId) =>
+      this.executeForfeit(roomId, playerId),
+    );
+  }
 
   afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
 
@@ -57,10 +66,8 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         client.data.room_id = room._id.toString();
         await this.syncPlayerState(client, room._id.toString(), player_id);
         
-        // Cancel grace period forfeiture upon reconnection
-        const redisKey = `grace_period:naval-battle:${player_id}`;
-        await this.redis.del(redisKey);
-        this.logger.log(`[NavalBattle] 🔄 Grace period CANCELLED for player=${player_id}`);
+        // Phase B: cancel any open disconnect grace via the distributed service.
+        await this.grace.cancel('naval-battle', player_id);
       }
     }
     this.logger.log(`[NavalBattle] Connected: ${client.id}`); 
@@ -123,35 +130,35 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         await this.roomModel.updateOne({ _id: roomOid }, { $set: { 'players.$[].ready': false } });
       }
 
-      if (updated?.players.length === 0) await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
-      else client.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: true }, messages: [this.i18n.translate('ws.games.opponentLeft', lang)] });
+      const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+      if (updated?.players.length === 0) {
+        await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
+        // Phase D: notify lobby subscribers that this empty room is gone.
+        if (gameIdForLobby) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
+      } else {
+        client.to(room_id).emit('naval-battle', { success: true, data: { opponentLeft: true, waitingForOpponent: true, resetPlacement: true }, messages: [this.i18n.translate('ws.games.opponentLeft', lang)] });
+        // Phase D: refresh lobby player count so the join button re-enables.
+        if (gameIdForLobby) {
+          const populated = await this.roomModel
+            .findById(roomOid)
+            .populate('game_id', '-created_at')
+            .populate('players.playerId', 'username')
+            .lean();
+          if (populated) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomUpdated', populated);
+        }
+      }
       return;
     }
     if (room.status === 'started') {
-      const redisKey = `grace_period:naval-battle:${player_id}`;
+      // Phase B: distributed grace. The 30 s product floor lives inside
+      // `GracePeriodService.start`, so this gateway just supplies the remaining
+      // turn time and a non-turn fallback of 60 s.
       const limit = ((room.game_id as any)?.turn_timer_seconds || 30) * 1000;
-      let gracePeriod = 60;
-
+      let remainingTurnSecs = 0;
       if (room.turn_start_time) {
-        const elapsed = Date.now() - new Date(room.turn_start_time).getTime();
-        gracePeriod = Math.max(5, Math.ceil((limit - elapsed) / 1000));
-      } else {
-        this.logger.warn(`[NavalBattle] ⚠️ turn_start_time missing for room=${room_id}, defaulting grace to 30s`);
-        gracePeriod = 30; // Fallback to standard turn length
+        remainingTurnSecs = Math.ceil((limit - (Date.now() - new Date(room.turn_start_time).getTime())) / 1000);
       }
-
-      await this.redis.set(redisKey, JSON.stringify({ room_id }), 'EX', gracePeriod);
-      this.logger.log(`[NavalBattle] ⏳ Grace period started | player=${player_id} | room=${room_id} | seconds=${gracePeriod} | limit=${limit/1000}s`);
-
-      // Schedule definitive forfeit
-      setTimeout(async () => {
-        const stillDisconnected = await this.redis.get(redisKey);
-        if (stillDisconnected) {
-          this.logger.log(`[NavalBattle] 🚪 Grace period EXPIRED, forfeiting player=${player_id}`);
-          await this.redis.del(redisKey);
-          await this.executeForfeit(room_id, player_id);
-        }
-      }, gracePeriod * 1000);
+      await this.grace.start('naval-battle', player_id, room_id, Math.max(60, remainingTurnSecs));
     }
   }
 
@@ -189,18 +196,9 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const player_id = client.data.player_id;
-    let room_id = payload?.room_id;
-
-    // Check for reconnection session in Redis (grace period)
-    const redisKey = `grace_period:naval-battle:${player_id}`;
-    const reconData = await this.redis.get(redisKey);
-
-    if (reconData) {
-      const parsed = JSON.parse(reconData);
-      room_id = parsed.room_id;
-      await this.redis.del(redisKey);
-      this.logger.log(`[NavalBattle] 🔄 Reconnection detected via JOIN | player=${player_id} | room=${room_id}`);
-    }
+    const room_id = payload?.room_id;
+    // Phase B: cancel any open disconnect grace via the distributed service.
+    await this.grace.cancel('naval-battle', player_id);
 
     await this.syncPlayerState(client, room_id, player_id);
   }
@@ -332,7 +330,23 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     const deducted = await this.userModel.findOneAndUpdate({ _id: player_id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } });
     if (!deducted) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.insufficientBalance', lang)] });
 
-    await this.placementModel.create({ room_id, player_id, ships, status: 'placed' });
+    // Phase A hardening: if placement.create throws (validation, duplicate key,
+    // network) we must refund the stake we just took. Previously this could silently
+    // charge the player without recording a placement.
+    try {
+      await this.placementModel.create({ room_id, player_id, ships, status: 'placed' });
+    } catch (e) {
+      this.logger.error(`[NavalBattle] Placement create failed | room=${room_id} player=${player_id}`, e);
+      await this.userModel
+        .updateOne({ _id: player_id }, { $inc: { balance: room.bet_amount } })
+        .catch((refundErr) =>
+          this.logger.error(`[NavalBattle] Placement refund failed | player=${player_id}`, refundErr),
+        );
+      return client.emit('naval-battle', {
+        success: false,
+        messages: [this.i18n.translate('ws.games.matchmakingError', lang)],
+      });
+    }
 
     client.emit('naval-battle', { success: true, data: { shipsPlaced: true }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
 
@@ -340,8 +354,16 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     if (allPlacements.length === 2) {
       const startedRoom = await this.roomModel.findById(room_id).populate('game_id');
       if (!startedRoom) return;
-      
-      await this.roomModel.updateOne({ _id: room_id }, { $set: { status: 'started', turn_start_time: new Date() } });
+
+      // Phase A hardening: atomic waiting→started transition (was an unconditional
+      // updateOne, which allowed concurrent place_ships from both players to both
+      // think they had moved the room to "started").
+      const transitioned = await this.roomModel.findOneAndUpdate(
+        { _id: room_id, status: 'waiting' },
+        { $set: { status: 'started', turn_start_time: new Date() } },
+        { returnDocument: 'after' },
+      );
+      if (!transitioned) return;
       await this.placementModel.updateMany({ room_id }, { status: 'ready' });
       
       const timerSeconds = (startedRoom.game_id as any)?.turn_timer_seconds ?? 30;
