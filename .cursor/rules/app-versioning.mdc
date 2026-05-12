@@ -1,0 +1,74 @@
+---
+description: Play4Cash API — contrato de versionado del PWA (X-App-Min-Version, X-App-Version)
+alwaysApply: true
+---
+
+# PWA Versioning Contract — server side
+
+El PWA usa SW en modo `prompt`. El API puede:
+
+1. **Notificar** una versión mínima requerida vía header `X-App-Min-Version`.
+2. **Recibir** la versión del cliente vía header `X-App-Version` para telemetría/logs.
+
+## Configuración
+
+- Env var: `PWA_MIN_VERSION` — semver (ej. `1.2.0`). Vacío = no se manda el header
+  (modal solo aparece cuando el SW detecta cambio en background).
+- Lectura: `config.get<string>('pwa.minVersion')` en `src/common/config/configuration.ts`.
+
+## Middleware
+
+`src/common/middleware/app-version-headers.middleware.ts`:
+
+- Setea `X-App-Min-Version` en cada response cuando `pwa.minVersion` está configurado.
+- Lee `X-App-Version` del request y lo stashea en `req.clientAppVersion` para uso de
+  loggers/interceptors downstream.
+- Registrado en `main.ts` justo después de `createStripUntrustedGatewayUserMiddleware`.
+
+## CORS
+
+`enableCors({ exposedHeaders: ['X-App-Min-Version'] })` en `main.ts`. Sin esto, el browser
+oculta el header al JS del PWA.
+
+Si el Gateway está delante: asegurate que su CORS también exponga el header (o que esté en
+modo passthrough de headers).
+
+## Cuándo subir `PWA_MIN_VERSION`
+
+Solo cuando hagas un cambio **breaking** que el PWA viejo no puede consumir:
+- Cambio de schema en payloads de auth/login.
+- Endpoint requerido movido o renombrado.
+- Cambio incompatible en eventos de WebSocket.
+
+Para deploys "compatibles hacia atrás", **no toques** `PWA_MIN_VERSION` — el PWA actualiza
+en background y el usuario ve un modal opcional.
+
+## Observabilidad — distribución de versiones
+
+`src/modules/app-version/`:
+
+- `AppVersionStatsService` — Redis HASH diario (`appVersionDaily:<YYYY-MM-DD>`,
+  `appVersionStale:<YYYY-MM-DD>`) con TTL = `PWA_STATS_RETENTION_DAYS` días.
+- `AppVersionStatsInterceptor` — global (registrado vía `APP_INTERCEPTOR`), samplea
+  `PWA_STATS_SAMPLE_RATE` (0..1, default 0.1) y graba en fire-and-forget. Nunca bloquea
+  la response.
+- `AppVersionController` — `GET /api/admin/app-versions/stats?days=N` (1..60). Protegido
+  con `RolesGuard + @Roles('admin')`. Devuelve `{ daily[], totals, staleTotals,
+  currentMinVersion, sampleRate }`.
+
+**Sanitización**: el service rechaza versions vacías o con caracteres fuera de
+`[\w.+\-]` y trunca a 32 chars, así un cliente malicioso no puede inflar la cardinalidad
+del HASH ni inyectar Redis keys.
+
+**Por qué interceptor y no middleware**: el interceptor tiene DI (`AppVersionStatsService`)
+y se registra una sola vez globalmente. El middleware existente (`app-version-headers`)
+solo extrae el header al request — no escribe nada.
+
+## Forbidden patterns
+
+- ❌ Subir `PWA_MIN_VERSION` por debajo de la versión actual (no tiene sentido y desactiva
+  el flujo).
+- ❌ Loggear `X-App-Version` con datos sensibles del payload — solo el valor del header.
+- ❌ Quitar `exposedHeaders: ['X-App-Min-Version']` del CORS.
+- ❌ Hacer `await` del `stats.record()` en hot paths — debe ser fire-and-forget.
+- ❌ Subir `PWA_STATS_SAMPLE_RATE` a 1.0 en producción sin antes medir el costo en Redis.

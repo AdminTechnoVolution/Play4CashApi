@@ -58,4 +58,24 @@ export default () => ({
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  pwa: {
+    /**
+     * Minimum PWA semver (e.g. "1.2.0") required by this API. When set, every response carries
+     * `X-App-Min-Version: <value>`. The PWA reads it and forces a hard reload modal if the
+     * running version is older. Leave empty to disable forced upgrades.
+     */
+    minVersion: (process.env.PWA_MIN_VERSION || '').trim(),
+    /**
+     * 0..1 fraction of API requests whose `X-App-Version` header is recorded into Redis daily
+     * counters. Default 0.1 (10%). Set to 0 to disable stats writes entirely.
+     */
+    statsSampleRate: clamp01(parseFloat(process.env.PWA_STATS_SAMPLE_RATE || '0.1')),
+    /** TTL (days) for daily version-distribution counters. Default 31. */
+    statsRetentionDays: Math.max(1, parseInt(process.env.PWA_STATS_RETENTION_DAYS || '31', 10) || 31),
+  },
 });
+
+function clamp01(n: number): number {
+  if (Number.isNaN(n)) return 0;
+  return Math.min(1, Math.max(0, n));
+}

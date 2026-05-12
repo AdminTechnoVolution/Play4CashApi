@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import { createStripUntrustedGatewayUserMiddleware } from './common/middleware/strip-untrusted-gateway-user.middleware';
+import { createAppVersionHeadersMiddleware } from './common/middleware/app-version-headers.middleware';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -19,6 +20,9 @@ async function bootstrap(): Promise<void> {
 
   // ─── Strip spoofed gateway identity unless trust secret / IP matches ───────
   app.use(createStripUntrustedGatewayUserMiddleware(config));
+
+  // ─── App version contract (X-App-Min-Version response header) ─────────────
+  app.use(createAppVersionHeadersMiddleware(config));
 
   // ─── Systematic Request Tracer ──────────────────────────────────────────
   app.use((req: any, _res: any, next: any) => {
@@ -67,6 +71,8 @@ async function bootstrap(): Promise<void> {
       }
     },
     credentials: true,
+    // Expose so browser JS (PWA) can read the app version contract header.
+    exposedHeaders: ['X-App-Min-Version'],
   });
 
   // ─── API Prefix ───────────────────────────────────────────────────────────
