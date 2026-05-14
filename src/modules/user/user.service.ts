@@ -122,4 +122,10 @@ export class UserService {
   async getTotalBalances(): Promise<any> {
     return this.userRepo.getTotalBalances();
   }
+
+  /** Uncached count for the public login page — rate-limited at the controller. */
+  async getPublicUserStats(): Promise<{ registeredUsers: number }> {
+    const registeredUsers = await this.userRepo.countRegisteredUsers();
+    return { registeredUsers };
+  }
 }

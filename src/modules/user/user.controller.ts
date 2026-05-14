@@ -48,6 +48,16 @@ export class UserController {
     return this.userService.getTotalBalances();
   }
 
+  // GET /api/user/public/stats — login / marketing (no auth)
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @Public()
+  @Get('public/stats')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Public: registered user count (rate-limited)' })
+  getPublicStats() {
+    return this.userService.getPublicUserStats();
+  }
+
   // GET /api/user/account
   @Get('account')
   @ApiOperation({ summary: 'Get authenticated user account' })

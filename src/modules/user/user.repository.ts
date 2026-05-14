@@ -37,6 +37,11 @@ export class UserRepository {
     return this.userModel.findByIdAndUpdate(id, update, { returnDocument: 'after' }).lean();
   }
 
+  /** Public stats: total user documents (same basis as admin aggregate `total_users`). */
+  async countRegisteredUsers(): Promise<number> {
+    return this.userModel.countDocuments().exec();
+  }
+
   async getTotalBalances(): Promise<any> {
     const result = await this.userModel.aggregate([
       {
