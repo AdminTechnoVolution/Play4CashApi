@@ -160,6 +160,7 @@
     "ws.uno.wrongGame": "This room is not an UNO game. Connect using the correct game namespace.",
     "ws.uno.noMatch": "That card cannot be played on the current discard.",
     "ws.uno.mustRespondDrawStack": "You must play a +2 or Wild +4, or take the accumulated draw.",
+    "ws.uno.stackDraw2NotAllowed": "You cannot play +2 after a Wild +4 — play Wild +4 or take the draw.",
     "ws.uno.wild4Illegal": "You cannot play Wild +4 while you hold a card of the current color.",
     "ws.uno.chosenColorRequired": "Choose a color (R, G, B, or Y) when playing a wild card.",
     "ws.uno.invalidCard": "Invalid card index.",

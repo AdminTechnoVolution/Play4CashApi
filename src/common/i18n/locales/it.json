@@ -160,6 +160,7 @@
     "ws.uno.wrongGame": "Questa stanza non è UNO. Connettiti al namespace del gioco corretto.",
     "ws.uno.noMatch": "Quella carta non può essere giocata sullo scarto attuale.",
     "ws.uno.mustRespondDrawStack": "Devi giocare un +2 o un Wild +4, o pescare l'accumulo.",
+    "ws.uno.stackDraw2NotAllowed": "Non puoi giocare +2 dopo un Wild +4 — gioca Wild +4 o pesca.",
     "ws.uno.wild4Illegal": "Non puoi giocare Wild +4 se hai una carta del colore attuale.",
     "ws.uno.chosenColorRequired": "Scegli un colore (R, G, B o Y) quando giochi un jolly.",
     "ws.uno.invalidCard": "Indice della carta non valido.",

@@ -137,7 +137,7 @@ export function isColoredDrawTwo(card: string): boolean {
   return /^[RGBY]Draw2$/.test(card);
 }
 
-/** +2 any color or W4 — valid response while a draw stack is pending. */
+/** Colored +2 or W4 — used while `drawStackPending > 0`. Server gates +2 with discard-top check. */
 export function isDrawStackResponderCard(card: string): boolean {
   return isColoredDrawTwo(card) || isWildDrawFour(card);
 }
@@ -282,9 +282,9 @@ export interface UnoEngineState {
   direction: 1 | -1;
   currentColor: UnoColor;
   /**
-   * Cards the current player must draw from a freshly-played +2 / +4 (no stacking — they
-   * cannot be deferred or chained). Always 0, 2, or 4. Only `applyTakeDrawStack` can
-   * resolve it; any other action throws `MUST_TAKE_STACK`.
+   * Cards the next player must draw after chained +2 / Wild +4. Each colored +2 adds 2,
+   * but only while the discard top remains a colored +2. Wild +4 adds 4 and may stack on
+   * +2 or on another +4.
    */
   drawStackPending: number;
   eliminatedPlayers: string[];
@@ -365,14 +365,33 @@ export function validatePlay(
     return { ok: false, reason: 'INVALID_CARD_INDEX' };
   }
 
-  // Stacking +2/+4 is disabled by product decision (Mattel-official). With a pending
-  // draw stack the only legal action is `applyTakeDrawStack`.
+  const card = hand[cardIndex];
+
+  /** Pending draw stack: responder may play colored +2 only while top discard is a +2;
+   * Wild +4 always stacks (+4 on +2 or on +4). Plain `W` never responds to the stack. */
   if (state.drawStackPending > 0) {
-    return { ok: false, reason: 'MUST_TAKE_STACK' };
+    if (!isDrawStackResponderCard(card)) {
+      return { ok: false, reason: 'STACK_RESPONSE_REQUIRED' };
+    }
+    if (isColoredDrawTwo(card)) {
+      const top = topDiscard(state);
+      if (!top || !isColoredDrawTwo(top)) {
+        return { ok: false, reason: 'STACK_DRAW2_NOT_ALLOWED' };
+      }
+    }
+    if (isWildDrawFour(card) && handHasColor(hand, state.currentColor)) {
+      return { ok: false, reason: 'WILD4_ILLEGAL_HAS_COLOR' };
+    }
+    if (card === 'W4' && !options.chosenColor) {
+      return { ok: false, reason: 'CHOSEN_COLOR_REQUIRED' };
+    }
+    return { ok: true };
   }
 
-  const card = hand[cardIndex];
   const top = topDiscard(state);
+  if (!top) {
+    return { ok: false, reason: 'NO_MATCH' };
+  }
   if (!canPlayCardOnDiscard(card, top, state.currentColor)) {
     return { ok: false, reason: 'NO_MATCH' };
   }
@@ -425,10 +444,14 @@ export function applyPlay(
   }
   next.currentColor = newColor;
 
-  // Without stacking, +2 and +4 just open the pending counter for the next player.
-  if (isColoredDrawTwo(card)) next.drawStackPending = 2;
-  else if (isWildDrawFour(card)) next.drawStackPending = 4;
-  else next.drawStackPending = 0;
+  const prevPending = state.drawStackPending;
+  if (isColoredDrawTwo(card)) {
+    next.drawStackPending = prevPending > 0 ? prevPending + 2 : 2;
+  } else if (isWildDrawFour(card)) {
+    next.drawStackPending = prevPending > 0 ? prevPending + 4 : 4;
+  } else {
+    next.drawStackPending = 0;
+  }
 
   const active = activePlayerCount(next.playerIds, next.eliminatedPlayers);
 
@@ -515,12 +538,11 @@ export function validateTakeDrawStack(state: UnoEngineState, playerId: string): 
   if (state.drawStackPending <= 0) {
     return { ok: false, reason: 'NO_DRAW_STACK' };
   }
-  // No "must respond" check — stacking is disabled, take is the only legal action.
   return { ok: true };
 }
 
 /**
- * Player takes the pending +2/+4. Resets stack, advances turn.
+ * Player takes the pending +2/+4 chain. Resets stack, advances turn.
  */
 export function applyTakeDrawStack(
   state: UnoEngineState,
@@ -619,13 +641,22 @@ export function applyPassTurn(state: UnoEngineState, playerId: string): UnoEngin
 // ── UNO call / challenge ────────────────────────────────────────────────────
 
 /**
- * Player declares UNO to clear the miss-window opened by their previous play.
- * Valid ONLY if `pendingUnoOffender === playerId`. Any other state throws.
+ * Player declares UNO (one card left).
+ * - If they are `pendingUnoOffender`, clears the miss-window before rivals challenge.
+ * - If there is no pending offender (window expired without challenge), still allowed
+ *   while they hold exactly one card and have not yet declared.
+ * - If another player is pending, this call is rejected (only one miss-window at a time).
  */
 export function applyCallUno(state: UnoEngineState, playerId: string): UnoEngineState {
-  if (state.pendingUnoOffender !== playerId) {
+  const hand = state.hands[playerId] || [];
+  if (hand.length !== 1 || state.unoCalled.includes(playerId)) {
     throw new Error('UNO_CALL_NOT_ALLOWED');
   }
+  const pending = state.pendingUnoOffender;
+  if (pending !== null && pending !== playerId) {
+    throw new Error('UNO_CALL_NOT_ALLOWED');
+  }
+
   const next = cloneEngineState(state);
   next.pendingUnoOffender = null;
   if (!next.unoCalled.includes(playerId)) {

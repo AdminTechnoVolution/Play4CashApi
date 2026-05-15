@@ -901,6 +901,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       NOT_YOUR_TURN: 'ws.games.notYourTurn',
       NO_MATCH: 'ws.uno.noMatch',
       MUST_TAKE_STACK: 'ws.uno.mustTakeStack',
+      STACK_RESPONSE_REQUIRED: 'ws.uno.mustRespondDrawStack',
+      STACK_DRAW2_NOT_ALLOWED: 'ws.uno.stackDraw2NotAllowed',
       WILD4_ILLEGAL_HAS_COLOR: 'ws.uno.wild4Illegal',
       CHOSEN_COLOR_REQUIRED: 'ws.uno.chosenColorRequired',
       INVALID_CARD_INDEX: 'ws.uno.invalidCard',

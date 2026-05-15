@@ -160,6 +160,7 @@
     "ws.uno.wrongGame": "Esta sala não é UNO. Conecte-se pelo namespace do jogo correto.",
     "ws.uno.noMatch": "Essa carta não pode ser jogada sobre o descarte atual.",
     "ws.uno.mustRespondDrawStack": "Você deve jogar um +2 ou Wild +4, ou comprar o acúmulo.",
+    "ws.uno.stackDraw2NotAllowed": "Não pode jogar +2 depois de um Wild +4 — jogue Wild +4 ou compre.",
     "ws.uno.wild4Illegal": "Você não pode jogar Wild +4 enquanto tiver uma carta da cor atual.",
     "ws.uno.chosenColorRequired": "Escolha uma cor (R, G, B ou Y) ao jogar um curinga.",
     "ws.uno.invalidCard": "Índice de carta inválido.",

@@ -80,19 +80,84 @@ describe('handHasColor', () => {
   });
 });
 
-describe('no-stacking rule (+2 / +4 cannot be answered with another draw card)', () => {
-  it('rejects ANY play when stack pending — only take_draw_stack is allowed', () => {
+describe('draw stack chaining (+2 / +4 cumulative)', () => {
+  it('rejects non-responder cards while stack pending', () => {
     const s = state({
       playerIds: ['p0', 'p1'],
-      hands: { p0: ['GDraw2', 'W4', 'R3'], p1: [] },
-      discardPile: ['R1'],
+      hands: { p0: ['GDraw2', 'R3', 'R5'], p1: [] },
+      discardPile: ['RDraw2'],
       drawStackPending: 2,
     });
-    for (let i = 0; i < 3; i++) {
-      const v = validatePlay(s, 'p0', i, { chosenColor: 'G' });
-      expect(v.ok).toBe(false);
-      if (!v.ok) expect(v.reason).toBe('MUST_TAKE_STACK');
-    }
+    expect(validatePlay(s, 'p0', 0, {}).ok).toBe(true);
+    const v = validatePlay(s, 'p0', 1, {});
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe('STACK_RESPONSE_REQUIRED');
+  });
+
+  it('rejects colored +2 when discard top is Wild +4 (only +4 can extend that chain)', () => {
+    const s = state({
+      playerIds: ['p0', 'p1'],
+      hands: { p0: ['GDraw2'], p1: [] },
+      discardPile: ['W4'],
+      currentColor: 'R',
+      drawStackPending: 4,
+    });
+    const v = validatePlay(s, 'p0', 0, {});
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe('STACK_DRAW2_NOT_ALLOWED');
+  });
+
+  it('allows W4 on pending +4 and adds 4 to the stack', () => {
+    const s = state({
+      playerIds: ['p0', 'p1'],
+      hands: { p0: ['W4'], p1: [] },
+      discardPile: ['W4'],
+      currentColor: 'R',
+      drawStackPending: 4,
+    });
+    expect(validatePlay(s, 'p0', 0, { chosenColor: 'G' }).ok).toBe(true);
+    const { state: next } = applyPlay(s, 'p0', 0, { chosenColor: 'G' });
+    expect(next.drawStackPending).toBe(8);
+    expect(next.currentPlayerIndex).toBe(1);
+  });
+
+  it('allows W4 on pending +2 and adds 4 to the stack', () => {
+    const s = state({
+      playerIds: ['p0', 'p1'],
+      hands: { p0: ['W4', 'G3'], p1: [] },
+      discardPile: ['RDraw2'],
+      currentColor: 'R',
+      drawStackPending: 2,
+    });
+    expect(validatePlay(s, 'p0', 0, { chosenColor: 'B' }).ok).toBe(true);
+    const { state: next } = applyPlay(s, 'p0', 0, { chosenColor: 'B' });
+    expect(next.drawStackPending).toBe(6);
+    expect(next.currentColor).toBe('B');
+  });
+
+  it('rejects plain Wild during pending stack', () => {
+    const s = state({
+      playerIds: ['p0', 'p1'],
+      hands: { p0: ['W'], p1: [] },
+      discardPile: ['RDraw2'],
+      drawStackPending: 2,
+    });
+    const v = validatePlay(s, 'p0', 0, { chosenColor: 'G' });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe('STACK_RESPONSE_REQUIRED');
+  });
+
+  it('blocks W4 when pending stack and hand has current color', () => {
+    const s = state({
+      playerIds: ['p0', 'p1'],
+      hands: { p0: ['W4', 'R3'], p1: [] },
+      discardPile: ['GDraw2'],
+      currentColor: 'R',
+      drawStackPending: 2,
+    });
+    const v = validatePlay(s, 'p0', 0, { chosenColor: 'B' });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe('WILD4_ILLEGAL_HAS_COLOR');
   });
 
   it('blocks W4 when pending 0 and hand has current color', () => {
@@ -132,7 +197,7 @@ describe('applyTakeDrawStack', () => {
     expect(r.state.lastActionPlayerId).toBe('p0');
   });
 
-  it('always succeeds (no-stacking variant: no responder check)', () => {
+  it('validateTakeDrawStack succeeds when stack pending', () => {
     const s = state({
       playerIds: ['p0', 'p1'],
       hands: { p0: ['W4'], p1: [] },
@@ -361,7 +426,7 @@ describe('applyCallUno', () => {
     expect(next.unoCalled).toContain('a');
   });
 
-  it('throws UNO_CALL_NOT_ALLOWED when window is closed or wrong player', () => {
+  it('throws UNO_CALL_NOT_ALLOWED when hand is not exactly one card', () => {
     const s = state({
       playerIds: ['a', 'b'],
       hands: { a: ['R3', 'R5'], b: ['Y2'] },
@@ -370,14 +435,38 @@ describe('applyCallUno', () => {
     expect(() => applyCallUno(s, 'a')).toThrow('UNO_CALL_NOT_ALLOWED');
   });
 
-  it('throws when offender is set but caller is not the offender', () => {
+  it('allows declaring UNO with one card when miss-window already cleared', () => {
     const s = state({
       playerIds: ['a', 'b'],
       hands: { a: ['R3'], b: ['Y2', 'Y9'] },
       discardPile: ['R7'],
+      pendingUnoOffender: null,
+      currentPlayerIndex: 1,
+    });
+    const next = applyCallUno(s, 'a');
+    expect(next.pendingUnoOffender).toBeNull();
+    expect(next.unoCalled).toContain('a');
+  });
+
+  it('throws when another player is in the miss-window', () => {
+    const s = state({
+      playerIds: ['a', 'b'],
+      hands: { a: ['R3'], b: ['Y2'] },
+      discardPile: ['R7'],
       pendingUnoOffender: 'a',
     });
     expect(() => applyCallUno(s, 'b')).toThrow('UNO_CALL_NOT_ALLOWED');
+  });
+
+  it('throws when caller already has UNO declared', () => {
+    const s = state({
+      playerIds: ['a', 'b'],
+      hands: { a: ['R3'], b: ['Y2', 'Y9'] },
+      discardPile: ['R7'],
+      unoCalled: ['a'],
+      pendingUnoOffender: null,
+    });
+    expect(() => applyCallUno(s, 'a')).toThrow('UNO_CALL_NOT_ALLOWED');
   });
 });
 

@@ -160,6 +160,7 @@
     "ws.uno.wrongGame": "Dieser Raum ist kein UNO-Spiel. Verbinde dich über den richtigen Spiel-Namespace.",
     "ws.uno.noMatch": "Diese Karte passt nicht zum aktuellen Ablagestapel.",
     "ws.uno.mustRespondDrawStack": "Du musst +2 oder Wild +4 spielen oder die angesammelten Karten ziehen.",
+    "ws.uno.stackDraw2NotAllowed": "Nach Wild +4 darfst du kein +2 legen — spiele Wild +4 oder zieh.",
     "ws.uno.wild4Illegal": "Wild +4 ist nicht erlaubt, solange du eine Karte der aktuellen Farbe hast.",
     "ws.uno.chosenColorRequired": "Wähle eine Farbe (R, G, B oder Y) für den Joker.",
     "ws.uno.invalidCard": "Ungültiger Kartenindex.",
