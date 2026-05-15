@@ -49,7 +49,7 @@ export class RoomService {
     }
 
     // Per-room stake (bet_amount) once per game — not multiplied by player count
-    const activeRooms = await this.roomModel.find({ status: 'started' }).select('bet_amount').lean();
+    const activeRooms = await this.roomModel.find({ status: RoomStatus.STARTED }).select('bet_amount').lean();
     let totalBetAmount = 0;
     for (const room of activeRooms) {
       totalBetAmount += room.bet_amount || 0;
@@ -72,7 +72,7 @@ export class RoomService {
     const rooms = await this.roomModel
       .find({
         game_id: new Types.ObjectId(gameId),
-        status: { $in: ['waiting', 'started'] },
+        status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
       })
       .populate('game_id', '-created_at')
       .populate('players.playerId', 'username')
@@ -102,9 +102,9 @@ export class RoomService {
         status: room.status,
         playerCount: room.players.length,
         bet_amount: room.bet_amount,
-        currentPlayer: room.status === 'started' ? room.players[0].playerId : null,
+        currentPlayer: room.status === RoomStatus.STARTED ? room.players[0].playerId : null,
         winner: room.winner || null,
-        winner_reason: room.winner_reason || (room.status === 'started' ? 'playing' : null),
+        winner_reason: room.winner_reason || (room.status === RoomStatus.STARTED ? 'playing' : null),
       },
     };
   }
@@ -239,12 +239,12 @@ export class RoomService {
       room = await this.roomModel.findOneAndUpdate(
         {
           _id: roomId,
-          status: 'waiting',
+          status: RoomStatus.WAITING,
           [`players.${maxPlayers - 1}`]: { $exists: false },
           'players.playerId': { $ne: new Types.ObjectId(userId) },
         },
         { $push: { players: { playerId: new Types.ObjectId(userId), ready: false } } },
-        { returnDocument: 'after' },
+        { new: true },
       ).populate('game_id');
     } catch (err) {
       // Phase C: partial unique index can fire here if the user already has
@@ -256,7 +256,7 @@ export class RoomService {
     if (!room) {
       const current = await this.roomModel.findById(roomId);
       if (!current) throw new BusinessException('ERROR_NOT_FOUND', 404);
-      if (current.status !== 'waiting') throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
+      if (current.status !== RoomStatus.WAITING) throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
       throw new BusinessException('ERROR_ROOM_FULL', 400);
     }
 
@@ -340,7 +340,7 @@ export class RoomService {
       const updated = await this.roomModel.findOneAndUpdate(
         { _id: roomId },
         { $pull: { spectators: new Types.ObjectId(userId) } },
-        { returnDocument: 'after' }
+        { new: true },
       );
       
       // Notify game namespaces of spectator count change
@@ -356,9 +356,9 @@ export class RoomService {
 
     if (roomInfo.status === RoomStatus.WAITING) {
       const updated = await this.roomModel.findOneAndUpdate(
-        { _id: roomId, status: 'waiting', 'players.playerId': new Types.ObjectId(userId) },
+        { _id: roomId, status: RoomStatus.WAITING, 'players.playerId': new Types.ObjectId(userId) },
         { $pull: { players: { playerId: new Types.ObjectId(userId) } } },
-        { returnDocument: 'after' },
+        { new: true },
       );
       if (!updated) throw new BusinessException('ERROR_AUTH', 403);
 
@@ -450,7 +450,7 @@ export class RoomService {
                 finished_at: new Date(),
               },
             },
-            { returnDocument: 'after' },
+            { new: true },
           );
           if (!finalized) {
             // Another caller already finalized this room. Return the current state
@@ -557,7 +557,7 @@ export class RoomService {
       const user = await this.userModel.findOneAndUpdate(
         { _id: userId, balance: { $gte: room.bet_amount } },
         { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
+        { new: true },
       );
       if (!user) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
       placement = await this.placementModel.create({ room_id: roomId, player_id: userId, ships, status: 'placed' });
@@ -567,7 +567,7 @@ export class RoomService {
     const updatedRoom = await this.roomModel.findOneAndUpdate(
       { _id: new Types.ObjectId(roomId), 'players.playerId': new Types.ObjectId(userId) },
       { $set: { 'players.$.ready': true }, $push: { 'players.$.moves': { data: { type: 'placement' } } } as any },
-      { returnDocument: 'after' },
+      { new: true },
     ).populate('game_id', '-created_at').populate('players.playerId', 'username');
 
     if (!updatedRoom) throw new BusinessException('Error updating room', 500);
@@ -576,7 +576,11 @@ export class RoomService {
     const allReady = updatedRoom.players.length >= maxPlayers && updatedRoom.players.every((p: any) => p.ready);
 
     if (allReady) {
-      const startedRoom = await this.roomModel.findOneAndUpdate({ _id: roomId, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
+      const startedRoom = await this.roomModel.findOneAndUpdate(
+        { _id: roomId, status: RoomStatus.WAITING },
+        { $set: { status: RoomStatus.STARTED } },
+        { new: true },
+      );
       if (startedRoom) {
         await this.placementModel.updateMany({ room_id: roomId }, { status: 'ready' });
         

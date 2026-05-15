@@ -146,4 +146,108 @@ export class EmailService {
     const t = translations[lang] || translations['en'];
     await this.sendEmail(to, t.subject, t.body);
   }
+
+  async sendWalletChangeVerification(
+    to: string,
+    username: string,
+    code: string,
+    expiryMins: number,
+    lang = 'en',
+  ): Promise<void> {
+    const translations: Record<string, { subject: string; body: string }> = {
+      en: {
+        subject: 'Play4Cash - Wallet update verification',
+        body: `
+          <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'>
+            <h2 style='color: #D4AF37;'>Wallet address update at Play4Cash</h2>
+            <p>Hello <strong>${username}</strong></p>
+            <p>You requested to update your withdrawal wallet address. Use this verification code to confirm:</p>
+            <h3>${code}</h3>
+            <p>The code is valid for ${expiryMins} minutes. Do not share it with anyone.</p>
+            <p style='font-size: 12px; color: #F7D774;'>If you did not request this change, ignore this email.</p>
+            <hr style='margin: 30px 0;'>
+            <p style='font-size: 12px; color: #F7D774;'>Play4Cash Team</p>
+          </div>
+        `,
+      },
+      es: {
+        subject: 'Play4Cash - Verificación de cambio de billetera',
+        body: `
+          <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'>
+            <h2 style='color: #D4AF37;'>Actualización de billetera en Play4Cash</h2>
+            <p>Hola <strong>${username}</strong></p>
+            <p>Solicitaste actualizar tu dirección de billetera para retiros. Usa este código para confirmar:</p>
+            <h3>${code}</h3>
+            <p>El código es válido por ${expiryMins} minutos. No lo compartas con nadie.</p>
+            <p style='font-size: 12px; color: #F7D774;'>Si no solicitaste este cambio, ignora este correo.</p>
+            <hr style='margin: 30px 0;'>
+            <p style='font-size: 12px; color: #F7D774;'>Equipo Play4Cash</p>
+          </div>
+        `,
+      },
+      de: {
+        subject: 'Play4Cash - Wallet-Update-Verifizierung',
+        body: `
+          <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'>
+            <h2 style='color: #D4AF37;'>Wallet-Adresse bei Play4Cash aktualisieren</h2>
+            <p>Hallo <strong>${username}</strong></p>
+            <p>Sie haben die Aktualisierung Ihrer Auszahlungs-Wallet-Adresse angefordert. Bestätigen Sie mit diesem Code:</p>
+            <h3>${code}</h3>
+            <p>Der Code ist ${expiryMins} Minuten gültig. Teilen Sie ihn mit niemandem.</p>
+            <p style='font-size: 12px; color: #F7D774;'>Wenn Sie diese Änderung nicht angefordert haben, ignorieren Sie diese E-Mail.</p>
+            <hr style='margin: 30px 0;'>
+            <p style='font-size: 12px; color: #F7D774;'>Play4Cash Team</p>
+          </div>
+        `,
+      },
+      fr: {
+        subject: 'Play4Cash - Vérification du changement de portefeuille',
+        body: `
+          <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'>
+            <h2 style='color: #D4AF37;'>Mise à jour du portefeuille sur Play4Cash</h2>
+            <p>Bonjour <strong>${username}</strong></p>
+            <p>Vous avez demandé de mettre à jour l'adresse de votre portefeuille pour les retraits. Utilisez ce code pour confirmer :</p>
+            <h3>${code}</h3>
+            <p>Le code est valide ${expiryMins} minutes. Ne le partagez avec personne.</p>
+            <p style='font-size: 12px; color: #F7D774;'>Si vous n'avez pas demandé ce changement, ignorez cet e-mail.</p>
+            <hr style='margin: 30px 0;'>
+            <p style='font-size: 12px; color: #F7D774;'>L'équipe Play4Cash</p>
+          </div>
+        `,
+      },
+      it: {
+        subject: 'Play4Cash - Verifica aggiornamento portafoglio',
+        body: `
+          <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'>
+            <h2 style='color: #D4AF37;'>Aggiornamento portafoglio su Play4Cash</h2>
+            <p>Ciao <strong>${username}</strong></p>
+            <p>Hai richiesto di aggiornare l'indirizzo del portafoglio per i prelievi. Usa questo codice per confermare:</p>
+            <h3>${code}</h3>
+            <p>Il codice è valido per ${expiryMins} minuti. Non condividerlo con nessuno.</p>
+            <p style='font-size: 12px; color: #F7D774;'>Se non hai richiesto questa modifica, ignora questa email.</p>
+            <hr style='margin: 30px 0;'>
+            <p style='font-size: 12px; color: #F7D774;'>Team Play4Cash</p>
+          </div>
+        `,
+      },
+      pt: {
+        subject: 'Play4Cash - Verificação de atualização da carteira',
+        body: `
+          <div style='font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;'>
+            <h2 style='color: #D4AF37;'>Atualização de carteira no Play4Cash</h2>
+            <p>Olá <strong>${username}</strong></p>
+            <p>Você solicitou atualizar o endereço da carteira para saques. Use este código para confirmar:</p>
+            <h3>${code}</h3>
+            <p>O código é válido por ${expiryMins} minutos. Não compartilhe com ninguém.</p>
+            <p style='font-size: 12px; color: #F7D774;'>Se você não solicitou esta alteração, ignore este e-mail.</p>
+            <hr style='margin: 30px 0;'>
+            <p style='font-size: 12px; color: #F7D774;'>Equipe Play4Cash</p>
+          </div>
+        `,
+      },
+    };
+
+    const t = translations[lang] || translations['en'];
+    await this.sendEmail(to, t.subject, t.body);
+  }
 }

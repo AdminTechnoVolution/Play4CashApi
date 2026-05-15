@@ -200,7 +200,7 @@ export class WithdrawalService {
       lang,
     );
 
-    this.logger.log(`Withdrawal initiated for user ${userId}, code: ${verificationCode}`);
+    this.logger.log(`Withdrawal initiated for user ${userId}`);
   }
 
   private async saveTxMessage(user_id: string, amount: number, coin: string, wallet: string, message: string) {

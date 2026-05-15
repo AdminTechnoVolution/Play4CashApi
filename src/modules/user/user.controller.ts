@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Put, UseGuards } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserService } from './user.service';
@@ -31,6 +32,14 @@ class VerifyCodeDto {
   @ApiProperty() @IsString() verification_code: string;
 }
 
+class ConfirmWalletOtpDto {
+  @ApiProperty()
+  @IsString()
+  @MinLength(4)
+  @MaxLength(12)
+  verification_code: string;
+}
+
 @ApiTags('User')
 @ApiBearerAuth()
 @Controller('user')
@@ -38,6 +47,7 @@ export class UserController {
   constructor(
     private readonly userService: UserService,
     private readonly i18n: I18nService,
+    private readonly config: ConfigService,
   ) {}
 
   // GET /api/user/admin/total-balances  (must come before /:id routes)
@@ -85,17 +95,40 @@ export class UserController {
     return this.userService.registerUser(dto.email, dto.username, dto.referred_by);
   }
 
-  // POST /api/user/register-wallet
-  @Post('register-wallet')
+  // POST /api/user/request-wallet-change
+  @Throttle({ default: { limit: 15, ttl: 900_000 } })
+  @Post('request-wallet-change')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Register or update wallet address' })
-  async registerWallet(
+  @ApiOperation({ summary: 'Request wallet update (sends OTP to email)' })
+  async requestWalletChange(
     @CurrentUser() user: JwtPayload,
     @Body() dto: RegisterWalletDto,
     @Headers('accept-language') lang: string,
   ) {
-    await this.userService.registerWallet(user.id, dto.coin, dto.network, dto.wallet);
-    const message = this.i18n.translate('SUCCESS_REGISTER_WALLET', lang);
+    const expiryMins = this.config.get<number>('withdrawal.verificationExpiryMinutes') || 30;
+    await this.userService.requestWalletChange(
+      user.id,
+      dto.coin,
+      dto.network,
+      dto.wallet,
+      expiryMins,
+      lang || 'en',
+    );
+    const message = this.i18n.translate('SUCCESS_WALLET_CHANGE_OTP_SENT', lang);
+    return { success: true, messages: [message], data: null };
+  }
+
+  // POST /api/user/confirm-wallet-change
+  @Post('confirm-wallet-change')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirm wallet update with email verification code' })
+  async confirmWalletChange(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ConfirmWalletOtpDto,
+    @Headers('accept-language') lang: string,
+  ) {
+    await this.userService.confirmWalletChangeWithOtp(user.id, dto.verification_code);
+    const message = this.i18n.translate('SUCCESS_WALLET_CHANGE_CONFIRMED', lang);
     return { success: true, messages: [message], data: null };
   }
 

@@ -1,9 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import * as bcrypt from 'bcryptjs';
 import { UserRepository } from './user.repository';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { winnerDisplayedPrize } from '../../common/utils/game-prize.util';
+import { WalletService } from '../wallet/wallet.service';
+import { EmailService } from '../../common/email/email.service';
+import { WalletChangePending, WalletChangePendingDocument } from './schemas/wallet-change-pending.schema';
 
 @Injectable()
 export class UserService {
@@ -13,6 +18,11 @@ export class UserService {
     private readonly userRepo: UserRepository,
     @InjectModel('AppConfig') private readonly appConfigModel: Model<any>,
     @InjectModel('Room') private readonly roomModel: Model<any>,
+    @InjectModel(WalletChangePending.name)
+    private readonly walletChangePendingModel: Model<WalletChangePendingDocument>,
+    private readonly walletService: WalletService,
+    private readonly emailService: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
   async getProfile(userId: string): Promise<any> {
@@ -23,7 +33,9 @@ export class UserService {
     try {
       const config = await this.appConfigModel.findOne({ key: 'global' }).lean();
       if (config) withdrawal_daily_limit = (config as any).withdrawal_daily_limit ?? 10000;
-    } catch { /* use default */ }
+    } catch {
+      /* use default */
+    }
 
     const profile = user as any;
     profile.limits = { daily_withdrawal: withdrawal_daily_limit };
@@ -41,7 +53,9 @@ export class UserService {
 
     return rooms.map((room: any) => {
       const isWinner = room.winner && room.winner._id.toString() === userId;
-      const isDraw = !room.winner && room.status === 'finished' &&
+      const isDraw =
+        !room.winner &&
+        room.status === 'finished' &&
         ['stalemate', 'insufficient_material', 'draw'].includes(room.winner_reason);
 
       let prize: number | null = null;
@@ -59,7 +73,11 @@ export class UserService {
 
       let gameName = 'Unknown';
       if (room.game_id?.name) {
-        gameName = room.game_id.name[lang] || room.game_id.name['en'] || room.game_id.name['es'] || 'Unknown';
+        gameName =
+          room.game_id.name[lang] ||
+          room.game_id.name['en'] ||
+          room.game_id.name['es'] ||
+          'Unknown';
       }
 
       const reason = room.winner_reason || (isWinner ? 'win' : isDraw ? 'draw' : 'forfeit');
@@ -97,16 +115,97 @@ export class UserService {
     throw new BusinessException('ERROR_VERIFICATIONCODE_RESPONSE', 400);
   }
 
-  async registerWallet(
+  /**
+   * Sends an OTP to the user's email and stores the pending address server-side.
+   * The wallet is only persisted after successful `confirmWalletChangeWithOtp`.
+   */
+  async requestWalletChange(
     userId: string,
     coin: string,
     network: string,
     wallet: string,
+    expiryMins: number,
+    lang = 'en',
   ): Promise<void> {
-    const user = await this.userRepo.updateById(userId, {
-      wallet_address: { coin: coin.toUpperCase(), network, wallet },
-    });
+    const trimmed = wallet?.trim() ?? '';
+    if (!trimmed) throw new BusinessException('wallet.required', 400);
+
+    const user = await this.userRepo.findById(userId);
     if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+
+    const coinUpper = coin.toUpperCase();
+    const walletConfig = await this.walletService.findByCoinAndNetwork(coinUpper, network);
+    if (!walletConfig) throw new BusinessException('ERROR_WALLET_NOT_CONFIGURED', 400);
+
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const hashedCode = await bcrypt.hash(verificationCode, 10);
+    const verification_expires_at = new Date(Date.now() + expiryMins * 60 * 1000);
+
+    await this.walletChangePendingModel.findOneAndUpdate(
+      { user_id: new Types.ObjectId(userId) },
+      {
+        $set: {
+          user_id: new Types.ObjectId(userId),
+          coin: coinUpper,
+          network,
+          wallet: trimmed,
+          verification_code: hashedCode,
+          verification_expires_at,
+        },
+      },
+      { upsert: true, new: true },
+    );
+
+    await this.emailService.sendWalletChangeVerification(
+      user.email,
+      user.username,
+      verificationCode,
+      expiryMins,
+      lang,
+    );
+
+    this.logger.log(`Wallet change OTP requested for user ${userId}`);
+  }
+
+  /** Applies the pending wallet address after OTP verification. */
+  async confirmWalletChangeWithOtp(userId: string, verification_code: string): Promise<void> {
+    const pending = await this.walletChangePendingModel
+      .findOne({ user_id: new Types.ObjectId(userId) })
+      .lean();
+
+    if (!pending) {
+      throw new BusinessException('ERROR_WALLET_CHANGE_NONE_PENDING', 400);
+    }
+
+    const isMatch = await bcrypt.compare(verification_code, pending.verification_code);
+    if (!isMatch) {
+      throw new BusinessException('ERROR_WALLET_CHANGE_CODE_INVALID', 400);
+    }
+
+    if (new Date() > pending.verification_expires_at) {
+      await this.walletChangePendingModel.deleteOne({ _id: pending._id });
+      throw new BusinessException('ERROR_WALLET_CHANGE_EXPIRED', 400);
+    }
+
+    const walletConfig = await this.walletService.findByCoinAndNetwork(
+      pending.coin,
+      pending.network,
+    );
+    if (!walletConfig) {
+      await this.walletChangePendingModel.deleteOne({ _id: pending._id });
+      throw new BusinessException('ERROR_WALLET_NOT_CONFIGURED', 400);
+    }
+
+    const updated = await this.userRepo.updateById(userId, {
+      wallet_address: {
+        coin: pending.coin,
+        network: pending.network,
+        wallet: pending.wallet,
+      },
+    });
+    if (!updated) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+
+    await this.walletChangePendingModel.deleteOne({ _id: pending._id });
   }
 
   async updateProfile(userId: string, update: { username?: string }): Promise<any> {
