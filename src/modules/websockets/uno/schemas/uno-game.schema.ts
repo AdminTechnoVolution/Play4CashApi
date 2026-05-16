@@ -72,8 +72,9 @@ export class UnoGame {
   round_number: number;
 
   /**
-   * Score required to win the whole match (Mattel: 500, we use 200 by default for mobile
-   * pacing). Locked at room creation; cannot change mid-match.
+   * Score required to win the whole match (Mattel: 500; mobile default often 200).
+   * Set when the hand starts from `Game.uno_match_target` (catalog) with env fallback;
+   * locked for the lifetime of this match document.
    */
   @Prop({ type: Number, default: 200 })
   match_target_score: number;

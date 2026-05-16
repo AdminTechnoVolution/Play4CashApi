@@ -11,7 +11,11 @@ import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
-import { UNO_SOCKET_CODE } from '../../../common/constants/uno-game.constants';
+import {
+  resolveUnoMatchTarget,
+  UNO_MATCH_TARGET_DEFAULT,
+  UNO_SOCKET_CODE,
+} from '../../../common/constants/uno-game.constants';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { UnoGame, UnoGameDocument } from './schemas/uno-game.schema';
 import {
@@ -40,8 +44,6 @@ const clearTimer = (id: string) => {
   }
 };
 
-/** Default match-target. Set `UNO_MATCH_TARGET` env var to override globally. */
-const DEFAULT_MATCH_TARGET = 200;
 /** Seconds between rounds before auto-start kicks in. */
 const BETWEEN_ROUNDS_SECONDS = 8;
 
@@ -325,7 +327,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     // even though only one slot is actually filled in `room.players`. Without this
     // guard, `playerIds.map(...)` below included `undefined` entries which then
     // either tried to deduct from a non-existent user or produced a corrupt game.
-    const preRoom = await this.roomModel.findById(room_id).populate('game_id', 'max_players');
+    const preRoom = await this.roomModel.findById(room_id).populate('game_id', 'max_players uno_match_target');
     if (!preRoom) return;
     const expectedPlayers = preRoom.player_limit || (preRoom.game_id as any)?.max_players || 0;
     if (
@@ -346,7 +348,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     );
     if (!started) return;
 
-    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
+    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players uno_match_target');
     if (!room) return;
 
     const playerIds = room.players.map((p: any) => p.playerId);
@@ -408,9 +410,9 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       return;
     }
 
-    const matchTarget = Math.max(
-      50,
-      Math.min(500, Number(this.config.get('UNO_MATCH_TARGET')) || DEFAULT_MATCH_TARGET),
+    const matchTarget = resolveUnoMatchTarget(
+      (room.game_id as any)?.uno_match_target,
+      this.config.get<string>('UNO_MATCH_TARGET'),
     );
     const initialScores: Record<string, number> = {};
     for (const id of playerIdStrs) initialScores[id] = 0;
@@ -1411,7 +1413,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       // Multi-round (Phase 2)
       matchScores,
       roundNumber: game.round_number ?? 1,
-      matchTargetScore: game.match_target_score ?? DEFAULT_MATCH_TARGET,
+      matchTargetScore: game.match_target_score ?? UNO_MATCH_TARGET_DEFAULT,
       matchWinnerId: game.match_winner_id ?? null,
       betweenRounds: !!game.between_rounds,
       nextRoundStartsAt: game.next_round_starts_at ? new Date(game.next_round_starts_at).toISOString() : null,

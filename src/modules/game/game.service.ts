@@ -4,7 +4,10 @@ import { Model } from 'mongoose';
 import { Game, GameDocument } from './schemas/game.schema';
 import { Room, RoomDocument, RoomStatus } from '../room/schemas/room.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
-import { UNO_SOCKET_CODE } from '../../common/constants/uno-game.constants';
+import {
+  UNO_MATCH_TARGET_DEFAULT,
+  UNO_SOCKET_CODE,
+} from '../../common/constants/uno-game.constants';
 
 @Injectable()
 export class GameService implements OnModuleInit {
@@ -22,7 +25,13 @@ export class GameService implements OnModuleInit {
   /** Idempotent: creates the UNO catalog row if missing (Fase 1). */
   private async ensureUnoCatalogEntry(): Promise<void> {
     const exists = await this.gameModel.findOne({ socket_code: UNO_SOCKET_CODE }).lean();
-    if (exists) return;
+    if (exists) {
+      await this.gameModel.updateMany(
+        { socket_code: UNO_SOCKET_CODE, uno_match_target: { $exists: false } },
+        { $set: { uno_match_target: UNO_MATCH_TARGET_DEFAULT } },
+      );
+      return;
+    }
 
     const localized = (en: string, es: string) => ({
       en,
@@ -47,6 +56,7 @@ export class GameService implements OnModuleInit {
       house_edge: 5,
       socket_code: UNO_SOCKET_CODE,
       turn_timer_seconds: 45,
+      uno_match_target: UNO_MATCH_TARGET_DEFAULT,
     });
     this.logger.log(`Catalog: inserted game "${UNO_SOCKET_CODE}" (min_players=2, max_players=10).`);
   }
@@ -68,6 +78,7 @@ export class GameService implements OnModuleInit {
     return games.map((g: any) => ({
       ...g,
       houseEdge: g.house_edge,
+      unoMatchTarget: g.uno_match_target,
       activeRooms: countMap.get(g._id.toString()) ?? 0,
     }));
   }
@@ -75,7 +86,8 @@ export class GameService implements OnModuleInit {
   async findById(id: string, lang = 'en'): Promise<any> {
     const game = await this.gameModel.findById(id).select('-created_at').lean();
     if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
-    return this.localizeGames([game], lang)[0];
+    const g = this.localizeGames([game], lang)[0];
+    return { ...g, houseEdge: g.house_edge, unoMatchTarget: g.uno_match_target };
   }
 
   async create(data: Partial<Game>): Promise<GameDocument> {
