@@ -311,14 +311,46 @@ describe('draw_one + pass', () => {
     expect(validatePassTurn(s, 'a').ok).toBe(false);
   });
 
-  it('pass advances when no legal play and sets lastActionPlayerId', () => {
+  it('pass draws one card when available, then advances if still no legal play', () => {
     const s = state({
       playerIds: ['a', 'b'],
       hands: { a: ['G9'], b: ['R1'] },
+      drawPile: ['B8'],
       discardPile: ['R5'],
     });
     expect(hasLegalPlay(s, 'a')).toBe(false);
-    const next = applyPassTurn(s, 'a');
+    const next = applyPassTurn(s, 'a', identity);
+    expect(next.hands.a).toEqual(['G9', 'B8']);
+    expect(hasLegalPlay(next, 'a')).toBe(false);
+    expect(next.currentPlayerIndex).toBe(1);
+    expect(next.lastActionPlayerId).toBe('a');
+  });
+
+  it('pass draws one card and keeps turn when the drawn card is playable', () => {
+    const s = state({
+      playerIds: ['a', 'b'],
+      hands: { a: ['G9'], b: ['R1'] },
+      drawPile: ['R2'],
+      discardPile: ['R5'],
+    });
+    expect(hasLegalPlay(s, 'a')).toBe(false);
+    const next = applyPassTurn(s, 'a', identity);
+    expect(next.hands.a).toEqual(['G9', 'R2']);
+    expect(hasLegalPlay(next, 'a')).toBe(true);
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.lastActionPlayerId).toBe('a');
+  });
+
+  it('pass advances without drawing when deck is empty (single discard)', () => {
+    const s = state({
+      playerIds: ['a', 'b'],
+      hands: { a: ['G9'], b: ['R1'] },
+      drawPile: [],
+      discardPile: ['R5'],
+    });
+    expect(hasLegalPlay(s, 'a')).toBe(false);
+    const next = applyPassTurn(s, 'a', identity);
+    expect(next.hands.a).toEqual(['G9']);
     expect(next.currentPlayerIndex).toBe(1);
     expect(next.lastActionPlayerId).toBe('a');
   });

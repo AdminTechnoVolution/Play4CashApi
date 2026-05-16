@@ -627,13 +627,37 @@ export function validatePassTurn(
   return { ok: true };
 }
 
-/** End turn when no legal play (after drawing or with empty hand options). */
-export function applyPassTurn(state: UnoEngineState, playerId: string): UnoEngineState {
+/** End turn when no legal play: draws one card first; if still no legal play, advances turn.
+ * If the drawn card can be played, the same player's turn continues (they may play or draw again per house rules).
+ * If the deck cannot yield a card (`DECK_EMPTY`), advances turn without drawing.
+ */
+export function applyPassTurn(
+  state: UnoEngineState,
+  playerId: string,
+  shuffleFn: ShuffleFn = shuffleUnoDeck,
+): UnoEngineState {
   const v = validatePassTurn(state, playerId);
   if (!v.ok) throw new Error(v.reason);
-  const next = cloneEngineState(state);
-  next.pendingUnoOffender = null;
-  next.lastActionPlayerId = playerId;
+
+  let afterDraw: UnoEngineState;
+  try {
+    afterDraw = applyDrawOne(state, playerId, shuffleFn).state;
+  } catch (e: any) {
+    if (e?.message === 'DECK_EMPTY') {
+      const next = cloneEngineState(state);
+      next.pendingUnoOffender = null;
+      next.lastActionPlayerId = playerId;
+      advanceTurnNormal(next);
+      return next;
+    }
+    throw e;
+  }
+
+  if (hasLegalPlay(afterDraw, playerId)) {
+    return afterDraw;
+  }
+
+  const next = cloneEngineState(afterDraw);
   advanceTurnNormal(next);
   return next;
 }
