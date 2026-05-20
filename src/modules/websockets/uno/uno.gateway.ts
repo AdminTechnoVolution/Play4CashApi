@@ -928,7 +928,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   /** Reconcile `socket.data.isSpectator` with per-round eliminations (timeout is round-scoped). */
   private refreshMemberSpectatorFlags(
     game: UnoGameDocument,
-    sockets: Awaited<ReturnType<Server['in']>['fetchSockets']>,
+    sockets: Awaited<ReturnType<ReturnType<Server['in']>['fetchSockets']>>,
   ): void {
     const eliminated = new Set((game.eliminated_players || []).map(String));
     const memberIds = new Set(game.player_ids.map((p: any) => p.toString()));
