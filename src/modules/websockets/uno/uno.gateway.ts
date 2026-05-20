@@ -925,6 +925,20 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     for (const s of sockets) clearTimer(s.id);
   }
 
+  /** Reconcile `socket.data.isSpectator` with per-round eliminations (timeout is round-scoped). */
+  private refreshMemberSpectatorFlags(
+    game: UnoGameDocument,
+    sockets: Awaited<ReturnType<Server['in']>['fetchSockets']>,
+  ): void {
+    const eliminated = new Set((game.eliminated_players || []).map(String));
+    const memberIds = new Set(game.player_ids.map((p: any) => p.toString()));
+    for (const s of sockets) {
+      const pid = (s as any).data?.player_id as string | undefined;
+      if (!pid || !memberIds.has(pid)) continue;
+      (s as any).data.isSpectator = eliminated.has(pid);
+    }
+  }
+
   private async broadcastUnoGameState(
     room_id: string,
     room: any,
@@ -945,6 +959,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const currentTurnId = idsStr[game.current_player_index];
     const currentTurnUsername = await this.getCachedUsername(currentTurnId);
     const sockets = await this.server.in(room_id).fetchSockets();
+    this.refreshMemberSpectatorFlags(game, sockets);
 
     let unoCallerName = '';
     if (extras?.unoCallerId) unoCallerName = await this.getCachedUsername(extras.unoCallerId);
@@ -1049,6 +1064,9 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     // ── Round ends, match continues ────────────────────────────────────────
     game.between_rounds = true;
     game.between_rounds_processing = false;
+    // Timeout/forfeit eliminations are per-round only — everyone re-enters next deal.
+    game.eliminated_players = [];
+    game.markModified('eliminated_players');
     const deadline = new Date(Date.now() + BETWEEN_ROUNDS_SECONDS * 1000);
     game.next_round_starts_at = deadline;
     game.players_ready_for_next = [];
@@ -1129,6 +1147,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const winnerName = await this.getCachedUsername(winnerId);
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
     const sockets = await this.server.in(room_id).fetchSockets();
+    this.refreshMemberSpectatorFlags(game, sockets);
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
       const sLang = this.getLang(s as unknown as Socket);
@@ -1217,6 +1236,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       game.current_color = deal.currentColor;
       game.draw_stack_pending = 0;
       // Match-level fields persist; per-round fields reset.
+      game.eliminated_players = [];
       game.uno_called = [];
       game.pending_uno_offender = null;
       game.last_action_player_id = null;
@@ -1227,6 +1247,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       game.round_number += 1;
       game.turn_start_time = new Date();
       game.markModified('hands');
+      game.markModified('eliminated_players');
       await game.save();
 
       this.logger.log(
@@ -1439,16 +1460,33 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       const idsStr = game.player_ids.map((p: any) => p.toString());
       if (idsStr[game.current_player_index] !== player_id) return;
 
+      const eliminated = game.eliminated_players || [];
+      const remainingAfterTimeout = activePlayerCount(idsStr, [...eliminated, player_id]);
+      const matchEnds = remainingAfterTimeout <= 1;
+
       const lang = this.getLang(socket);
       socket.emit('uno', {
         success: true,
-        data: { gameEnded: true, outcome: 'timeout_loss', youWon: false, reason: 'timeout', isSpectator: false },
+        data: {
+          gameEnded: matchEnds,
+          matchEnded: matchEnds,
+          outcome: matchEnds ? 'timeout_loss' : undefined,
+          eliminatedFromRound: !matchEnds,
+          youWon: false,
+          reason: 'timeout',
+          isSpectator: false,
+        },
         messages: [this.i18n.translate('ws.domino.timeout', lang)],
       });
       socket.data.eliminationReason = 'timeout';
       await this.eliminatePlayer(room_id, player_id, 'timeout');
-      socket.leave(room_id);
-      socket.disconnect(true);
+      if (matchEnds) {
+        socket.leave(room_id);
+        socket.disconnect(true);
+      } else {
+        // Out for this round only; stay in the room to see scoreboard / next deal.
+        socket.data.isSpectator = true;
+      }
     }, seconds * 1000);
     turnTimers.set(socket.id, t);
   }
