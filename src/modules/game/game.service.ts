@@ -4,6 +4,7 @@ import { Model } from 'mongoose';
 import { Game, GameDocument } from './schemas/game.schema';
 import { Room, RoomDocument, RoomStatus } from '../room/schemas/room.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { CONNECT_FOUR_SOCKET_CODE } from '../../common/constants/connect-four-game.constants';
 import {
   UNO_MATCH_TARGET_DEFAULT,
   UNO_SOCKET_CODE,
@@ -20,6 +21,43 @@ export class GameService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     await this.ensureUnoCatalogEntry();
+    await this.ensureConnectFourCatalogEntry();
+  }
+
+  /** Idempotent: creates Connect Four catalog row if missing. */
+  private async ensureConnectFourCatalogEntry(): Promise<void> {
+    const exists = await this.gameModel.findOne({ socket_code: CONNECT_FOUR_SOCKET_CODE }).lean();
+    if (exists) return;
+
+    const localized = (en: string, es: string, fr?: string, de?: string, it?: string, pt?: string) => ({
+      en,
+      es,
+      fr: fr ?? en,
+      de: de ?? en,
+      it: it ?? en,
+      pt: pt ?? en,
+    });
+
+    await this.gameModel.create({
+      name: localized('Connect Four', '4 en raya', 'Puissance 4', 'Vier gewinnt', 'Forza 4', 'Lig 4'),
+      description: localized(
+        'Drop discs to connect four in a row — horizontal, vertical, or diagonal.',
+        'Conecta cuatro fichas en línea — horizontal, vertical o diagonal.',
+        'Alignez quatre pions pour gagner.',
+        'Verbinde vier Spielsteine in einer Reihe.',
+        'Allinea quattro pedine in fila.',
+        'Alinhe quatro fichas em linha.',
+      ),
+      active: true,
+      min_players: 2,
+      max_players: 2,
+      min_bet: 5,
+      default_bets: [5, 10, 25, 50, 100],
+      house_edge: 5,
+      socket_code: CONNECT_FOUR_SOCKET_CODE,
+      turn_timer_seconds: 30,
+    });
+    this.logger.log(`Catalog: inserted game "${CONNECT_FOUR_SOCKET_CODE}" (2 players, 6×7).`);
   }
 
   /** Idempotent: creates the UNO catalog row if missing (Fase 1). */

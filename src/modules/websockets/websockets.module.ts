@@ -8,6 +8,8 @@ import { RoomsGateway } from './rooms/rooms.gateway';
 import { RpsGateway } from './rps/rps.gateway';
 import { ChatGateway } from './chat/chat.gateway';
 import { UnoGateway } from './uno/uno.gateway';
+import { ConnectFourGateway } from './connect-four/connect-four.gateway';
+import { ConnectFourGame, ConnectFourGameSchema } from './connect-four/schemas/connect-four-game.schema';
 import { ChessGame, ChessGameSchema } from './chess/schemas/chess-game.schema';
 import { HalmaGame, HalmaGameSchema } from './halma/schemas/halma-game.schema';
 import { DominoGame, DominoGameSchema } from './domino/schemas/domino-game.schema';
@@ -24,6 +26,7 @@ import { Greeting, GreetingSchema } from '../greeting/schemas/greeting.schema';
       { name: HalmaGame.name, schema: HalmaGameSchema },
       { name: DominoGame.name, schema: DominoGameSchema },
       { name: UnoGame.name, schema: UnoGameSchema },
+      { name: ConnectFourGame.name, schema: ConnectFourGameSchema },
       { name: BattleshipPlacement.name, schema: BattleshipPlacementSchema },
       { name: User.name, schema: UserSchema },
       { name: Room.name, schema: RoomSchema },
@@ -39,6 +42,7 @@ import { Greeting, GreetingSchema } from '../greeting/schemas/greeting.schema';
     RpsGateway,
     ChatGateway,
     UnoGateway,
+    ConnectFourGateway,
   ],
   exports: [
     RoomsGateway,
@@ -49,6 +53,7 @@ import { Greeting, GreetingSchema } from '../greeting/schemas/greeting.schema';
     RpsGateway,
     ChatGateway,
     UnoGateway,
+    ConnectFourGateway,
   ],
 })
 export class WebsocketsModule {}

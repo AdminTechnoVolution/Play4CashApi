@@ -11,6 +11,7 @@ import { HalmaGateway } from '../websockets/halma/halma.gateway';
 import { ChessGateway } from '../websockets/chess/chess.gateway';
 import { DominoGateway } from '../websockets/domino/domino.gateway';
 import { UnoGateway } from '../websockets/uno/uno.gateway';
+import { ConnectFourGateway } from '../websockets/connect-four/connect-four.gateway';
 
 @Injectable()
 export class RoomService {
@@ -27,6 +28,7 @@ export class RoomService {
     private readonly chessGateway: ChessGateway,
     private readonly dominoGateway: DominoGateway,
     private readonly unoGateway: UnoGateway,
+    private readonly connectFourGateway: ConnectFourGateway,
   ) {}
 
   // ── LIVE STATS ─────────────────────────────────────────────────────────────
@@ -39,6 +41,7 @@ export class RoomService {
       this.chessGateway.server?.fetchSockets() || [],
       this.dominoGateway.server?.fetchSockets() || [],
       this.unoGateway.server?.fetchSockets() || [],
+      this.connectFourGateway.server?.fetchSockets() || [],
     ]);
     const uniquePlayerIds = new Set<string>();
     for (const sockets of allSockets) {
@@ -350,6 +353,7 @@ export class RoomService {
       await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', commonPayload, commonPayload);
       await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload, commonPayload);
       await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', commonPayload, commonPayload);
+      await this.emitToOthers(this.connectFourGateway, roomId, userId, 'connect-four', commonPayload, commonPayload);
 
       return updated;
     }
@@ -414,6 +418,7 @@ export class RoomService {
         await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
         await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
         await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', playerPayload, spectatorPayload);
+        await this.emitToOthers(this.connectFourGateway, roomId, userId, 'connect-four', playerPayload, spectatorPayload);
       }
       return updated;
     }
@@ -496,6 +501,7 @@ export class RoomService {
           await this.emitToOthers(this.chessGateway, roomId, userId, 'chess', playerPayload, spectatorPayload);
           await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
           await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', playerPayload, spectatorPayload);
+          await this.emitToOthers(this.connectFourGateway, roomId, userId, 'connect-four', playerPayload, spectatorPayload);
         }
       }
     }
@@ -654,5 +660,6 @@ export class RoomService {
     this.chessGateway.server.to(roomId).emit('chess', payload);
     this.dominoGateway.server.to(roomId).emit('domino', payload);
     this.unoGateway.server.to(roomId).emit('uno', payload);
+    this.connectFourGateway.server.to(roomId).emit('connect-four', payload);
   }
 }
