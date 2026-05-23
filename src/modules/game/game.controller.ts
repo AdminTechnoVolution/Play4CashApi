@@ -4,7 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import { GameService } from './game.service';
 import { AdminGuard } from '../../common/guards/admin.guard';
 import { Param } from '@nestjs/common';
-import { CurrentUser, JwtPayload } from '../../common/decorators/current-user.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { CreateGameDto, UpdateGameDto } from './dtos/game-admin.dto';
 
 @ApiTags('Games')
