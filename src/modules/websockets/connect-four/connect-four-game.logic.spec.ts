@@ -35,40 +35,49 @@ describe('connect-four-game.logic', () => {
   });
 
   it('detects four in a row diagonally via dropDisc', () => {
-    let b = createEmptyBoard();
-    const moves: Array<{ col: number; color: 'R' | 'Y' }> = [
-      { col: 0, color: 'R' },
-      { col: 1, color: 'Y' },
-      { col: 1, color: 'R' },
-      { col: 2, color: 'Y' },
-      { col: 2, color: 'R' },
-      { col: 3, color: 'Y' },
-      { col: 3, color: 'R' },
-      { col: 0, color: 'Y' },
-    ];
-    for (const m of moves) {
-      const step = dropDisc(b, m.col, m.color);
-      expect(step.ok).toBe(true);
-      if (step.ok) b = step.board;
-    }
-    const win = dropDisc(b, 0, 'R');
+    const b = createEmptyBoard();
+    b[5][0] = 'R';
+    b[4][1] = 'R';
+    b[3][2] = 'R';
+    b[5][3] = 'Y';
+    b[4][3] = 'Y';
+    b[3][3] = 'Y';
+    const win = dropDisc(b, 3, 'R');
     expect(win.ok).toBe(true);
     if (win.ok) {
+      expect(win.row).toBe(2);
+      expect(win.col).toBe(3);
       expect(win.win.won).toBe(true);
     }
   });
 
-  it('reports draw when board is full without winner', () => {
-    const b: ReturnType<typeof createEmptyBoard> = [
-      ['Y', 'R', 'Y', 'R', 'Y', 'R', 'Y'],
-      ['R', 'Y', 'R', 'Y', 'R', 'Y', 'R'],
-      ['Y', 'R', 'Y', 'R', 'Y', 'R', 'Y'],
-      ['R', 'Y', 'R', 'Y', 'R', 'Y', 'R'],
-      ['Y', 'R', 'Y', 'R', 'Y', 'R', 'Y'],
-      ['R', 'Y', 'R', 'Y', 'R', 'Y', 'R'],
+  it('reports draw when final drop fills the board without a winner', () => {
+    const moves: Array<{ col: number; color: 'R' | 'Y' }> = [
+      { col: 5, color: 'R' }, { col: 4, color: 'Y' }, { col: 6, color: 'R' }, { col: 4, color: 'Y' },
+      { col: 3, color: 'R' }, { col: 1, color: 'Y' }, { col: 6, color: 'R' }, { col: 2, color: 'Y' },
+      { col: 3, color: 'R' }, { col: 1, color: 'Y' }, { col: 4, color: 'R' }, { col: 3, color: 'Y' },
+      { col: 3, color: 'R' }, { col: 3, color: 'Y' }, { col: 3, color: 'R' }, { col: 6, color: 'Y' },
+      { col: 1, color: 'R' }, { col: 6, color: 'Y' }, { col: 1, color: 'R' }, { col: 5, color: 'Y' },
+      { col: 6, color: 'R' }, { col: 5, color: 'Y' }, { col: 6, color: 'R' }, { col: 5, color: 'Y' },
+      { col: 1, color: 'R' }, { col: 1, color: 'Y' }, { col: 2, color: 'R' }, { col: 2, color: 'Y' },
+      { col: 5, color: 'R' }, { col: 5, color: 'Y' }, { col: 4, color: 'R' }, { col: 0, color: 'Y' },
+      { col: 0, color: 'R' }, { col: 0, color: 'Y' }, { col: 4, color: 'R' }, { col: 0, color: 'Y' },
+      { col: 0, color: 'R' }, { col: 2, color: 'Y' }, { col: 0, color: 'R' }, { col: 4, color: 'Y' },
+      { col: 2, color: 'R' }, { col: 2, color: 'Y' },
     ];
-    expect(isBoardFull(b)).toBe(true);
-    expect(checkWinFromCell(b, 5, 6, 'R').won).toBe(false);
+    let b = createEmptyBoard();
+    let last: ReturnType<typeof dropDisc> = { ok: false, reason: 'invalid_column' };
+    for (const m of moves) {
+      last = dropDisc(b, m.col, m.color);
+      expect(last.ok).toBe(true);
+      if (last.ok) b = last.board;
+    }
+    expect(last.ok).toBe(true);
+    if (last.ok) {
+      expect(last.win.won).toBe(false);
+      expect(last.isDraw).toBe(true);
+      expect(isBoardFull(last.board)).toBe(true);
+    }
   });
 
   it('rejects full column', () => {

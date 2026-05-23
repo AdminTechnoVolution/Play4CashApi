@@ -138,6 +138,7 @@ export class ConnectFourGateway
       player1,
       player2,
       winnerReason: room.winner_reason ?? null,
+      spectatorsCount: room.spectators?.length ?? 0,
     };
   }
 
@@ -184,6 +185,7 @@ export class ConnectFourGateway
       const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (updated.players.length === 0) {
         await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
+        this.server.serverSideEmit?.('roomDeleted', { id: room_id });
         if (gameIdForLobby) {
           this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
         }
@@ -211,15 +213,11 @@ export class ConnectFourGateway
     if (room.status === 'started') {
       const game = await this.gameModel.findOne({ room_id: roomObjId });
       let remainingTurnSecs = 0;
-      if (game && game.current_player) {
-        const currentId =
-          game.current_player === 1 ? game.player1_id : game.player2_id;
-        if (currentId?.toString() === player_id && game.turn_start_time) {
-          const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
-          remainingTurnSecs = Math.ceil(
-            (limit - (Date.now() - game.turn_start_time.getTime())) / 1000,
-          );
-        }
+      if (game?.turn_start_time) {
+        const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
+        remainingTurnSecs = Math.ceil(
+          (limit - (Date.now() - game.turn_start_time.getTime())) / 1000,
+        );
       }
       await this.grace.start('connect-four', player_id, room_id, Math.max(60, remainingTurnSecs));
     }
@@ -247,34 +245,21 @@ export class ConnectFourGateway
     await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
-    const displayPrize = winnerDisplayedPrize(
-      room.bet_amount,
-      room.house_edge,
-      room.players.length,
-    );
     const sockets = await this.server.in(room_id).fetchSockets();
     for (const s of sockets) {
       const sIsSpectator = (s as any).data.isSpectator || false;
-      const isWinner = (s as any).data.player_id === winner_id.toString();
       const sLang = this.getLang(s as unknown as Socket);
       (s as unknown as Socket).emit(EVENT, {
-        success: true,
-        data: {
-          gameEnded: true,
-          outcome: 'forfeit',
-          youWon: isWinner && !sIsSpectator,
-          winner: sIsSpectator ? winnerUsername : winner_id,
-          reason: 'forfeit',
-          prize: isWinner ? displayPrize : 0,
-          isSpectator: sIsSpectator,
-        },
+        success: false,
         messages: sIsSpectator
           ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })]
-          : [
-              isWinner
-                ? this.i18n.translate('ws.games.win', sLang)
-                : this.i18n.translate('ws.games.playerDisconnected', sLang),
-            ],
+          : [this.i18n.translate('ws.games.playerDisconnected', sLang)],
+        data: {
+          outcome: 'opponent_disconnected',
+          gameEnded: true,
+          winner: sIsSpectator ? winnerUsername : winner_id,
+          isSpectator: sIsSpectator,
+        },
       });
     }
     const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -335,7 +320,16 @@ export class ConnectFourGateway
     }
 
     if (room.status === 'started' && game && client.data.isSpectator) {
-      return this.emit(client, true, state, []);
+      const spectatorState = {
+        ...state,
+        spectatorsCount: room.spectators?.length ?? 0,
+      };
+      client.to(room_id).emit(EVENT, {
+        success: true,
+        data: { spectatorsCount: room.spectators?.length ?? 0 },
+        messages: [],
+      });
+      return this.emit(client, true, spectatorState, []);
     }
 
     this.emit(client, true, { ...state, waitingForOpponent: true }, [
@@ -373,8 +367,12 @@ export class ConnectFourGateway
             .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
             .catch((e) => this.logger.error(`[ConnectFour] Refund failed | player=${pid}`, e));
         }
-        await this.gameModel.deleteOne({ room_id: new Types.ObjectId(room_id) }).catch(() => {});
-        await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
+        await this.gameModel
+          .deleteOne({ room_id: new Types.ObjectId(room_id) })
+          .catch((e) => this.logger.error(`[ConnectFour] Game cleanup failed | room=${room_id}`, e));
+        await this.roomModel
+          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+          .catch((e) => this.logger.error(`[ConnectFour] Room status reset failed | room=${room_id}`, e));
         this.server.to(room_id).emit(EVENT, {
           success: false,
           messages: [this.i18n.translate(errKey, lang)],
