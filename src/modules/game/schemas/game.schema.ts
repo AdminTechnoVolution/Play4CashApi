@@ -17,6 +17,9 @@ export class LanguageField {
 export class Game {
   @Prop({ type: LanguageField, _id: false }) name: LanguageField;
   @Prop({ type: LanguageField, _id: false }) description: LanguageField;
+  /** Localized bullet rules shown in the PWA catalog and lobby. */
+  @Prop({ type: [{ type: LanguageField, _id: false }], default: [] })
+  rules: LanguageField[];
   @Prop({ required: true }) active: boolean;
   @Prop({ required: true }) min_players: number;
   @Prop({ required: true }) max_players: number;

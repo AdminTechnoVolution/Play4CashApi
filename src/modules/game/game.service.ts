@@ -9,6 +9,7 @@ import {
   UNO_MATCH_TARGET_DEFAULT,
   UNO_SOCKET_CODE,
 } from '../../common/constants/uno-game.constants';
+import { GAME_CATALOG_RULES } from './game-catalog-rules';
 
 @Injectable()
 export class GameService implements OnModuleInit {
@@ -22,6 +23,7 @@ export class GameService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     await this.ensureUnoCatalogEntry();
     await this.ensureConnectFourCatalogEntry();
+    await this.ensureCatalogRules();
   }
 
   /** Idempotent: creates Connect Four catalog row if missing. */
@@ -56,6 +58,7 @@ export class GameService implements OnModuleInit {
       house_edge: 5,
       socket_code: CONNECT_FOUR_SOCKET_CODE,
       turn_timer_seconds: 30,
+      rules: GAME_CATALOG_RULES[CONNECT_FOUR_SOCKET_CODE] ?? [],
     });
     this.logger.log(`Catalog: inserted game "${CONNECT_FOUR_SOCKET_CODE}" (2 players, 6×7).`);
   }
@@ -95,8 +98,25 @@ export class GameService implements OnModuleInit {
       socket_code: UNO_SOCKET_CODE,
       turn_timer_seconds: 45,
       uno_match_target: UNO_MATCH_TARGET_DEFAULT,
+      rules: GAME_CATALOG_RULES[UNO_SOCKET_CODE] ?? [],
     });
     this.logger.log(`Catalog: inserted game "${UNO_SOCKET_CODE}" (min_players=2, max_players=10).`);
+  }
+
+  /** Keep catalog rules aligned with `game-catalog-rules.ts` (overwrites prior defaults). */
+  private async ensureCatalogRules(): Promise<void> {
+    for (const [socketCode, rules] of Object.entries(GAME_CATALOG_RULES)) {
+      if (!rules.length) continue;
+      const result = await this.gameModel.updateMany(
+        { socket_code: socketCode },
+        { $set: { rules } },
+      );
+      if (result.matchedCount > 0) {
+        this.logger.log(
+          `Catalog: synced ${result.modifiedCount}/${result.matchedCount} rule set(s) for "${socketCode}".`,
+        );
+      }
+    }
   }
 
   async findAll(lang = 'en'): Promise<any[]> {
@@ -143,13 +163,25 @@ export class GameService implements OnModuleInit {
     if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
   }
 
-  /** Pick name/description by language — matches original getGameValuesByLanguage logic */
+  /** Pick name/description/rules by language — matches original getGameValuesByLanguage logic */
   private localizeGames(games: any[], lang: string): any[] {
-    return games.map(game => {
+    const l = lang === 'es' ? 'es' : 'en';
+    return games.map((game) => {
       const g = { ...game };
-      const l = lang === 'es' ? 'es' : 'en';
       if (g.name && typeof g.name === 'object') g.name = g.name[l] ?? g.name.en;
-      if (g.description && typeof g.description === 'object') g.description = g.description[l] ?? g.description.en;
+      if (g.description && typeof g.description === 'object') {
+        g.description = g.description[l] ?? g.description.en;
+      }
+      if (Array.isArray(g.rules)) {
+        g.rules = g.rules
+          .map((rule: any) => {
+            if (rule && typeof rule === 'object') return rule[l] ?? rule.en ?? '';
+            return typeof rule === 'string' ? rule : '';
+          })
+          .filter((text: string) => text.trim().length > 0);
+      } else {
+        g.rules = [];
+      }
       return g;
     });
   }
