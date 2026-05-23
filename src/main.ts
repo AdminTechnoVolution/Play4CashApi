@@ -8,10 +8,22 @@ import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import { createStripUntrustedGatewayUserMiddleware } from './common/middleware/strip-untrusted-gateway-user.middleware';
 import { createAppVersionHeadersMiddleware } from './common/middleware/app-version-headers.middleware';
+import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
+
+  if (config.get<boolean>('socketIoRedisAdapter')) {
+    const redisUri = config.get<string>('redisUri');
+    if (!redisUri) {
+      throw new Error('SOCKET_IO_REDIS_ADAPTER=true requires REDIS_URI');
+    }
+    const redisIoAdapter = new RedisIoAdapter(app);
+    await redisIoAdapter.connectToRedis(redisUri);
+    app.useWebSocketAdapter(redisIoAdapter);
+    console.log('[Socket.IO] Redis adapter enabled');
+  }
 
   app.set('trust proxy', 1);
 

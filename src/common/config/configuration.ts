@@ -2,6 +2,8 @@ export default () => ({
   port: parseInt(process.env.PORT || '3000', 10),
   mongoUri: process.env.MONGO_URI,
   redisUri: process.env.REDIS_URI,
+  /** When true, Socket.IO uses @socket.io/redis-adapter for multi-pod WS broadcast. */
+  socketIoRedisAdapter: process.env.SOCKET_IO_REDIS_ADAPTER === 'true',
   jwt: {
     secret: process.env.JWT_SECRET_KEY,
     accessTtlSecs: parseInt(process.env.JWT_ACCESS_TOKEN_TTL_SECS || '3600', 10),

@@ -26,6 +26,28 @@ export class ConnectFourGame {
 
   @Prop({ type: Date, default: Date.now })
   turn_start_time: Date;
+
+  @Prop({
+    type: {
+      userId: { type: String },
+      row: { type: Number },
+      col: { type: Number },
+      color: { type: String, enum: ['R', 'Y'] },
+      at: { type: Date },
+    },
+    required: false,
+  })
+  last_move?: {
+    userId: string;
+    row: number;
+    col: number;
+    color: 'R' | 'Y';
+    at: Date;
+  };
+
+  /** Monotonic counter incremented on each successful drop_disc — used to reject stale WS payloads. */
+  @Prop({ type: Number, default: 0 })
+  move_revision: number;
 }
 
 export const ConnectFourGameSchema = SchemaFactory.createForClass(ConnectFourGame);
