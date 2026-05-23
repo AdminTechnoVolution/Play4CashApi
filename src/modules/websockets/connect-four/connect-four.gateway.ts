@@ -124,6 +124,8 @@ export class ConnectFourGateway
       ],
       currentTurnUserId,
       currentPlayer,
+      currentTurnUsername: currentPlayer === 1 ? player1 : player2,
+      turnOf: currentPlayer === 1 ? player1 : player2,
       winnerUserId,
       winningCells: game?.winning_cells ?? [],
       isDraw: room.status === 'finished' && !room.winner && room.winner_reason === 'draw',
