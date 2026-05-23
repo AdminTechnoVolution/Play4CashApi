@@ -3,3 +3,5 @@ export const CONNECT_FOUR_SOCKET_CODE = 'connect-four';
 
 export const CONNECT_FOUR_ROWS = 6;
 export const CONNECT_FOUR_COLS = 7;
+/** Consecutive discs required to win (standard Connect Four). */
+export const CONNECT_FOUR_WIN_LENGTH = 4;

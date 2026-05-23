@@ -31,10 +31,23 @@ describe('connect-four-game.logic', () => {
     for (const c of [0, 1, 2, 3]) {
       b[5][c] = 'R';
     }
-    expect(checkWinFromCell(b, 5, 3, 'R').won).toBe(true);
+    const win = checkWinFromCell(b, 5, 3, 'R');
+    expect(win.won).toBe(true);
+    expect(win.winningCells).toHaveLength(4);
+    expect(win.winningCells.some((c) => c.row === 5 && c.col === 3)).toBe(true);
   });
 
-  it('detects four in a row diagonally via dropDisc', () => {
+  it('detects four in a row vertically', () => {
+    const b = createEmptyBoard();
+    for (let row = 2; row <= 5; row++) {
+      b[row][4] = 'Y';
+    }
+    const win = checkWinFromCell(b, 2, 4, 'Y');
+    expect(win.won).toBe(true);
+    expect(win.winningCells.every((c) => c.col === 4)).toBe(true);
+  });
+
+  it('detects four in a row on descending diagonal via dropDisc', () => {
     const b = createEmptyBoard();
     b[5][0] = 'R';
     b[4][1] = 'R';
@@ -48,7 +61,42 @@ describe('connect-four-game.logic', () => {
       expect(win.row).toBe(2);
       expect(win.col).toBe(3);
       expect(win.win.won).toBe(true);
+      expect(win.win.winningCells.some((c) => c.row === 2 && c.col === 3)).toBe(true);
     }
+  });
+
+  it('detects four in a row on ascending diagonal', () => {
+    const b = createEmptyBoard();
+    b[5][3] = 'R';
+    b[4][2] = 'R';
+    b[3][1] = 'R';
+    b[2][0] = 'R';
+    expect(checkWinFromCell(b, 5, 3, 'R').won).toBe(true);
+  });
+
+  it('detects win when last disc completes line from the middle', () => {
+    const b = createEmptyBoard();
+    b[5][1] = 'R';
+    b[5][2] = 'R';
+    b[5][4] = 'R';
+    b[5][5] = 'R';
+    const win = dropDisc(b, 3, 'R');
+    expect(win.ok).toBe(true);
+    if (win.ok) {
+      expect(win.win.won).toBe(true);
+      expect(win.row).toBe(5);
+      expect(win.col).toBe(3);
+    }
+  });
+
+  it('includes the last placed disc in winning cells when five connect', () => {
+    const b = createEmptyBoard();
+    for (const c of [0, 1, 2, 3, 4]) {
+      b[5][c] = 'R';
+    }
+    const win = checkWinFromCell(b, 5, 4, 'R');
+    expect(win.won).toBe(true);
+    expect(win.winningCells.some((c) => c.row === 5 && c.col === 4)).toBe(true);
   });
 
   it('reports draw when final drop fills the board without a winner', () => {
@@ -80,6 +128,11 @@ describe('connect-four-game.logic', () => {
     }
   });
 
+  it('rejects out-of-bounds column', () => {
+    expect(dropDisc(createEmptyBoard(), -1, 'R').ok).toBe(false);
+    expect(dropDisc(createEmptyBoard(), 7, 'R').ok).toBe(false);
+  });
+
   it('rejects full column', () => {
     let b = createEmptyBoard();
     for (let i = 0; i < CONNECT_FOUR_ROWS; i++) {
@@ -88,5 +141,14 @@ describe('connect-four-game.logic', () => {
       b = r.board;
     }
     expect(dropDisc(b, 0, 'R').ok).toBe(false);
+  });
+
+  it('passes turn implicitly when no win and board not full', () => {
+    const first = dropDisc(createEmptyBoard(), 3, 'R');
+    expect(first.ok).toBe(true);
+    if (first.ok) {
+      expect(first.win.won).toBe(false);
+      expect(first.isDraw).toBe(false);
+    }
   });
 });

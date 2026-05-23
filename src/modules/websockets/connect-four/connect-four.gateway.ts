@@ -492,6 +492,61 @@ export class ConnectFourGateway
     this.emit(client, true, { gameState: state }, []);
   }
 
+  private async finalizeConnectFourMatch(
+    room_id: string,
+    game: ConnectFourGameDocument,
+    outcome: { kind: 'draw' } | { kind: 'win'; winnerNum: 1 | 2 },
+  ): Promise<any | null> {
+    const winnerId =
+      outcome.kind === 'win'
+        ? outcome.winnerNum === 1
+          ? game.player1_id
+          : game.player2_id
+        : null;
+
+    const finishedRoom = await this.roomModel.findOneAndUpdate(
+      { _id: room_id, status: 'started' },
+      {
+        $set: {
+          status: 'finished',
+          finished_at: new Date(),
+          winner_reason: outcome.kind === 'draw' ? 'draw' : 'win',
+          winner: winnerId ?? undefined,
+        },
+      },
+      { returnDocument: 'after' },
+    );
+    if (!finishedRoom) return null;
+
+    if (outcome.kind === 'draw') {
+      // Draw settlement (Halma-style): refund each player's stake. Bets were deducted at
+      // match start; no house edge is applied on ties.
+      await this.userModel.updateOne(
+        { _id: game.player1_id },
+        { $inc: { balance: finishedRoom.bet_amount } },
+      );
+      await this.userModel.updateOne(
+        { _id: game.player2_id },
+        { $inc: { balance: finishedRoom.bet_amount } },
+      );
+    } else {
+      const grossPayout = winnerGrossPayout(
+        finishedRoom.bet_amount,
+        finishedRoom.house_edge,
+        finishedRoom.players.length,
+      );
+      await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
+    }
+
+    const gameId =
+      (finishedRoom.game_id as any)?._id?.toString() || finishedRoom.game_id?.toString();
+    if (gameId) {
+      this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
+    }
+
+    return finishedRoom;
+  }
+
   @SubscribeMessage('drop_disc')
   async handleDropDisc(
     @ConnectedSocket() client: Socket,
@@ -509,6 +564,27 @@ export class ConnectFourGateway
     if (!room_id || !Number.isInteger(col)) {
       return this.emit(client, false, {}, [this.i18n.translate('ws.games.invalidMove', lang)]);
     }
+    if (playerNum !== 1 && playerNum !== 2) {
+      return this.emit(client, false, {}, [this.i18n.translate('ws.games.notInRoom', lang)]);
+    }
+
+    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
+    if (!room) {
+      return this.emit(client, false, {}, [this.i18n.translate('ws.games.gameNotFound', lang)]);
+    }
+    if (room.status === 'finished') {
+      return this.emit(client, false, {}, [this.i18n.translate('ws.games.roomInactive', lang)]);
+    }
+    if (room.status !== 'started') {
+      return this.emit(client, false, {}, [this.i18n.translate('ws.games.gameNotFound', lang)]);
+    }
+
+    const isMember = room.players.some(
+      (p: any) => p.playerId.toString() === client.data.player_id,
+    );
+    if (!isMember) {
+      return this.emit(client, false, {}, [this.i18n.translate('ws.games.notInRoom', lang)]);
+    }
 
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
     if (!game) {
@@ -521,9 +597,7 @@ export class ConnectFourGateway
     const color = colorForPlayerNum(playerNum);
     const result = dropDisc(game.board as ConnectFourBoard, col, color);
     if (!result.ok) {
-      return this.emit(client, false, { board: game.board, col }, [
-        this.i18n.translate('ws.games.invalidMove', lang),
-      ]);
+      return this.emit(client, false, { col }, [this.i18n.translate('ws.games.invalidMove', lang)]);
     }
 
     game.board = result.board;
@@ -539,47 +613,40 @@ export class ConnectFourGateway
     } else if (result.isDraw) {
       finished = true;
       isDraw = true;
+      game.winning_cells = [];
     } else {
       game.current_player = playerNum === 1 ? 2 : 1;
     }
     game.markModified('board');
     await game.save();
 
-    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) {
-      return this.emit(client, false, {}, [this.i18n.translate('ws.games.gameNotFound', lang)]);
-    }
-
     const limit = room.game_id?.turn_timer_seconds || 30;
     const sockets = await this.server.in(room_id).fetchSockets();
-    const opponent = sockets.find((s) => (s as any).data.playerNum === game.current_player);
     clearTimer(client.id);
-    if (!finished && opponent) {
-      this.startTimer(opponent as unknown as Socket, room_id, limit);
-    }
-
-    room.turn_start_time = new Date();
-    await room.save();
 
     if (finished) {
-      room.status = 'finished';
-      room.finished_at = new Date();
-      if (isDraw) {
-        room.winner_reason = 'draw';
-        room.winner = undefined;
-      } else if (winnerNum) {
-        room.winner = winnerNum === 1 ? game.player1_id : game.player2_id;
-        room.winner_reason = 'win';
-        const grossPayout = winnerGrossPayout(
-          room.bet_amount,
-          room.house_edge,
-          room.players.length,
-        );
-        await this.userModel.updateOne({ _id: room.winner }, { $inc: { balance: grossPayout } });
+      for (const s of sockets) {
+        clearTimer(s.id);
       }
+      const settledRoom = await this.finalizeConnectFourMatch(
+        room_id,
+        game,
+        isDraw ? { kind: 'draw' } : { kind: 'win', winnerNum: winnerNum! },
+      );
+      if (!settledRoom) {
+        return this.emit(client, false, {}, [this.i18n.translate('ws.games.roomInactive', lang)]);
+      }
+      room.status = settledRoom.status;
+      room.winner = settledRoom.winner;
+      room.winner_reason = settledRoom.winner_reason;
+      room.finished_at = settledRoom.finished_at;
+    } else {
+      const opponent = sockets.find((s) => (s as any).data.playerNum === game.current_player);
+      if (opponent) {
+        this.startTimer(opponent as unknown as Socket, room_id, limit);
+      }
+      room.turn_start_time = new Date();
       await room.save();
-      const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
     }
 
     const displayPrize = winnerDisplayedPrize(
@@ -623,10 +690,18 @@ export class ConnectFourGateway
           ...sState,
           lastMove,
           gameEnded: finished,
+          gameStarted: !finished,
           youWon: isWinner && !sIsSpectator,
           outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
           prize: isWinner ? displayPrize : 0,
           reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
+          isDraw: finished && isDraw,
+          winnerUserId:
+            finished && !isDraw && winnerNum
+              ? winnerNum === 1
+                ? game.player1_id.toString()
+                : game.player2_id.toString()
+              : null,
         },
         messages: [msg],
       });

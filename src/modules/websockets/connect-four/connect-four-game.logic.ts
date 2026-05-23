@@ -1,6 +1,7 @@
 import {
   CONNECT_FOUR_COLS,
   CONNECT_FOUR_ROWS,
+  CONNECT_FOUR_WIN_LENGTH,
 } from '../../../common/constants/connect-four-game.constants';
 
 export type ConnectFourColor = 'R' | 'Y';
@@ -50,6 +51,7 @@ export function isBoardFull(board: ConnectFourBoard): boolean {
   return board.every((row) => row.every((cell) => cell !== null));
 }
 
+/** Horizontal, vertical, descending diagonal (↘), ascending diagonal (↗). */
 const DIRECTIONS: Array<[number, number]> = [
   [0, 1],
   [1, 0],
@@ -82,7 +84,10 @@ function cellsInDirection(
   return cells;
 }
 
-/** Four-in-a-row from the last disc placed at (row, col). */
+/**
+ * Four-in-a-row from the last disc placed at (row, col).
+ * Counts consecutive same-color discs in both directions per axis; never reads client input.
+ */
 export function checkWinFromCell(
   board: ConnectFourBoard,
   row: number,
@@ -92,14 +97,30 @@ export function checkWinFromCell(
   for (const [dr, dc] of DIRECTIONS) {
     const forward = cellsInDirection(board, row, col, dr, dc, color);
     const backward = cellsInDirection(board, row, col, -dr, -dc, color);
-    const line = [...backward.reverse(), ...forward.slice(1)];
-    if (line.length >= 4) {
-      return { won: true, winningCells: line.slice(0, 4) };
+    const total = forward.length + backward.length - 1;
+    if (total >= CONNECT_FOUR_WIN_LENGTH) {
+      const line = [...backward.slice(0, -1).reverse(), ...forward];
+      const placedIdx = line.findIndex((c) => c.row === row && c.col === col);
+      const start =
+        placedIdx >= 0
+          ? Math.min(
+              Math.max(0, placedIdx - (CONNECT_FOUR_WIN_LENGTH - 1)),
+              line.length - CONNECT_FOUR_WIN_LENGTH,
+            )
+          : 0;
+      return {
+        won: true,
+        winningCells: line.slice(start, start + CONNECT_FOUR_WIN_LENGTH),
+      };
     }
   }
   return { won: false, winningCells: [] };
 }
 
+/**
+ * Server-authoritative drop: column only in, row/color/win/draw derived here.
+ * Client must never supply board, row, color, or win metadata.
+ */
 export function dropDisc(
   board: ConnectFourBoard,
   col: number,
