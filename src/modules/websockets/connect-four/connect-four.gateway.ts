@@ -335,7 +335,12 @@ export class ConnectFourGateway
       return this.emit(client, true, spectatorState, []);
     }
 
-    this.emit(client, true, { ...state, waitingForOpponent: true }, [
+    this.emit(client, true, {
+      ...state,
+      waitingForOpponent: true,
+      playersJoined: (await this.countPlayerSockets(room_id)),
+      maxPlayers: 2,
+    }, [
       this.i18n.translate('ws.games.waitingOpponent', lang),
     ]);
 
@@ -349,121 +354,139 @@ export class ConnectFourGateway
       });
     }
 
-    if (socketsInRoom.length >= 2 && room.status === 'waiting') {
-      if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId) {
-        return;
-      }
-      const started = await this.roomModel.findOneAndUpdate(
-        { _id: room_id, status: 'waiting' },
-        { $set: { status: 'started', turn_start_time: new Date() } },
-        { returnDocument: 'after' },
-      );
-      if (!started) return;
+    await this.tryStartConnectFourGame(room_id, lang);
+  }
 
-      const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
-      const paid: Types.ObjectId[] = [];
+  private async countPlayerSockets(room_id: string): Promise<number> {
+    const sockets = await this.server.in(room_id).fetchSockets();
+    return sockets.filter((s) => !(s as any).data?.isSpectator).length;
+  }
 
-      const compensate = async (errKey: string, reason: string) => {
-        this.logger.error(`event=connect_four_start_failed room=${room_id} reason=${reason}`);
-        for (const pid of paid) {
-          await this.userModel
-            .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
-            .catch((e) => this.logger.error(`[ConnectFour] Refund failed | player=${pid}`, e));
-        }
-        await this.gameModel
-          .deleteOne({ room_id: new Types.ObjectId(room_id) })
-          .catch((e) => this.logger.error(`[ConnectFour] Game cleanup failed | room=${room_id}`, e));
-        await this.roomModel
-          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
-          .catch((e) => this.logger.error(`[ConnectFour] Room status reset failed | room=${room_id}`, e));
-        this.server.to(room_id).emit(EVENT, {
-          success: false,
-          messages: [this.i18n.translate(errKey, lang)],
-        });
-      };
-
-      const deduct1 = await this.userModel.findOneAndUpdate(
-        { _id: p1id, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
-      );
-      if (!deduct1) {
-        await compensate('ws.games.insufficientBalance', 'p1_insufficient');
-        return;
-      }
-      paid.push(p1id);
-
-      const deduct2 = await this.userModel.findOneAndUpdate(
-        { _id: p2id, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
-      );
-      if (!deduct2) {
-        await compensate('ws.games.insufficientBalance', 'p2_insufficient');
-        return;
-      }
-      paid.push(p2id);
-
-      const board = createEmptyBoard();
-      try {
-        await this.gameModel.create({
-          room_id: new Types.ObjectId(room_id),
-          player1_id: p1id,
-          player2_id: p2id,
-          board,
-          current_player: 1,
-          winning_cells: [],
-          turn_start_time: new Date(),
-        });
-      } catch (e) {
-        this.logger.error(`[ConnectFour] Game create failed | room=${room_id}`, e);
-        await compensate('ws.games.matchmakingError', 'game_create_failed');
-        return;
-      }
-
-      const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
-      const freshGame = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-      const populatedRoom = await this.roomModel.findById(room_id).populate('game_id');
-
-      for (const s of socketsInRoom) {
-        const sPNum = (s as any).data.playerNum || 0;
-        const sIsSpectator = (s as any).data.isSpectator || false;
-        const isFirst = sPNum === 1;
-        const sLang = this.getLang(s as unknown as Socket);
-        const sState = await this.buildPublicState(
-          populatedRoom,
-          freshGame,
-          sIsSpectator ? null : sPNum,
-          sIsSpectator,
-        );
-        (s as unknown as Socket).emit(EVENT, {
-          success: true,
-          data: {
-            ...sState,
-            waitingForOpponent: false,
-            gameStarted: true,
-          },
-          messages: sIsSpectator
-            ? [this.i18n.translate('ws.games.gameStarted', sLang)]
-            : [
-                isFirst
-                  ? this.i18n.translate('ws.games.yourTurn', sLang)
-                  : this.i18n.translate('ws.games.waitingOpponent', sLang),
-              ],
-        });
-        if (isFirst && !sIsSpectator) {
-          this.startTimer(s as unknown as Socket, room_id, timerSeconds);
-        }
-      }
-
-      const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      const populated = await this.roomModel
-        .findById(room_id)
-        .populate('game_id', '-created_at')
-        .populate('players.playerId', 'username')
-        .lean();
-      if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
+  /** Idempotent start when both player sockets are connected and the room is still waiting. */
+  private async tryStartConnectFourGame(room_id: string, lang: string): Promise<void> {
+    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
+    if (!room || room.status !== 'waiting') return;
+    if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId) {
+      return;
     }
+
+    const socketsInRoom = await this.server.in(room_id).fetchSockets();
+    const playerSockets = socketsInRoom.filter((s) => !(s as any).data?.isSpectator);
+    // #region agent log
+    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:tryStart',message:'lobby start check',data:{room_id,playerSockets:playerSockets.length,dbPlayers:room.players.length},timestamp:Date.now(),hypothesisId:'G',runId:'post-fix'})}).catch(()=>{});
+    // #endregion
+    if (playerSockets.length < 2) return;
+
+    const started = await this.roomModel.findOneAndUpdate(
+      { _id: room_id, status: 'waiting' },
+      { $set: { status: 'started', turn_start_time: new Date() } },
+      { returnDocument: 'after' },
+    );
+    if (!started) return;
+
+    const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
+    const paid: Types.ObjectId[] = [];
+
+    const compensate = async (errKey: string, reason: string) => {
+      this.logger.error(`event=connect_four_start_failed room=${room_id} reason=${reason}`);
+      for (const pid of paid) {
+        await this.userModel
+          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+          .catch((e) => this.logger.error(`[ConnectFour] Refund failed | player=${pid}`, e));
+      }
+      await this.gameModel
+        .deleteOne({ room_id: new Types.ObjectId(room_id) })
+        .catch((e) => this.logger.error(`[ConnectFour] Game cleanup failed | room=${room_id}`, e));
+      await this.roomModel
+        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+        .catch((e) => this.logger.error(`[ConnectFour] Room status reset failed | room=${room_id}`, e));
+      this.server.to(room_id).emit(EVENT, {
+        success: false,
+        messages: [this.i18n.translate(errKey, lang)],
+      });
+    };
+
+    const deduct1 = await this.userModel.findOneAndUpdate(
+      { _id: p1id, balance: { $gte: room.bet_amount } },
+      { $inc: { balance: -room.bet_amount } },
+      { returnDocument: 'after' },
+    );
+    if (!deduct1) {
+      await compensate('ws.games.insufficientBalance', 'p1_insufficient');
+      return;
+    }
+    paid.push(p1id);
+
+    const deduct2 = await this.userModel.findOneAndUpdate(
+      { _id: p2id, balance: { $gte: room.bet_amount } },
+      { $inc: { balance: -room.bet_amount } },
+      { returnDocument: 'after' },
+    );
+    if (!deduct2) {
+      await compensate('ws.games.insufficientBalance', 'p2_insufficient');
+      return;
+    }
+    paid.push(p2id);
+
+    const board = createEmptyBoard();
+    try {
+      await this.gameModel.create({
+        room_id: new Types.ObjectId(room_id),
+        player1_id: p1id,
+        player2_id: p2id,
+        board,
+        current_player: 1,
+        winning_cells: [],
+        turn_start_time: new Date(),
+      });
+    } catch (e) {
+      this.logger.error(`[ConnectFour] Game create failed | room=${room_id}`, e);
+      await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+
+    const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
+    const freshGame = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
+    const populatedRoom = await this.roomModel.findById(room_id).populate('game_id');
+
+    for (const s of playerSockets) {
+      const sPNum = (s as any).data.playerNum || 0;
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const isFirst = sPNum === 1;
+      const sLang = this.getLang(s as unknown as Socket);
+      const sState = await this.buildPublicState(
+        populatedRoom,
+        freshGame,
+        sIsSpectator ? null : sPNum,
+        sIsSpectator,
+      );
+      (s as unknown as Socket).emit(EVENT, {
+        success: true,
+        data: {
+          ...sState,
+          waitingForOpponent: false,
+          gameStarted: true,
+        },
+        messages: sIsSpectator
+          ? [this.i18n.translate('ws.games.gameStarted', sLang)]
+          : [
+              isFirst
+                ? this.i18n.translate('ws.games.yourTurn', sLang)
+                : this.i18n.translate('ws.games.waitingOpponent', sLang),
+            ],
+      });
+      if (isFirst && !sIsSpectator) {
+        this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+      }
+    }
+
+    const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+    const populated = await this.roomModel
+      .findById(room_id)
+      .populate('game_id', '-created_at')
+      .populate('players.playerId', 'username')
+      .lean();
+    if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
   }
 
   @SubscribeMessage('get_state')
