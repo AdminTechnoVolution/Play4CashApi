@@ -372,9 +372,6 @@ export class ConnectFourGateway
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     const playerSockets = socketsInRoom.filter((s) => !(s as any).data?.isSpectator);
-    // #region agent log
-    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:tryStart',message:'lobby start check',data:{room_id,playerSockets:playerSockets.length,dbPlayers:room.players.length},timestamp:Date.now(),hypothesisId:'G',runId:'post-fix'})}).catch(()=>{});
-    // #endregion
     if (playerSockets.length < 2) return;
 
     const started = await this.roomModel.findOneAndUpdate(
@@ -634,10 +631,6 @@ export class ConnectFourGateway
       return this.emit(client, false, { col }, [this.i18n.translate('ws.games.invalidMove', lang)]);
     }
 
-    // #region agent log
-    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:dropResult',message:'dropDisc computed',data:{col,row:result.row,winWon:result.win.won,isDraw:result.isDraw,playerNum},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
-
     game.board = result.board;
     game.turn_start_time = new Date();
     let finished = false;
@@ -707,10 +700,6 @@ export class ConnectFourGateway
       at: new Date().toISOString(),
     };
 
-    // #region agent log
-    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:preEmit',message:'about to broadcast drop result',data:{room_id,finished,isDraw,winnerNum,winWon:result.win.won,row:result.row,col,socketCount:sockets.length},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
-    // #endregion
-
     for (const s of sockets) {
       try {
         const sLang = this.getLang(s as unknown as Socket);
@@ -760,11 +749,6 @@ export class ConnectFourGateway
           },
           messages: [msg],
         });
-        // #region agent log
-        if (s.id === client.id) {
-          fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:emitted',message:'emitted to dropper',data:{finished,gameEnded:finished,isWinner},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
-        }
-        // #endregion
       } catch (emitErr) {
         this.logger.error(
           `event=connect_four_emit_failed room=${room_id} sid=${s.id} finished=${finished}`,
