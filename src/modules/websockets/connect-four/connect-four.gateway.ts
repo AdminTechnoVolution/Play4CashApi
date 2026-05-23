@@ -335,14 +335,33 @@ export class ConnectFourGateway
       return this.emit(client, true, spectatorState, []);
     }
 
-    this.emit(client, true, {
-      ...state,
-      waitingForOpponent: true,
-      playersJoined: (await this.countPlayerSockets(room_id)),
-      maxPlayers: 2,
-    }, [
-      this.i18n.translate('ws.games.waitingOpponent', lang),
-    ]);
+    if (
+      !client.data.isSpectator &&
+      room.status === 'waiting' &&
+      room.players.length >= 2 &&
+      room.players[0]?.playerId &&
+      room.players[1]?.playerId
+    ) {
+      const playersJoined = await this.countPlayerSockets(room_id);
+      if (playersJoined >= 2) {
+        await this.tryStartConnectFourGame(room_id, lang);
+        const roomAfter = await this.roomModel
+          .findById(room_id)
+          .populate('game_id', 'turn_timer_seconds');
+        const gameAfter = await this.gameModel.findOne({
+          room_id: new Types.ObjectId(room_id),
+        });
+        if (roomAfter?.status === 'started' && gameAfter) {
+          return this.emitPlayStateToJoiner(
+            client,
+            roomAfter,
+            gameAfter,
+            playerNum as 1 | 2,
+            lang,
+          );
+        }
+      }
+    }
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     if (socketsInRoom.length > 1) {
@@ -354,7 +373,68 @@ export class ConnectFourGateway
       });
     }
 
-    await this.tryStartConnectFourGame(room_id, lang);
+    const lobbyState = await this.buildPublicState(
+      room,
+      game,
+      client.data.isSpectator ? null : playerNum,
+      client.data.isSpectator,
+    );
+    this.emit(
+      client,
+      true,
+      {
+        ...lobbyState,
+        waitingForOpponent: true,
+        playersJoined: await this.countPlayerSockets(room_id),
+        maxPlayers: 2,
+      },
+      [this.i18n.translate('ws.games.waitingOpponent', lang)],
+    );
+  }
+
+  private async emitPlayStateToJoiner(
+    client: Socket,
+    room: any,
+    game: ConnectFourGameDocument,
+    playerNum: 1 | 2,
+    lang: string,
+  ): Promise<void> {
+    const state = await this.buildPublicState(
+      room,
+      game,
+      client.data.isSpectator ? null : playerNum,
+      !!client.data.isSpectator,
+    );
+    const isMyTurn = !client.data.isSpectator && game.current_player === playerNum;
+    if (isMyTurn) {
+      this.startTimer(client, room._id.toString(), state.turnTimerSeconds as number);
+    }
+    const messages = client.data.isSpectator
+      ? [this.i18n.translate('ws.games.gameStarted', lang)]
+      : isMyTurn
+        ? [this.i18n.translate('ws.games.yourTurn', lang)]
+        : [this.i18n.translate('ws.games.waitingOpponent', lang)];
+    return this.emit(
+      client,
+      true,
+      {
+        ...state,
+        waitingForOpponent: false,
+        gameStarted: true,
+      },
+      messages,
+    );
+  }
+
+  private resolvePlayerNum(socket: any, room: any): number {
+    let pNum = Number(socket?.data?.playerNum) || 0;
+    if (pNum === 1 || pNum === 2) return pNum;
+    const pid = socket?.data?.player_id;
+    if (!pid) return 0;
+    const idx = room.players.findIndex((p: any) => p.playerId.toString() === pid);
+    if (idx === 0) return 1;
+    if (idx === 1) return 2;
+    return 0;
   }
 
   private async countPlayerSockets(room_id: string): Promise<number> {
@@ -372,9 +452,6 @@ export class ConnectFourGateway
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     const playerSockets = socketsInRoom.filter((s) => !(s as any).data?.isSpectator);
-    // #region agent log
-    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:tryStart',message:'lobby start check',data:{room_id,playerSockets:playerSockets.length,dbPlayers:room.players.length},timestamp:Date.now(),hypothesisId:'G',runId:'post-fix'})}).catch(()=>{});
-    // #endregion
     if (playerSockets.length < 2) return;
 
     const started = await this.roomModel.findOneAndUpdate(
@@ -449,36 +526,59 @@ export class ConnectFourGateway
     const freshGame = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
     const populatedRoom = await this.roomModel.findById(room_id).populate('game_id');
 
-    for (const s of playerSockets) {
-      const sPNum = (s as any).data.playerNum || 0;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const isFirst = sPNum === 1;
-      const sLang = this.getLang(s as unknown as Socket);
-      const sState = await this.buildPublicState(
-        populatedRoom,
-        freshGame,
-        sIsSpectator ? null : sPNum,
-        sIsSpectator,
-      );
-      (s as unknown as Socket).emit(EVENT, {
-        success: true,
-        data: {
-          ...sState,
-          waitingForOpponent: false,
-          gameStarted: true,
-        },
-        messages: sIsSpectator
-          ? [this.i18n.translate('ws.games.gameStarted', sLang)]
-          : [
-              isFirst
-                ? this.i18n.translate('ws.games.yourTurn', sLang)
-                : this.i18n.translate('ws.games.waitingOpponent', sLang),
-            ],
-      });
-      if (isFirst && !sIsSpectator) {
-        this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+    const freshPlayerSockets = (await this.server.in(room_id).fetchSockets()).filter(
+      (s) => !(s as any).data?.isSpectator,
+    );
+
+    for (const s of freshPlayerSockets) {
+      try {
+        const sPNum = this.resolvePlayerNum(s, room);
+        if (sPNum) (s as any).data.playerNum = sPNum;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const isFirst = sPNum === 1;
+        const sLang = this.getLang(s as unknown as Socket);
+        const sState = await this.buildPublicState(
+          populatedRoom,
+          freshGame,
+          sIsSpectator ? null : sPNum,
+          sIsSpectator,
+        );
+        (s as unknown as Socket).emit(EVENT, {
+          success: true,
+          data: {
+            ...sState,
+            waitingForOpponent: false,
+            gameStarted: true,
+          },
+          messages: sIsSpectator
+            ? [this.i18n.translate('ws.games.gameStarted', sLang)]
+            : [
+                isFirst
+                  ? this.i18n.translate('ws.games.yourTurn', sLang)
+                  : this.i18n.translate('ws.games.waitingOpponent', sLang),
+              ],
+        });
+        if (isFirst && !sIsSpectator) {
+          this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+        }
+      } catch (emitErr) {
+        this.logger.error(
+          `event=connect_four_start_emit_failed room=${room_id} sid=${s.id}`,
+          emitErr,
+        );
       }
     }
+
+    this.server.to(room_id).emit(EVENT, {
+      success: true,
+      data: {
+        roomId: room_id,
+        status: 'started',
+        gameStarted: true,
+        waitingForOpponent: false,
+      },
+      messages: [],
+    });
 
     const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
     const populated = await this.roomModel
@@ -634,10 +734,6 @@ export class ConnectFourGateway
       return this.emit(client, false, { col }, [this.i18n.translate('ws.games.invalidMove', lang)]);
     }
 
-    // #region agent log
-    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:dropResult',message:'dropDisc computed',data:{col,row:result.row,winWon:result.win.won,isDraw:result.isDraw,playerNum},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
-
     game.board = result.board;
     game.turn_start_time = new Date();
     let finished = false;
@@ -707,10 +803,6 @@ export class ConnectFourGateway
       at: new Date().toISOString(),
     };
 
-    // #region agent log
-    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:preEmit',message:'about to broadcast drop result',data:{room_id,finished,isDraw,winnerNum,winWon:result.win.won,row:result.row,col,socketCount:sockets.length},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
-    // #endregion
-
     for (const s of sockets) {
       try {
         const sLang = this.getLang(s as unknown as Socket);
@@ -760,11 +852,6 @@ export class ConnectFourGateway
           },
           messages: [msg],
         });
-        // #region agent log
-        if (s.id === client.id) {
-          fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:emitted',message:'emitted to dropper',data:{finished,gameEnded:finished,isWinner},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
-        }
-        // #endregion
       } catch (emitErr) {
         this.logger.error(
           `event=connect_four_emit_failed room=${room_id} sid=${s.id} finished=${finished}`,
