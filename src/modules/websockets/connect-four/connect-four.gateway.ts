@@ -335,14 +335,33 @@ export class ConnectFourGateway
       return this.emit(client, true, spectatorState, []);
     }
 
-    this.emit(client, true, {
-      ...state,
-      waitingForOpponent: true,
-      playersJoined: (await this.countPlayerSockets(room_id)),
-      maxPlayers: 2,
-    }, [
-      this.i18n.translate('ws.games.waitingOpponent', lang),
-    ]);
+    if (
+      !client.data.isSpectator &&
+      room.status === 'waiting' &&
+      room.players.length >= 2 &&
+      room.players[0]?.playerId &&
+      room.players[1]?.playerId
+    ) {
+      const playersJoined = await this.countPlayerSockets(room_id);
+      if (playersJoined >= 2) {
+        await this.tryStartConnectFourGame(room_id, lang);
+        const roomAfter = await this.roomModel
+          .findById(room_id)
+          .populate('game_id', 'turn_timer_seconds');
+        const gameAfter = await this.gameModel.findOne({
+          room_id: new Types.ObjectId(room_id),
+        });
+        if (roomAfter?.status === 'started' && gameAfter) {
+          return this.emitPlayStateToJoiner(
+            client,
+            roomAfter,
+            gameAfter,
+            playerNum as 1 | 2,
+            lang,
+          );
+        }
+      }
+    }
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     if (socketsInRoom.length > 1) {
@@ -354,7 +373,68 @@ export class ConnectFourGateway
       });
     }
 
-    await this.tryStartConnectFourGame(room_id, lang);
+    const lobbyState = await this.buildPublicState(
+      room,
+      game,
+      client.data.isSpectator ? null : playerNum,
+      client.data.isSpectator,
+    );
+    this.emit(
+      client,
+      true,
+      {
+        ...lobbyState,
+        waitingForOpponent: true,
+        playersJoined: await this.countPlayerSockets(room_id),
+        maxPlayers: 2,
+      },
+      [this.i18n.translate('ws.games.waitingOpponent', lang)],
+    );
+  }
+
+  private async emitPlayStateToJoiner(
+    client: Socket,
+    room: any,
+    game: ConnectFourGameDocument,
+    playerNum: 1 | 2,
+    lang: string,
+  ): Promise<void> {
+    const state = await this.buildPublicState(
+      room,
+      game,
+      client.data.isSpectator ? null : playerNum,
+      !!client.data.isSpectator,
+    );
+    const isMyTurn = !client.data.isSpectator && game.current_player === playerNum;
+    if (isMyTurn) {
+      this.startTimer(client, room._id.toString(), state.turnTimerSeconds as number);
+    }
+    const messages = client.data.isSpectator
+      ? [this.i18n.translate('ws.games.gameStarted', lang)]
+      : isMyTurn
+        ? [this.i18n.translate('ws.games.yourTurn', lang)]
+        : [this.i18n.translate('ws.games.waitingOpponent', lang)];
+    return this.emit(
+      client,
+      true,
+      {
+        ...state,
+        waitingForOpponent: false,
+        gameStarted: true,
+      },
+      messages,
+    );
+  }
+
+  private resolvePlayerNum(socket: any, room: any): number {
+    let pNum = Number(socket?.data?.playerNum) || 0;
+    if (pNum === 1 || pNum === 2) return pNum;
+    const pid = socket?.data?.player_id;
+    if (!pid) return 0;
+    const idx = room.players.findIndex((p: any) => p.playerId.toString() === pid);
+    if (idx === 0) return 1;
+    if (idx === 1) return 2;
+    return 0;
   }
 
   private async countPlayerSockets(room_id: string): Promise<number> {
@@ -446,36 +526,59 @@ export class ConnectFourGateway
     const freshGame = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
     const populatedRoom = await this.roomModel.findById(room_id).populate('game_id');
 
-    for (const s of playerSockets) {
-      const sPNum = (s as any).data.playerNum || 0;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const isFirst = sPNum === 1;
-      const sLang = this.getLang(s as unknown as Socket);
-      const sState = await this.buildPublicState(
-        populatedRoom,
-        freshGame,
-        sIsSpectator ? null : sPNum,
-        sIsSpectator,
-      );
-      (s as unknown as Socket).emit(EVENT, {
-        success: true,
-        data: {
-          ...sState,
-          waitingForOpponent: false,
-          gameStarted: true,
-        },
-        messages: sIsSpectator
-          ? [this.i18n.translate('ws.games.gameStarted', sLang)]
-          : [
-              isFirst
-                ? this.i18n.translate('ws.games.yourTurn', sLang)
-                : this.i18n.translate('ws.games.waitingOpponent', sLang),
-            ],
-      });
-      if (isFirst && !sIsSpectator) {
-        this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+    const freshPlayerSockets = (await this.server.in(room_id).fetchSockets()).filter(
+      (s) => !(s as any).data?.isSpectator,
+    );
+
+    for (const s of freshPlayerSockets) {
+      try {
+        const sPNum = this.resolvePlayerNum(s, room);
+        if (sPNum) (s as any).data.playerNum = sPNum;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const isFirst = sPNum === 1;
+        const sLang = this.getLang(s as unknown as Socket);
+        const sState = await this.buildPublicState(
+          populatedRoom,
+          freshGame,
+          sIsSpectator ? null : sPNum,
+          sIsSpectator,
+        );
+        (s as unknown as Socket).emit(EVENT, {
+          success: true,
+          data: {
+            ...sState,
+            waitingForOpponent: false,
+            gameStarted: true,
+          },
+          messages: sIsSpectator
+            ? [this.i18n.translate('ws.games.gameStarted', sLang)]
+            : [
+                isFirst
+                  ? this.i18n.translate('ws.games.yourTurn', sLang)
+                  : this.i18n.translate('ws.games.waitingOpponent', sLang),
+              ],
+        });
+        if (isFirst && !sIsSpectator) {
+          this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+        }
+      } catch (emitErr) {
+        this.logger.error(
+          `event=connect_four_start_emit_failed room=${room_id} sid=${s.id}`,
+          emitErr,
+        );
       }
     }
+
+    this.server.to(room_id).emit(EVENT, {
+      success: true,
+      data: {
+        roomId: room_id,
+        status: 'started',
+        gameStarted: true,
+        waitingForOpponent: false,
+      },
+      messages: [],
+    });
 
     const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
     const populated = await this.roomModel
