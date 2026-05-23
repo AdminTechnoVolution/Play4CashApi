@@ -13,12 +13,14 @@ export class LanguageField {
   @Prop() pt: string;
 }
 
+export const LanguageFieldSchema = SchemaFactory.createForClass(LanguageField);
+
 @Schema()
 export class Game {
-  @Prop({ type: LanguageField, _id: false }) name: LanguageField;
-  @Prop({ type: LanguageField, _id: false }) description: LanguageField;
+  @Prop({ type: LanguageFieldSchema, _id: false }) name: LanguageField;
+  @Prop({ type: LanguageFieldSchema, _id: false }) description: LanguageField;
   /** Localized bullet rules shown in the PWA catalog and lobby. */
-  @Prop({ type: [{ type: LanguageField, _id: false }], default: [] })
+  @Prop({ type: [LanguageFieldSchema], default: [] })
   rules: LanguageField[];
   @Prop({ required: true }) active: boolean;
   @Prop({ required: true }) min_players: number;
