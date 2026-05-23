@@ -10,6 +10,12 @@ import {
   UNO_SOCKET_CODE,
 } from '../../common/constants/uno-game.constants';
 import { GAME_CATALOG_RULES } from './game-catalog-rules';
+import {
+  normalizeLanguageField,
+  normalizeRulesField,
+  toAdminGameRecord,
+} from './game-language.util';
+import type { CreateGameDto, UpdateGameDto } from './dtos/game-admin.dto';
 
 @Injectable()
 export class GameService implements OnModuleInit {
@@ -122,15 +128,10 @@ export class GameService implements OnModuleInit {
   async findAll(lang = 'en'): Promise<any[]> {
     const [data, activeRoomCounts] = await Promise.all([
       this.gameModel.find({ active: true }).select('-created_at').lean(),
-      this.roomModel.aggregate([
-        { $match: { status: { $ne: RoomStatus.FINISHED } } },
-        { $group: { _id: '$game_id', count: { $sum: 1 } } },
-      ]),
+      this.aggregateActiveRoomCounts(),
     ]);
 
-    const countMap = new Map<string, number>(
-      activeRoomCounts.map((r) => [r._id.toString(), r.count]),
-    );
+    const countMap = activeRoomCounts;
 
     const games = this.localizeGames(data, lang);
     return games.map((g: any) => ({
@@ -141,6 +142,17 @@ export class GameService implements OnModuleInit {
     }));
   }
 
+  /** Admin catalog: every game, full i18n name/description/rules (no Accept-Language flattening). */
+  async findAllAdmin(): Promise<any[]> {
+    const [data, countMap] = await Promise.all([
+      this.gameModel.find().select('-created_at').sort({ socket_code: 1 }).lean(),
+      this.aggregateActiveRoomCounts(),
+    ]);
+    return data.map((g) =>
+      toAdminGameRecord(g as Record<string, any>, countMap.get(String(g._id)) ?? 0),
+    );
+  }
+
   async findById(id: string, lang = 'en'): Promise<any> {
     const game = await this.gameModel.findById(id).select('-created_at').lean();
     if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
@@ -148,19 +160,82 @@ export class GameService implements OnModuleInit {
     return { ...g, houseEdge: g.house_edge, unoMatchTarget: g.uno_match_target };
   }
 
-  async create(data: Partial<Game>): Promise<GameDocument> {
-    return this.gameModel.create(data);
+  async findByIdAdmin(id: string): Promise<Record<string, unknown>> {
+    const game = await this.gameModel.findById(id).select('-created_at').lean();
+    if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
+    const counts = await this.aggregateActiveRoomCounts();
+    return toAdminGameRecord(game as Record<string, any>, counts.get(String(game._id)) ?? 0);
   }
 
-  async update(id: string, data: Partial<Game>): Promise<any> {
-    const game = await this.gameModel.findByIdAndUpdate(id, data, { returnDocument: 'after' }).lean();
+  async create(dto: CreateGameDto): Promise<Record<string, unknown>> {
+    const payload = this.toCreatePayload(dto);
+    const created = await this.gameModel.create(payload);
+    return toAdminGameRecord(created.toObject() as Record<string, any>, 0);
+  }
+
+  async update(id: string, dto: UpdateGameDto): Promise<Record<string, unknown>> {
+    const patch = this.toUpdatePayload(dto);
+    if (Object.keys(patch).length === 0) {
+      return this.findByIdAdmin(id);
+    }
+    const game = await this.gameModel
+      .findByIdAndUpdate(id, { $set: patch }, { returnDocument: 'after' })
+      .select('-created_at')
+      .lean();
     if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
-    return game;
+    const counts = await this.aggregateActiveRoomCounts();
+    return toAdminGameRecord(game as Record<string, any>, counts.get(String(game._id)) ?? 0);
   }
 
   async remove(id: string): Promise<void> {
     const game = await this.gameModel.findByIdAndDelete(id);
     if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
+  }
+
+  private async aggregateActiveRoomCounts(): Promise<Map<string, number>> {
+    const activeRoomCounts = await this.roomModel.aggregate([
+      { $match: { status: { $ne: RoomStatus.FINISHED } } },
+      { $group: { _id: '$game_id', count: { $sum: 1 } } },
+    ]);
+    return new Map<string, number>(
+      activeRoomCounts.map((r) => [r._id.toString(), r.count]),
+    );
+  }
+
+  private toCreatePayload(dto: CreateGameDto): Record<string, unknown> {
+    return {
+      name: normalizeLanguageField(dto.name, 'NAME'),
+      description: normalizeLanguageField(dto.description, 'DESCRIPTION'),
+      rules: normalizeRulesField(dto.rules ?? []),
+      active: dto.active,
+      min_players: dto.min_players,
+      max_players: dto.max_players,
+      min_bet: dto.min_bet,
+      default_bets: dto.default_bets,
+      house_edge: dto.house_edge,
+      socket_code: dto.socket_code,
+      turn_timer_seconds: dto.turn_timer_seconds,
+      ...(dto.uno_match_target !== undefined ? { uno_match_target: dto.uno_match_target } : {}),
+    };
+  }
+
+  private toUpdatePayload(dto: UpdateGameDto): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (dto.name !== undefined) out.name = normalizeLanguageField(dto.name, 'NAME');
+    if (dto.description !== undefined) {
+      out.description = normalizeLanguageField(dto.description, 'DESCRIPTION');
+    }
+    if (dto.rules !== undefined) out.rules = normalizeRulesField(dto.rules);
+    if (dto.active !== undefined) out.active = dto.active;
+    if (dto.min_players !== undefined) out.min_players = dto.min_players;
+    if (dto.max_players !== undefined) out.max_players = dto.max_players;
+    if (dto.min_bet !== undefined) out.min_bet = dto.min_bet;
+    if (dto.default_bets !== undefined) out.default_bets = dto.default_bets;
+    if (dto.house_edge !== undefined) out.house_edge = dto.house_edge;
+    if (dto.socket_code !== undefined) out.socket_code = dto.socket_code;
+    if (dto.turn_timer_seconds !== undefined) out.turn_timer_seconds = dto.turn_timer_seconds;
+    if (dto.uno_match_target !== undefined) out.uno_match_target = dto.uno_match_target;
+    return out;
   }
 
   /** Pick name/description/rules by language — matches original getGameValuesByLanguage logic */
