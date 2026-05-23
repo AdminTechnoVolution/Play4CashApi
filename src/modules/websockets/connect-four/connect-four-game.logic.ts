@@ -35,6 +35,21 @@ export function createEmptyBoard(): ConnectFourBoard {
   );
 }
 
+/** Normalize Mongo Mixed / sparse rows into a canonical 6×7 board. */
+export function coerceConnectFourBoard(raw: unknown): ConnectFourBoard {
+  const base = createEmptyBoard();
+  if (!Array.isArray(raw)) return base;
+  for (let row = 0; row < CONNECT_FOUR_ROWS; row++) {
+    const srcRow = raw[row];
+    if (!Array.isArray(srcRow)) continue;
+    for (let col = 0; col < CONNECT_FOUR_COLS; col++) {
+      const cell = srcRow[col];
+      base[row][col] = cell === 'R' || cell === 'Y' ? cell : null;
+    }
+  }
+  return base;
+}
+
 export function isColumnInBounds(col: number): boolean {
   return Number.isInteger(col) && col >= 0 && col < CONNECT_FOUR_COLS;
 }

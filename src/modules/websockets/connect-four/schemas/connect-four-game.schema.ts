@@ -21,7 +21,7 @@ export class ConnectFourGame {
   @Prop({ type: Number, enum: [1, 2], default: 1 })
   current_player: number;
 
-  @Prop({ type: [[Number]], default: [] })
+  @Prop({ type: [{ row: { type: Number }, col: { type: Number } }], default: [] })
   winning_cells: Array<{ row: number; col: number }>;
 
   @Prop({ type: Date, default: Date.now })

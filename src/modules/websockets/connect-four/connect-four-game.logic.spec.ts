@@ -1,5 +1,6 @@
 import {
   checkWinFromCell,
+  coerceConnectFourBoard,
   createEmptyBoard,
   dropDisc,
   findDropRow,
@@ -150,5 +151,30 @@ describe('connect-four-game.logic', () => {
       expect(first.win.won).toBe(false);
       expect(first.isDraw).toBe(false);
     }
+  });
+
+  it('coerceConnectFourBoard normalizes sparse Mongo rows and detects win', () => {
+    const sparse = [
+      [undefined, 'R', 'R', 'R'],
+      undefined,
+      [],
+    ];
+    const b = coerceConnectFourBoard(sparse);
+    expect(b).toHaveLength(6);
+    expect(b[0]).toHaveLength(7);
+    b[0][0] = 'R';
+    const win = checkWinFromCell(b, 0, 0, 'R');
+    expect(win.won).toBe(true);
+    expect(win.winningCells.every((c) => c.row === 0)).toBe(true);
+  });
+
+  it('coerceConnectFourBoard treats invalid cells as empty', () => {
+    const raw = createEmptyBoard();
+    raw[5][2] = 'R' as any;
+    (raw[5] as any)[3] = 'invalid';
+    const b = coerceConnectFourBoard(raw);
+    expect(b[5][2]).toBe('R');
+    expect(b[5][3]).toBeNull();
+    expect(findDropRow(b, 3)).toBe(5);
   });
 });
