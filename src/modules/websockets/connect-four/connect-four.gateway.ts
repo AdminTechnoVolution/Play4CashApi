@@ -21,6 +21,7 @@ import { ConnectFourGame, ConnectFourGameDocument } from './schemas/connect-four
 import { I18nService } from '../../../common/i18n/i18n.service';
 import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
 import {
+  coerceConnectFourBoard,
   colorForPlayerNum,
   createEmptyBoard,
   dropDisc,
@@ -94,7 +95,7 @@ export class ConnectFourGateway
     const p2Id = room.players[1]?.playerId?.toString();
     const player1 = p1Id ? await this.getCachedUsername(p1Id) : 'Unknown';
     const player2 = p2Id ? await this.getCachedUsername(p2Id) : 'Unknown';
-    const board = game?.board ?? createEmptyBoard();
+    const board = game?.board ? coerceConnectFourBoard(game.board) : createEmptyBoard();
     const currentPlayer = game?.current_player ?? 1;
     const currentTurnUserId =
       currentPlayer === 1 ? p1Id ?? null : p2Id ?? null;
@@ -504,18 +505,27 @@ export class ConnectFourGateway
           : game.player2_id
         : null;
 
-    const finishedRoom = await this.roomModel.findOneAndUpdate(
+    const finishUpdate = {
+      status: 'finished' as const,
+      finished_at: new Date(),
+      winner_reason: outcome.kind === 'draw' ? 'draw' : 'win',
+      winner: winnerId ?? undefined,
+    };
+
+    let finishedRoom = await this.roomModel.findOneAndUpdate(
       { _id: room_id, status: 'started' },
-      {
-        $set: {
-          status: 'finished',
-          finished_at: new Date(),
-          winner_reason: outcome.kind === 'draw' ? 'draw' : 'win',
-          winner: winnerId ?? undefined,
-        },
-      },
+      { $set: finishUpdate },
       { returnDocument: 'after' },
     );
+
+    if (!finishedRoom) {
+      const alreadyFinished = await this.roomModel.findOne({
+        _id: room_id,
+        status: 'finished',
+      });
+      if (alreadyFinished) return alreadyFinished;
+    }
+
     if (!finishedRoom) return null;
 
     if (outcome.kind === 'draw') {
@@ -595,10 +605,15 @@ export class ConnectFourGateway
     }
 
     const color = colorForPlayerNum(playerNum);
-    const result = dropDisc(game.board as ConnectFourBoard, col, color);
+    const board = coerceConnectFourBoard(game.board);
+    const result = dropDisc(board, col, color);
     if (!result.ok) {
       return this.emit(client, false, { col }, [this.i18n.translate('ws.games.invalidMove', lang)]);
     }
+
+    // #region agent log
+    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:dropResult',message:'dropDisc computed',data:{col,row:result.row,winWon:result.win.won,isDraw:result.isDraw,playerNum},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
 
     game.board = result.board;
     game.turn_start_time = new Date();
@@ -618,7 +633,16 @@ export class ConnectFourGateway
       game.current_player = playerNum === 1 ? 2 : 1;
     }
     game.markModified('board');
-    await game.save();
+    game.markModified('winning_cells');
+
+    try {
+      await game.save();
+    } catch (err) {
+      this.logger.error(
+        `event=connect_four_save_failed room=${room_id} finished=${finished}`,
+        err,
+      );
+    }
 
     const limit = room.game_id?.turn_timer_seconds || 30;
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -628,18 +652,16 @@ export class ConnectFourGateway
       for (const s of sockets) {
         clearTimer(s.id);
       }
-      const settledRoom = await this.finalizeConnectFourMatch(
-        room_id,
-        game,
-        isDraw ? { kind: 'draw' } : { kind: 'win', winnerNum: winnerNum! },
-      );
-      if (!settledRoom) {
-        return this.emit(client, false, {}, [this.i18n.translate('ws.games.roomInactive', lang)]);
-      }
-      room.status = settledRoom.status;
-      room.winner = settledRoom.winner;
-      room.winner_reason = settledRoom.winner_reason;
-      room.finished_at = settledRoom.finished_at;
+      // Mark room finished in memory so buildPublicState + clients see terminal state
+      // before DB settlement (payout) completes — chess/domino emit before heavy I/O.
+      room.status = 'finished';
+      room.finished_at = new Date();
+      room.winner_reason = isDraw ? 'draw' : 'win';
+      room.winner = isDraw
+        ? undefined
+        : winnerNum === 1
+          ? game.player1_id
+          : game.player2_id;
     } else {
       const opponent = sockets.find((s) => (s as any).data.playerNum === game.current_player);
       if (opponent) {
@@ -662,49 +684,95 @@ export class ConnectFourGateway
       at: new Date().toISOString(),
     };
 
+    // #region agent log
+    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:preEmit',message:'about to broadcast drop result',data:{room_id,finished,isDraw,winnerNum,winWon:result.win.won,row:result.row,col,socketCount:sockets.length},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
+    // #endregion
+
     for (const s of sockets) {
-      const sLang = this.getLang(s as unknown as Socket);
-      const sPNum = (s as any).data.playerNum || 0;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const isWinner = finished && !isDraw && winnerNum === sPNum;
-      const sState = await this.buildPublicState(room, game, sIsSpectator ? null : sPNum, sIsSpectator);
+      try {
+        const sLang = this.getLang(s as unknown as Socket);
+        const sPNum = (s as any).data.playerNum || 0;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const isWinner = finished && !isDraw && winnerNum === sPNum;
+        const sState = await this.buildPublicState(
+          room,
+          game,
+          sIsSpectator ? null : sPNum,
+          sIsSpectator,
+        );
 
-      let msg = '';
-      if (finished) {
-        if (isDraw) {
-          msg = this.i18n.translate('ws.games.drawGeneric', sLang);
+        let msg = '';
+        if (finished) {
+          if (isDraw) {
+            msg = this.i18n.translate('ws.games.drawGeneric', sLang);
+          } else {
+            msg = isWinner
+              ? this.i18n.translate('ws.games.win', sLang)
+              : this.i18n.translate('ws.games.lose', sLang);
+          }
+        } else if (s.id === client.id) {
+          msg = this.i18n.translate('ws.games.moveAccepted', sLang);
         } else {
-          msg = isWinner
-            ? this.i18n.translate('ws.games.win', sLang)
-            : this.i18n.translate('ws.games.lose', sLang);
+          msg = this.i18n.translate('ws.games.opponentMoved', sLang);
         }
-      } else if (s.id === client.id) {
-        msg = this.i18n.translate('ws.games.moveAccepted', sLang);
-      } else {
-        msg = this.i18n.translate('ws.games.opponentMoved', sLang);
-      }
 
-      (s as unknown as Socket).emit(EVENT, {
-        success: true,
-        data: {
-          ...sState,
-          lastMove,
-          gameEnded: finished,
-          gameStarted: !finished,
-          youWon: isWinner && !sIsSpectator,
-          outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
-          prize: isWinner ? displayPrize : 0,
-          reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
-          isDraw: finished && isDraw,
-          winnerUserId:
-            finished && !isDraw && winnerNum
-              ? winnerNum === 1
-                ? game.player1_id.toString()
-                : game.player2_id.toString()
-              : null,
-        },
-        messages: [msg],
-      });
+        (s as unknown as Socket).emit(EVENT, {
+          success: true,
+          data: {
+            ...sState,
+            lastMove,
+            gameEnded: finished,
+            gameStarted: !finished,
+            youWon: isWinner && !sIsSpectator,
+            outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
+            prize: isWinner ? displayPrize : 0,
+            reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
+            isDraw: finished && isDraw,
+            winnerUserId:
+              finished && !isDraw && winnerNum
+                ? winnerNum === 1
+                  ? game.player1_id.toString()
+                  : game.player2_id.toString()
+                : null,
+          },
+          messages: [msg],
+        });
+        // #region agent log
+        if (s.id === client.id) {
+          fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:emitted',message:'emitted to dropper',data:{finished,gameEnded:finished,isWinner},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
+        }
+        // #endregion
+      } catch (emitErr) {
+        this.logger.error(
+          `event=connect_four_emit_failed room=${room_id} sid=${s.id} finished=${finished}`,
+          emitErr,
+        );
+      }
+    }
+
+    if (finished) {
+      try {
+        const settledRoom = await this.finalizeConnectFourMatch(
+          room_id,
+          game,
+          isDraw ? { kind: 'draw' } : { kind: 'win', winnerNum: winnerNum! },
+        );
+        if (settledRoom) {
+          room.status = settledRoom.status;
+          room.winner = settledRoom.winner;
+          room.winner_reason = settledRoom.winner_reason;
+          room.finished_at = settledRoom.finished_at;
+        } else {
+          this.logger.error(
+            `event=connect_four_finalize_failed room=${room_id} reason=room_not_started`,
+          );
+        }
+      } catch (finalizeErr) {
+        this.logger.error(
+          `event=connect_four_finalize_error room=${room_id} finished=${finished}`,
+          finalizeErr,
+        );
+      }
     }
   }
 
