@@ -101,6 +101,7 @@ The Gateway reads only the prefix `accessTokens:` (via `REDIS_TOKEN_PREFIX`, def
 |----------------------|---------|-----|-------|
 | `REDIS_URL`          | ✅       | ✅   | Same Redis instance. |
 | `REDIS_TOKEN_PREFIX` | ✅       | —   | Must equal the API constant `accessTokens:`. |
+| `SOCKET_IO_REDIS_ADAPTER` | —  | ✅   | Set `true` when running **multiple API replicas** so Socket.IO broadcasts reach all pods. Requires `REDIS_URI`. Default off (single-pod). |
 
 ## 7. Tokens in URLs
 

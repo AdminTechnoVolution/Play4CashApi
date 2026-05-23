@@ -115,6 +115,8 @@ export class ConnectFourGateway
     const yourColor: ConnectFourColor | null =
       viewerPlayerNum === 1 ? 'R' : viewerPlayerNum === 2 ? 'Y' : null;
 
+    const lastMove = this.formatLastMoveFromGame(game);
+
     return {
       roomId: room._id.toString(),
       status: room.status,
@@ -142,6 +144,20 @@ export class ConnectFourGateway
       player2,
       winnerReason: room.winner_reason ?? null,
       spectatorsCount: room.spectators?.length ?? 0,
+      moveRevision: game?.move_revision ?? 0,
+      ...(lastMove ? { lastMove } : {}),
+    };
+  }
+
+  private formatLastMoveFromGame(game: ConnectFourGameDocument | null): Record<string, unknown> | null {
+    const lm = game?.last_move;
+    if (!lm || (lm.color !== 'R' && lm.color !== 'Y')) return null;
+    return {
+      userId: String(lm.userId),
+      row: Number(lm.row),
+      col: Number(lm.col),
+      color: lm.color,
+      at: lm.at instanceof Date ? lm.at.toISOString() : String(lm.at ?? ''),
     };
   }
 
@@ -227,10 +243,9 @@ export class ConnectFourGateway
   }
 
   async executeForfeit(room_id: string, player_id: string) {
-    const room = await this.roomModel.findOne({
-      _id: new Types.ObjectId(room_id),
-      status: 'started',
-    });
+    const room = await this.roomModel
+      .findOne({ _id: new Types.ObjectId(room_id), status: 'started' })
+      .populate('game_id', 'turn_timer_seconds');
     if (!room) return;
 
     const winner_id = room.players.find(
@@ -248,19 +263,31 @@ export class ConnectFourGateway
     await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
+    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
     const sockets = await this.server.in(room_id).fetchSockets();
     for (const s of sockets) {
       const sIsSpectator = (s as any).data.isSpectator || false;
+      const sPNum = this.resolvePlayerNum(s, room);
+      if (sPNum) (s as any).data.playerNum = sPNum;
       const sLang = this.getLang(s as unknown as Socket);
+      const sState = await this.buildPublicState(
+        room,
+        game,
+        sIsSpectator ? null : sPNum,
+        sIsSpectator,
+      );
+      const isWinner = !sIsSpectator && sPNum > 0 && room.players[sPNum - 1]?.playerId?.toString() === winner_id.toString();
       (s as unknown as Socket).emit(EVENT, {
         success: false,
         messages: sIsSpectator
           ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })]
           : [this.i18n.translate('ws.games.playerDisconnected', sLang)],
         data: {
+          ...sState,
           outcome: 'opponent_disconnected',
           gameEnded: true,
-          winner: sIsSpectator ? winnerUsername : winner_id,
+          winner: sIsSpectator ? winnerUsername : winner_id.toString(),
+          youWon: isWinner,
           isSpectator: sIsSpectator,
         },
       });
@@ -515,6 +542,7 @@ export class ConnectFourGateway
         current_player: 1,
         winning_cells: [],
         turn_start_time: new Date(),
+        move_revision: 0,
       });
     } catch (e) {
       this.logger.error(`[ConnectFour] Game create failed | room=${room_id}`, e);
@@ -569,17 +597,6 @@ export class ConnectFourGateway
       }
     }
 
-    this.server.to(room_id).emit(EVENT, {
-      success: true,
-      data: {
-        roomId: room_id,
-        status: 'started',
-        gameStarted: true,
-        waitingForOpponent: false,
-      },
-      messages: [],
-    });
-
     const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
     const populated = await this.roomModel
       .findById(room_id)
@@ -606,7 +623,8 @@ export class ConnectFourGateway
     }
 
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    const playerNum = client.data.playerNum || 0;
+    const playerNum = this.resolvePlayerNum(client, room) || client.data.playerNum || 0;
+    if (playerNum) client.data.playerNum = playerNum;
     const state = await this.buildPublicState(
       room,
       game,
@@ -736,6 +754,13 @@ export class ConnectFourGateway
 
     game.board = result.board;
     game.turn_start_time = new Date();
+    game.last_move = {
+      userId: client.data.player_id,
+      row: result.row,
+      col: result.col,
+      color,
+      at: new Date(),
+    };
     let finished = false;
     let winnerNum: 1 | 2 | null = null;
     let isDraw = false;
@@ -751,8 +776,11 @@ export class ConnectFourGateway
     } else {
       game.current_player = playerNum === 1 ? 2 : 1;
     }
+    game.move_revision = (game.move_revision ?? 0) + 1;
     game.markModified('board');
     game.markModified('winning_cells');
+    game.markModified('last_move');
+    game.markModified('move_revision');
 
     try {
       await game.save();
@@ -761,6 +789,9 @@ export class ConnectFourGateway
         `event=connect_four_save_failed room=${room_id} finished=${finished}`,
         err,
       );
+      return this.emit(client, false, { col }, [
+        this.i18n.translate('ws.games.invalidMove', lang),
+      ]);
     }
 
     const limit = room.game_id?.turn_timer_seconds || 30;
@@ -782,7 +813,9 @@ export class ConnectFourGateway
           ? game.player1_id
           : game.player2_id;
     } else {
-      const opponent = sockets.find((s) => (s as any).data.playerNum === game.current_player);
+      const opponent = sockets.find(
+        (s) => this.resolvePlayerNum(s, room) === game.current_player,
+      );
       if (opponent) {
         this.startTimer(opponent as unknown as Socket, room_id, limit);
       }
@@ -806,8 +839,9 @@ export class ConnectFourGateway
     for (const s of sockets) {
       try {
         const sLang = this.getLang(s as unknown as Socket);
-        const sPNum = (s as any).data.playerNum || 0;
         const sIsSpectator = (s as any).data.isSpectator || false;
+        const sPNum = this.resolvePlayerNum(s, room);
+        if (sPNum) (s as any).data.playerNum = sPNum;
         const isWinner = finished && !isDraw && winnerNum === sPNum;
         const sState = await this.buildPublicState(
           room,
@@ -858,6 +892,19 @@ export class ConnectFourGateway
           emitErr,
         );
       }
+    }
+
+    if (!finished) {
+      this.server.to(room_id).emit(EVENT, {
+        success: true,
+        data: {
+          roomId: room_id,
+          status: 'started',
+          moveRevision: game.move_revision,
+          resyncOnly: true,
+        },
+        messages: [],
+      });
     }
 
     if (finished) {
@@ -914,7 +961,9 @@ export class ConnectFourGateway
       if (!game) return;
       const winnerNum = game.current_player === 1 ? 2 : 1;
       const winnerId = winnerNum === 1 ? game.player1_id : game.player2_id;
-      const room = await this.roomModel.findById(room_id);
+      const room = await this.roomModel
+        .findById(room_id)
+        .populate('game_id', 'turn_timer_seconds');
       if (!room || room.status !== 'started') return;
 
       room.status = 'finished';
@@ -939,15 +988,25 @@ export class ConnectFourGateway
       const winnerUsername = await this.getCachedUsername(winnerId.toString());
       for (const s of sockets) {
         const sIsSpectator = (s as any).data.isSpectator || false;
-        const isWinnerFound = (s as any).data.playerNum === winnerNum;
+        const sPNum = this.resolvePlayerNum(s, room);
+        if (sPNum) (s as any).data.playerNum = sPNum;
+        const isWinnerFound = sPNum === winnerNum;
         const sLang = this.getLang(s as unknown as Socket);
+        const sState = await this.buildPublicState(
+          room,
+          game,
+          sIsSpectator ? null : sPNum,
+          sIsSpectator,
+        );
         (s as unknown as Socket).emit(EVENT, {
           success: true,
           data: {
+            ...sState,
             gameEnded: true,
             outcome: isWinnerFound ? 'win' : 'timeout_loss',
             youWon: isWinnerFound && !sIsSpectator,
-            winner: sIsSpectator ? winnerUsername : winnerId,
+            winner: sIsSpectator ? winnerUsername : winnerId.toString(),
+            winnerUserId: winnerId.toString(),
             reason: 'timeout',
             prize: isWinnerFound ? displayPrize : 0,
             isSpectator: sIsSpectator,
