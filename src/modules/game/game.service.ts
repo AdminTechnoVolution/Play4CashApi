@@ -165,17 +165,22 @@ export class GameService implements OnModuleInit {
 
   /** Pick name/description/rules by language — matches original getGameValuesByLanguage logic */
   private localizeGames(games: any[], lang: string): any[] {
-    const l = lang === 'es' ? 'es' : 'en';
+    const supportedLangs = ['es', 'en', 'fr', 'de', 'it', 'pt'];
+    const l = supportedLangs.includes(lang) ? lang : 'en';
     return games.map((game) => {
       const g = { ...game };
-      if (g.name && typeof g.name === 'object') g.name = g.name[l] ?? g.name.en;
+      if (g.name && typeof g.name === 'object') {
+        g.name = g.name[l] ?? g.name.en ?? g.name.es ?? '';
+      }
       if (g.description && typeof g.description === 'object') {
-        g.description = g.description[l] ?? g.description.en;
+        g.description = g.description[l] ?? g.description.en ?? g.description.es ?? '';
       }
       if (Array.isArray(g.rules)) {
         g.rules = g.rules
           .map((rule: any) => {
-            if (rule && typeof rule === 'object') return rule[l] ?? rule.en ?? '';
+            if (rule && typeof rule === 'object') {
+              return rule[l] ?? rule.en ?? rule.es ?? '';
+            }
             return typeof rule === 'string' ? rule : '';
           })
           .filter((text: string) => text.trim().length > 0);
