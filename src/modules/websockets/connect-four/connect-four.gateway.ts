@@ -611,6 +611,10 @@ export class ConnectFourGateway
       return this.emit(client, false, { col }, [this.i18n.translate('ws.games.invalidMove', lang)]);
     }
 
+    // #region agent log
+    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:dropResult',message:'dropDisc computed',data:{col,row:result.row,winWon:result.win.won,isDraw:result.isDraw,playerNum},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+    // #endregion
+
     game.board = result.board;
     game.turn_start_time = new Date();
     let finished = false;
@@ -648,29 +652,16 @@ export class ConnectFourGateway
       for (const s of sockets) {
         clearTimer(s.id);
       }
-      const settledRoom = await this.finalizeConnectFourMatch(
-        room_id,
-        game,
-        isDraw ? { kind: 'draw' } : { kind: 'win', winnerNum: winnerNum! },
-      );
-      if (settledRoom) {
-        room.status = settledRoom.status;
-        room.winner = settledRoom.winner;
-        room.winner_reason = settledRoom.winner_reason;
-        room.finished_at = settledRoom.finished_at;
-      } else {
-        this.logger.error(
-          `event=connect_four_finalize_failed room=${room_id} reason=room_not_started`,
-        );
-        room.status = 'finished';
-        room.finished_at = new Date();
-        room.winner_reason = isDraw ? 'draw' : 'win';
-        room.winner = isDraw
-          ? undefined
-          : winnerNum === 1
-            ? game.player1_id
-            : game.player2_id;
-      }
+      // Mark room finished in memory so buildPublicState + clients see terminal state
+      // before DB settlement (payout) completes — chess/domino emit before heavy I/O.
+      room.status = 'finished';
+      room.finished_at = new Date();
+      room.winner_reason = isDraw ? 'draw' : 'win';
+      room.winner = isDraw
+        ? undefined
+        : winnerNum === 1
+          ? game.player1_id
+          : game.player2_id;
     } else {
       const opponent = sockets.find((s) => (s as any).data.playerNum === game.current_player);
       if (opponent) {
@@ -693,49 +684,95 @@ export class ConnectFourGateway
       at: new Date().toISOString(),
     };
 
+    // #region agent log
+    fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:preEmit',message:'about to broadcast drop result',data:{room_id,finished,isDraw,winnerNum,winWon:result.win.won,row:result.row,col,socketCount:sockets.length},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
+    // #endregion
+
     for (const s of sockets) {
-      const sLang = this.getLang(s as unknown as Socket);
-      const sPNum = (s as any).data.playerNum || 0;
-      const sIsSpectator = (s as any).data.isSpectator || false;
-      const isWinner = finished && !isDraw && winnerNum === sPNum;
-      const sState = await this.buildPublicState(room, game, sIsSpectator ? null : sPNum, sIsSpectator);
+      try {
+        const sLang = this.getLang(s as unknown as Socket);
+        const sPNum = (s as any).data.playerNum || 0;
+        const sIsSpectator = (s as any).data.isSpectator || false;
+        const isWinner = finished && !isDraw && winnerNum === sPNum;
+        const sState = await this.buildPublicState(
+          room,
+          game,
+          sIsSpectator ? null : sPNum,
+          sIsSpectator,
+        );
 
-      let msg = '';
-      if (finished) {
-        if (isDraw) {
-          msg = this.i18n.translate('ws.games.drawGeneric', sLang);
+        let msg = '';
+        if (finished) {
+          if (isDraw) {
+            msg = this.i18n.translate('ws.games.drawGeneric', sLang);
+          } else {
+            msg = isWinner
+              ? this.i18n.translate('ws.games.win', sLang)
+              : this.i18n.translate('ws.games.lose', sLang);
+          }
+        } else if (s.id === client.id) {
+          msg = this.i18n.translate('ws.games.moveAccepted', sLang);
         } else {
-          msg = isWinner
-            ? this.i18n.translate('ws.games.win', sLang)
-            : this.i18n.translate('ws.games.lose', sLang);
+          msg = this.i18n.translate('ws.games.opponentMoved', sLang);
         }
-      } else if (s.id === client.id) {
-        msg = this.i18n.translate('ws.games.moveAccepted', sLang);
-      } else {
-        msg = this.i18n.translate('ws.games.opponentMoved', sLang);
-      }
 
-      (s as unknown as Socket).emit(EVENT, {
-        success: true,
-        data: {
-          ...sState,
-          lastMove,
-          gameEnded: finished,
-          gameStarted: !finished,
-          youWon: isWinner && !sIsSpectator,
-          outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
-          prize: isWinner ? displayPrize : 0,
-          reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
-          isDraw: finished && isDraw,
-          winnerUserId:
-            finished && !isDraw && winnerNum
-              ? winnerNum === 1
-                ? game.player1_id.toString()
-                : game.player2_id.toString()
-              : null,
-        },
-        messages: [msg],
-      });
+        (s as unknown as Socket).emit(EVENT, {
+          success: true,
+          data: {
+            ...sState,
+            lastMove,
+            gameEnded: finished,
+            gameStarted: !finished,
+            youWon: isWinner && !sIsSpectator,
+            outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
+            prize: isWinner ? displayPrize : 0,
+            reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
+            isDraw: finished && isDraw,
+            winnerUserId:
+              finished && !isDraw && winnerNum
+                ? winnerNum === 1
+                  ? game.player1_id.toString()
+                  : game.player2_id.toString()
+                : null,
+          },
+          messages: [msg],
+        });
+        // #region agent log
+        if (s.id === client.id) {
+          fetch('http://127.0.0.1:7561/ingest/0b3eb4fe-aeac-4231-b94b-1592d63bdad8',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83380c'},body:JSON.stringify({sessionId:'83380c',location:'connect-four.gateway.ts:emitted',message:'emitted to dropper',data:{finished,gameEnded:finished,isWinner},timestamp:Date.now(),hypothesisId:'F'})}).catch(()=>{});
+        }
+        // #endregion
+      } catch (emitErr) {
+        this.logger.error(
+          `event=connect_four_emit_failed room=${room_id} sid=${s.id} finished=${finished}`,
+          emitErr,
+        );
+      }
+    }
+
+    if (finished) {
+      try {
+        const settledRoom = await this.finalizeConnectFourMatch(
+          room_id,
+          game,
+          isDraw ? { kind: 'draw' } : { kind: 'win', winnerNum: winnerNum! },
+        );
+        if (settledRoom) {
+          room.status = settledRoom.status;
+          room.winner = settledRoom.winner;
+          room.winner_reason = settledRoom.winner_reason;
+          room.finished_at = settledRoom.finished_at;
+        } else {
+          this.logger.error(
+            `event=connect_four_finalize_failed room=${room_id} reason=room_not_started`,
+          );
+        }
+      } catch (finalizeErr) {
+        this.logger.error(
+          `event=connect_four_finalize_error room=${room_id} finished=${finished}`,
+          finalizeErr,
+        );
+      }
     }
   }
 
