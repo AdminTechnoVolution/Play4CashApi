@@ -16,6 +16,7 @@ import { ChessGateway } from '../../modules/websockets/chess/chess.gateway';
 import { HalmaGateway } from '../../modules/websockets/halma/halma.gateway';
 import { DominoGateway } from '../../modules/websockets/domino/domino.gateway';
 import { NavalBattleGateway } from '../../modules/websockets/naval-battle/naval-battle.gateway';
+import { ConnectFourGateway } from '../../modules/websockets/connect-four/connect-four.gateway';
 
 describe('Phase B — gateway grace-period handler registration', () => {
   const mkGrace = () => ({
@@ -59,5 +60,12 @@ describe('Phase B — gateway grace-period handler registration', () => {
     const gateway = new NavalBattleGateway(stub, stub, stub, stub, stub, stub, stub, grace);
     gateway.onModuleInit();
     expect((grace as any).registerHandler).toHaveBeenCalledWith('naval-battle', expect.any(Function));
+  });
+
+  it('ConnectFourGateway.onModuleInit() registers a handler for game="connect-four"', () => {
+    const grace = mkGrace();
+    const gateway = new ConnectFourGateway(stub, stub, stub, stub, stub, stub, stub, grace);
+    gateway.onModuleInit();
+    expect((grace as any).registerHandler).toHaveBeenCalledWith('connect-four', expect.any(Function));
   });
 });
