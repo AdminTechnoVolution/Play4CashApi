@@ -25,6 +25,7 @@ import {
 import { pickLocalizedField } from '../tournament-language.util';
 import { TournamentBracketService } from './tournament-bracket.service';
 import { TournamentSettlementService } from './tournament-settlement.service';
+import { TournamentsGateway } from '../../websockets/tournaments/tournaments.gateway';
 
 @Injectable()
 export class TournamentMatchService {
@@ -40,6 +41,8 @@ export class TournamentMatchService {
     private readonly bracketService: TournamentBracketService,
     @Inject(forwardRef(() => TournamentSettlementService))
     private readonly settlement: TournamentSettlementService,
+    @Inject(forwardRef(() => TournamentsGateway))
+    private readonly tournamentsGateway: TournamentsGateway,
   ) {}
 
   async createTournamentRoom(
@@ -74,6 +77,7 @@ export class TournamentMatchService {
     match.room_id = room._id as Types.ObjectId;
     match.status = TournamentMatchStatus.READY;
     await match.save();
+    void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
     return room._id as Types.ObjectId;
   }
 
@@ -236,5 +240,6 @@ export class TournamentMatchService {
         ? TournamentStatus.FINALS_RUNNING
         : TournamentStatus.RUNNING;
     await tournament.save();
+    void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
   }
 }
