@@ -1,6 +1,10 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 import {
+  LanguageField,
+  LanguageFieldSchema,
+} from '../../game/schemas/game.schema';
+import {
   TOURNAMENT_GROUP_COUNT,
   TOURNAMENT_GROUP_SIZE,
   TOURNAMENT_MVP_PLAYER_COUNT,
@@ -12,11 +16,11 @@ export type TournamentDocument = Tournament & Document;
 
 @Schema({ versionKey: false, timestamps: true })
 export class Tournament {
-  @Prop({ required: true, trim: true })
-  title: string;
+  @Prop({ type: LanguageFieldSchema, _id: false, required: true })
+  title: LanguageField;
 
-  @Prop({ trim: true, default: '' })
-  description: string;
+  @Prop({ type: LanguageFieldSchema, _id: false, default: () => ({ en: '', es: '', fr: '', de: '', it: '', pt: '' }) })
+  description: LanguageField;
 
   @Prop({ type: Types.ObjectId, ref: 'Game', required: true, index: true })
   game_id: Types.ObjectId;

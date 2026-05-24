@@ -2,26 +2,43 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   Max,
   Min,
-  MinLength,
 } from 'class-validator';
 import {
   TOURNAMENT_MVP_PLAYER_COUNT,
 } from '../constants/tournament.constants';
 
-export class CreateTournamentDto {
-  @ApiProperty()
-  @IsString()
-  @MinLength(1)
-  title: string;
+const I18N_TITLE_EXAMPLE = {
+  es: 'Torneo Connect Four',
+  en: 'Connect Four Tournament',
+  fr: 'Tournoi Connect Four',
+  de: 'Connect Four Turnier',
+  it: 'Torneo Connect Four',
+  pt: 'Torneio Connect Four',
+};
 
-  @ApiPropertyOptional()
+const I18N_DESC_EXAMPLE = {
+  es: 'Compite por el premio mayor.',
+  en: 'Compete for the top prize.',
+  fr: 'Participez pour le grand prix.',
+  de: 'Kämpfe um den Hauptpreis.',
+  it: 'Competi per il primo premio.',
+  pt: 'Compita pelo prêmio principal.',
+};
+
+export class CreateTournamentDto {
+  @ApiProperty({ example: I18N_TITLE_EXAMPLE })
+  @IsObject()
+  title: Record<string, string>;
+
+  @ApiPropertyOptional({ example: I18N_DESC_EXAMPLE })
   @IsOptional()
-  @IsString()
-  description?: string;
+  @IsObject()
+  description?: Record<string, string>;
 
   @ApiProperty()
   @IsString()
@@ -34,15 +51,29 @@ export class CreateTournamentDto {
 
   @ApiProperty({ default: TOURNAMENT_MVP_PLAYER_COUNT })
   @IsNumber()
-  @Min(TOURNAMENT_MVP_PLAYER_COUNT)
-  @Max(TOURNAMENT_MVP_PLAYER_COUNT)
+  @Min(2)
+  @Max(1000)
   maxPlayers: number = TOURNAMENT_MVP_PLAYER_COUNT;
 
   @ApiProperty({ default: TOURNAMENT_MVP_PLAYER_COUNT })
   @IsNumber()
-  @Min(TOURNAMENT_MVP_PLAYER_COUNT)
-  @Max(TOURNAMENT_MVP_PLAYER_COUNT)
+  @Min(2)
+  @Max(1000)
   minPlayers: number = TOURNAMENT_MVP_PLAYER_COUNT;
+
+  @ApiPropertyOptional({ default: 5 })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  groupCount?: number;
+
+  @ApiPropertyOptional({ default: 10 })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  groupSize?: number;
 
   @ApiProperty()
   @IsDateString()
@@ -114,16 +145,15 @@ export class CreateTournamentDto {
 }
 
 export class UpdateTournamentDto {
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: I18N_TITLE_EXAMPLE })
   @IsOptional()
-  @IsString()
-  @MinLength(1)
-  title?: string;
+  @IsObject()
+  title?: Record<string, string>;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: I18N_DESC_EXAMPLE })
   @IsOptional()
-  @IsString()
-  description?: string;
+  @IsObject()
+  description?: Record<string, string>;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -135,6 +165,34 @@ export class UpdateTournamentDto {
   @IsNumber()
   @Min(0.01)
   buyIn?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(2)
+  @Max(1000)
+  maxPlayers?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(2)
+  @Max(1000)
+  minPlayers?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  groupCount?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  groupSize?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

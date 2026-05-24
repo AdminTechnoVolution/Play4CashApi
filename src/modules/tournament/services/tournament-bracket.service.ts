@@ -191,7 +191,7 @@ export class TournamentBracketService {
       .sort({ seed: 1 })
       .exec();
 
-    for (let g = 1; g <= TOURNAMENT_GROUP_COUNT; g++) {
+    for (let g = 1; g <= tournament.group_count; g++) {
       await this.groupModel.findOneAndUpdate(
         { tournament_id: tournament._id, group_number: g },
         { $set: { status: 'active' } },
@@ -202,7 +202,7 @@ export class TournamentBracketService {
     const seed = tournament.bracket_seed || tournament._id.toString();
     const allDefs: BracketMatchDef[] = [];
 
-    for (let g = 1; g <= TOURNAMENT_GROUP_COUNT; g++) {
+    for (let g = 1; g <= tournament.group_count; g++) {
       const groupPlayers = participants
         .filter((p) => p.group_number === g)
         .sort((a, b) => (a.seed ?? 0) - (b.seed ?? 0))
@@ -260,7 +260,7 @@ export class TournamentBracketService {
       .sort({ seed: 1 })
       .exec();
 
-    if (groupWinners.length !== TOURNAMENT_GROUP_COUNT) {
+    if (groupWinners.length !== tournament.group_count) {
       throw new Error('Not all group winners decided');
     }
 

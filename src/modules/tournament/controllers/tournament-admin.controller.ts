@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Get,
-  Headers,
   Param,
   Patch,
   Post,
@@ -37,19 +36,19 @@ export class TournamentAdminController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'List all tournaments' })
+  @ApiOperation({ summary: 'List all tournaments (full i18n + editable fields)' })
   async findAll() {
     const list = await this.adminService.findAll();
-    const data = await Promise.all(list.map((t) => this.stateService.toPublicDetail(t)));
+    const data = await Promise.all(list.map((t) => this.stateService.toAdminDetail(t)));
     return { success: true, messages: [], data };
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get tournament detail (admin)' })
+  @ApiOperation({ summary: 'Get tournament detail (admin, full i18n)' })
   @ApiParam({ name: 'id' })
   async findOne(@Param('id') id: string) {
     const t = await this.adminService.findById(id);
-    const data = await this.stateService.toPublicDetail(t);
+    const data = await this.stateService.toAdminDetail(t);
     return { success: true, messages: [], data };
   }
 
@@ -57,15 +56,15 @@ export class TournamentAdminController {
   @ApiOperation({ summary: 'Create tournament (draft)' })
   async create(@Body() body: CreateTournamentDto) {
     const t = await this.adminService.create(body);
-    const data = await this.stateService.toPublicDetail(t);
+    const data = await this.stateService.toAdminDetail(t);
     return { success: true, messages: [], data };
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update draft tournament' })
+  @ApiOperation({ summary: 'Update draft tournament (all configurable fields)' })
   async update(@Param('id') id: string, @Body() body: UpdateTournamentDto) {
     const t = await this.adminService.update(id, body);
-    const data = await this.stateService.toPublicDetail(t);
+    const data = await this.stateService.toAdminDetail(t);
     return { success: true, messages: [], data };
   }
 
@@ -73,7 +72,7 @@ export class TournamentAdminController {
   @ApiOperation({ summary: 'Open tournament for registration' })
   async open(@Param('id') id: string) {
     const t = await this.adminService.open(id);
-    const data = await this.stateService.toPublicDetail(t);
+    const data = await this.stateService.toAdminDetail(t);
     return { success: true, messages: [], data };
   }
 
@@ -86,7 +85,7 @@ export class TournamentAdminController {
       t._id as any,
       parts.map((p) => ({ user_id: p.user_id as any, amount: t.buy_in })),
     );
-    const data = await this.stateService.toPublicDetail(t);
+    const data = await this.stateService.toAdminDetail(t);
     return { success: true, messages: [], data };
   }
 
@@ -96,7 +95,7 @@ export class TournamentAdminController {
     const t = await this.adminService.findById(id);
     t.starts_at = new Date();
     await t.save();
-    const data = await this.stateService.toPublicDetail(t);
+    const data = await this.stateService.toAdminDetail(t);
     return { success: true, messages: [], data };
   }
 }
