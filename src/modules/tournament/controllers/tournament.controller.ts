@@ -24,10 +24,13 @@ export class TournamentController {
 
   @Get()
   @ApiOperation({ summary: 'List visible tournaments' })
-  async list(@Headers('accept-language') lang: string) {
+  async list(
+    @CurrentUser() user: JwtPayload,
+    @Headers('accept-language') lang: string,
+  ) {
     const list = await this.stateService.listVisible();
     const data = await Promise.all(
-      list.map((t) => this.stateService.toPublicDetail(t, undefined, lang)),
+      list.map((t) => this.stateService.toPublicDetail(t, user?.id, lang)),
     );
     return { success: true, messages: [], data };
   }
