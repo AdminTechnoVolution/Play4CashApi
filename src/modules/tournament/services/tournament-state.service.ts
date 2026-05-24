@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Tournament, TournamentDocument } from '../schemas/tournament.schema';
 import {
   TournamentParticipant,
@@ -14,12 +14,16 @@ import {
   TournamentMatch,
   TournamentMatchDocument,
 } from '../schemas/tournament-match.schema';
-import { TournamentStatus } from '../constants/tournament.constants';
 import {
   pickLocalizedField,
   resolveRequestLang,
   toAdminTournamentRecord,
 } from '../tournament-language.util';
+import {
+  TournamentMatchStatus,
+  TournamentParticipantStatus,
+  TournamentStatus,
+} from '../constants/tournament.constants';
 
 export interface TournamentTimeProjection {
   serverNow: string;
@@ -67,6 +71,52 @@ export class TournamentStateService {
     };
   }
 
+  async resolveMyActiveMatch(tournamentId: Types.ObjectId, userId: string) {
+    const uid = new Types.ObjectId(userId);
+    const match = await this.matchModel
+      .findOne({
+        tournament_id: tournamentId,
+        $or: [{ player_a_user_id: uid }, { player_b_user_id: uid }],
+        status: {
+          $in: [
+            TournamentMatchStatus.WAITING_PRESENCE,
+            TournamentMatchStatus.READY,
+            TournamentMatchStatus.STARTED,
+          ],
+        },
+      })
+      .sort({ round_index: -1, match_index: 1 })
+      .lean();
+
+    if (!match) return null;
+
+    const opponentId =
+      match.player_a_user_id?.toString() === userId
+        ? match.player_b_user_id
+        : match.player_a_user_id;
+    let opponentUsername: string | null = null;
+    if (opponentId) {
+      const opp = await this.participantModel
+        .findOne({ tournament_id: tournamentId, user_id: opponentId })
+        .select('username')
+        .lean();
+      opponentUsername = opp?.username ?? null;
+    }
+
+    const roomId = match.room_id?.toString() ?? null;
+    const status = match.status;
+    return {
+      matchId: match._id.toString(),
+      status,
+      roomId,
+      roundName: match.round_name,
+      opponentUsername,
+      presenceCheckAt: match.presence_check_at?.toISOString() ?? null,
+      canJoin: !!roomId && (status === TournamentMatchStatus.READY || status === TournamentMatchStatus.STARTED),
+      needsLobby: status === TournamentMatchStatus.WAITING_PRESENCE,
+    };
+  }
+
   async toPublicDetail(t: TournamentDocument, userId?: string, langHeader?: string) {
     const lang = resolveRequestLang(langHeader);
     const time = this.buildTimeProjection(t);
@@ -77,7 +127,7 @@ export class TournamentStateService {
     } | null = null;
     if (userId) {
       const reg = await this.participantModel
-        .findOne({ tournament_id: t._id, user_id: userId })
+        .findOne({ tournament_id: t._id, user_id: new Types.ObjectId(userId) })
         .lean();
       if (reg) {
         myRegistration = {
@@ -86,6 +136,10 @@ export class TournamentStateService {
           groupNumber: reg.group_number,
         };
       }
+    }
+    let myActiveMatch: Awaited<ReturnType<TournamentStateService['resolveMyActiveMatch']>> = null;
+    if (userId) {
+      myActiveMatch = await this.resolveMyActiveMatch(t._id as Types.ObjectId, userId);
     }
     return {
       id: t._id.toString(),
@@ -109,6 +163,7 @@ export class TournamentStateService {
       winnerUserId: t.winner_user_id?.toString() ?? null,
       runnerUpUserId: t.runner_up_user_id?.toString() ?? null,
       myRegistration,
+      myActiveMatch,
       ...time,
     };
   }
@@ -122,7 +177,7 @@ export class TournamentStateService {
     } | null = null;
     if (userId) {
       const reg = await this.participantModel
-        .findOne({ tournament_id: t._id, user_id: userId })
+        .findOne({ tournament_id: t._id, user_id: new Types.ObjectId(userId) })
         .lean();
       if (reg) {
         myRegistration = {
@@ -174,6 +229,33 @@ export class TournamentStateService {
       groupMatches: matches.filter((m) => m.phase === 'groups').map(mapMatch),
       finalsMatches: matches.filter((m) => m.phase === 'finals').map(mapMatch),
     };
+  }
+
+  async listForUser(userId: string, langHeader?: string) {
+    const parts = await this.participantModel
+      .find({
+        user_id: new Types.ObjectId(userId),
+        status: { $nin: [TournamentParticipantStatus.REFUNDED] },
+      })
+      .lean();
+    if (parts.length === 0) return [];
+
+    const ids = parts.map((p) => p.tournament_id);
+    const tournaments = await this.tournamentModel
+      .find({
+        _id: { $in: ids },
+        status: {
+          $nin: [
+            TournamentStatus.DRAFT,
+            TournamentStatus.CANCELLED,
+            TournamentStatus.FINISHED,
+          ],
+        },
+      })
+      .sort({ starts_at: 1 })
+      .exec();
+
+    return Promise.all(tournaments.map((t) => this.toPublicDetail(t, userId, langHeader)));
   }
 
   async listVisible(): Promise<TournamentDocument[]> {

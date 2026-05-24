@@ -21,6 +21,7 @@ import { TournamentBracketService } from './tournament-bracket.service';
 import { TournamentMatchService } from './tournament-match.service';
 import { TournamentPresenceService } from './tournament-presence.service';
 import { TournamentLedgerService } from './tournament-ledger.service';
+import { TournamentsGateway } from '../../websockets/tournaments/tournaments.gateway';
 
 @Injectable()
 export class TournamentSchedulerService {
@@ -36,6 +37,7 @@ export class TournamentSchedulerService {
     private readonly presenceService: TournamentPresenceService,
     private readonly ledger: TournamentLedgerService,
     @Inject(REDIS_CLIENT) private readonly redis: any,
+    private readonly tournamentsGateway: TournamentsGateway,
   ) {}
 
   @Cron(CronExpression.EVERY_SECOND)
@@ -87,6 +89,7 @@ export class TournamentSchedulerService {
         fresh.current_round_index = 0;
         await fresh.save();
         await this.matchService.activateRoundMatches(fresh, 0);
+        void this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
       });
     }
   }
@@ -138,6 +141,7 @@ export class TournamentSchedulerService {
           m.status = TournamentMatchStatus.STARTED;
           m.started_at = new Date();
           await m.save();
+          void this.tournamentsGateway.emitMatchUpdate(tid);
         }
       } else if (aPresent && !bPresent) {
         await this.matchService.forfeitMatch(m._id.toString(), playerA, 'forfeit_absent_start');

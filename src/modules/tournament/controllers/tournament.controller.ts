@@ -35,6 +35,16 @@ export class TournamentController {
     return { success: true, messages: [], data };
   }
 
+  @Get('mine')
+  @ApiOperation({ summary: 'My registered upcoming/live tournaments' })
+  async mine(
+    @CurrentUser() user: JwtPayload,
+    @Headers('accept-language') lang: string,
+  ) {
+    const data = await this.stateService.listForUser(user.id, lang);
+    return { success: true, messages: [], data };
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Tournament detail' })
   @ApiParam({ name: 'id' })
