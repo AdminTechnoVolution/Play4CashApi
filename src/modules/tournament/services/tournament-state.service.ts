@@ -73,6 +73,20 @@ export class TournamentStateService {
 
   async resolveMyActiveMatch(tournamentId: Types.ObjectId, userId: string) {
     const uid = new Types.ObjectId(userId);
+    const reg = await this.participantModel
+      .findOne({ tournament_id: tournamentId, user_id: uid })
+      .select('status')
+      .lean();
+    if (!reg) return null;
+    const blocked = new Set<string>([
+      TournamentParticipantStatus.ELIMINATED,
+      TournamentParticipantStatus.FORFEITED,
+      TournamentParticipantStatus.REFUNDED,
+      TournamentParticipantStatus.RUNNER_UP,
+      TournamentParticipantStatus.WINNER,
+    ]);
+    if (blocked.has(reg.status)) return null;
+
     const match = await this.matchModel
       .findOne({
         tournament_id: tournamentId,

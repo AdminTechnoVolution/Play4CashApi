@@ -2,7 +2,7 @@ import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { ConfigService } from '@nestjs/config';
@@ -14,6 +14,7 @@ import { RoomsGateway } from '../rooms/rooms.gateway';
 import { ChessGame, ChessGameDocument } from './schemas/chess-game.schema';
 import { I18nService } from '../../../common/i18n/i18n.service';
 import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
+import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
 import {
   createInitialBoard,
   getLegalMoves,
@@ -61,6 +62,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    @Optional() private readonly tournamentMatchService?: TournamentMatchService,
   ) {}
 
   /** Phase B: register the forfeit handler with the distributed grace sweeper. */
@@ -157,8 +159,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     room.finished_at = new Date();
     await room.save();
 
-    const pc = room.players.length;
-    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, pc);
+    await this.tournamentMatchService?.tryCompleteFromFinishedRoom(
+      room,
+      winner_id.toString(),
+      'forfeit',
+    );
+
+    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
     await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
@@ -447,6 +454,14 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
       }
       await room.save();
+      if (result.winner) {
+        const winnerId = result.winner === 1 ? game.player1_id : game.player2_id;
+        await this.tournamentMatchService?.tryCompleteFromFinishedRoom(
+          room,
+          winnerId.toString(),
+          result.reason || 'normal',
+        );
+      }
       clearTimer(client.id);
 
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -524,6 +539,11 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       if (room && room.status === 'started') {
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = 'timeout'; room.finished_at = new Date();
         await room.save();
+        await this.tournamentMatchService?.tryCompleteFromFinishedRoom(
+          room,
+          winnerId.toString(),
+          'timeout',
+        );
         const grossPayout = winnerGrossPayout(
           room.bet_amount,
           room.house_edge,
