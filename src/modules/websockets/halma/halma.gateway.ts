@@ -2,7 +2,7 @@ import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { ConfigService } from '@nestjs/config';
@@ -15,6 +15,7 @@ import { HalmaGame, HalmaGameDocument } from './schemas/halma-game.schema';
 import { createHalmaBoard, isValidStep, isValidJump, canJumpFurther, HalmaBoard, P1_NORMAL, P2_NORMAL, P1_KING, P2_KING, isOwner } from './halma-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
 import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
+import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -46,6 +47,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    @Optional() private readonly tournamentMatchService?: TournamentMatchService,
   ) {}
 
   /** Phase B: register the forfeit handler with the distributed grace sweeper. */
@@ -121,6 +123,12 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     room.winner_reason = 'forfeit';
     room.finished_at = new Date();
     await room.save();
+
+    await this.tournamentMatchService?.tryCompleteFromFinishedRoom(
+      room,
+      winner_id.toString(),
+      'forfeit',
+    );
 
     const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
     await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
@@ -534,6 +542,11 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           const winnerId = automatedWinner === 1 ? game.player1_id : game.player2_id;
           room.winner = winnerId; room.winner_reason = winReason;
           await room.save();
+          await this.tournamentMatchService?.tryCompleteFromFinishedRoom(
+            room,
+            winnerId.toString(),
+            winReason,
+          );
           const grossPayout = winnerGrossPayout(
             room.bet_amount,
             room.house_edge,
@@ -603,6 +616,11 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       if (room && room.status === 'started') {
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = 'timeout'; room.finished_at = new Date();
         await room.save();
+        await this.tournamentMatchService?.tryCompleteFromFinishedRoom(
+          room,
+          winnerId.toString(),
+          'timeout',
+        );
         const grossPayout = winnerGrossPayout(
           room.bet_amount,
           room.house_edge,

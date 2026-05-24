@@ -199,6 +199,18 @@ export class TournamentMatchService {
     await tournament.save();
   }
 
+  async tryCompleteFromFinishedRoom(
+    room: RoomDocument,
+    winnerId: string,
+    reason: string,
+  ): Promise<void> {
+    if (room.source !== 'tournament' || !room.tournament_match_id) return;
+    const loserId = room.players
+      ?.find((p) => p.playerId.toString() !== winnerId)
+      ?.playerId?.toString();
+    await this.completeFromGameRoom(room, { winnerId, loserId, reason });
+  }
+
   async completeFromGameRoom(
     room: RoomDocument,
     result: { winnerId: string; loserId?: string; reason: string },
