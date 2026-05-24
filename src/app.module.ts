@@ -26,6 +26,7 @@ import { GreetingModule } from './modules/greeting/greeting.module';
 import { AppVersionModule } from './modules/app-version/app-version.module';
 import { GracePeriodModule } from './common/grace-period/grace-period.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
+import { TournamentModule } from './modules/tournament/tournament.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -81,6 +82,7 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
     AppVersionModule,
     GracePeriodModule,
     IdempotencyModule,
+    TournamentModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

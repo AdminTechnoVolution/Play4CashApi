@@ -28,8 +28,8 @@ export class Room {
   @Prop({ type: Types.ObjectId, ref: 'Game', required: true }) game_id: Types.ObjectId;
   @Prop({ type: [RoomPlayer], default: [] }) players: RoomPlayer[];
   @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] }) spectators: Types.ObjectId[];
-  @Prop({ required: true, min: 1 }) bet_amount: number;
-  @Prop({ required: true, min: 1, max: 100 }) house_edge: number;
+  @Prop({ required: true, min: 0 }) bet_amount: number;
+  @Prop({ required: true, min: 0, max: 100 }) house_edge: number;
   @Prop({ required: true }) public: boolean;
   @Prop() player_limit: number;
   @Prop({
@@ -44,6 +44,15 @@ export class Room {
   @Prop({ type: Types.ObjectId, ref: 'User' }) winner: Types.ObjectId;
   @Prop() winner_reason: string;
   @Prop() turn_start_time: Date;
+  @Prop({ type: String, enum: ['casual', 'tournament'], default: 'casual' })
+  source: string;
+  @Prop({ type: Types.ObjectId, ref: 'Tournament' })
+  tournament_id?: Types.ObjectId;
+  @Prop({ type: Types.ObjectId })
+  tournament_match_id?: Types.ObjectId;
+  /** Override game catalog turn timer (tournament rooms). */
+  @Prop({ min: 1 })
+  turn_timer_seconds?: number;
 }
 
 export const RoomSchema = SchemaFactory.createForClass(Room);

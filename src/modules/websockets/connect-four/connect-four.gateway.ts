@@ -8,7 +8,7 @@ import {
   OnGatewayDisconnect,
   OnGatewayInit,
 } from '@nestjs/websockets';
-import { Inject, Logger, OnModuleInit } from '@nestjs/common';
+import { Inject, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
 import { ConfigService } from '@nestjs/config';
@@ -29,6 +29,8 @@ import {
   type ConnectFourBoard,
   type ConnectFourColor,
 } from './connect-four-game.logic';
+import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
+import { resolveTurnTimerSeconds } from '../../../common/utils/turn-timer.util';
 
 const EVENT = 'connect-four';
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -57,6 +59,7 @@ export class ConnectFourGateway
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    @Optional() private readonly tournamentMatchService?: TournamentMatchService,
   ) {}
 
   onModuleInit() {
@@ -669,7 +672,23 @@ export class ConnectFourGateway
 
     if (!finishedRoom) return null;
 
-    if (outcome.kind === 'draw') {
+    const isTournament = finishedRoom.source === 'tournament' && finishedRoom.tournament_match_id;
+
+    if (isTournament && this.tournamentMatchService) {
+      const loserId =
+        outcome.kind === 'win' && winnerId
+          ? game.player1_id.toString() === winnerId.toString()
+            ? game.player2_id.toString()
+            : game.player1_id.toString()
+          : undefined;
+      if (outcome.kind === 'win' && winnerId) {
+        await this.tournamentMatchService.completeFromGameRoom(finishedRoom, {
+          winnerId: winnerId.toString(),
+          loserId,
+          reason: 'normal',
+        });
+      }
+    } else if (outcome.kind === 'draw') {
       // Draw settlement (Halma-style): refund each player's stake. Bets were deducted at
       // match start; no house edge is applied on ties.
       await this.userModel.updateOne(
@@ -680,7 +699,7 @@ export class ConnectFourGateway
         { _id: game.player2_id },
         { $inc: { balance: finishedRoom.bet_amount } },
       );
-    } else {
+    } else if (!isTournament) {
       const grossPayout = winnerGrossPayout(
         finishedRoom.bet_amount,
         finishedRoom.house_edge,
