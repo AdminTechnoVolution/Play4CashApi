@@ -8,12 +8,15 @@ import { Model, Types } from 'mongoose';
 import { randomUUID } from 'crypto';
 import { Tournament, TournamentDocument } from '../schemas/tournament.schema';
 import {
-  TOURNAMENT_MVP_PLAYER_COUNT,
   TOURNAMENT_SUPPORTED_SOCKET_CODES,
   TournamentStatus,
 } from '../constants/tournament.constants';
 import { CreateTournamentDto, UpdateTournamentDto } from '../dtos/tournament.dto';
 import { Game, GameDocument } from '../../game/schemas/game.schema';
+import {
+  normalizeLanguageField,
+  normalizeOptionalLanguageField,
+} from '../tournament-language.util';
 
 @Injectable()
 export class TournamentAdminService {
@@ -22,11 +25,9 @@ export class TournamentAdminService {
     @InjectModel(Game.name) private readonly gameModel: Model<GameDocument>,
   ) {}
 
-  private validateMvpPlayerCount(max: number, min: number): void {
-    if (max !== TOURNAMENT_MVP_PLAYER_COUNT || min !== TOURNAMENT_MVP_PLAYER_COUNT) {
-      throw new BadRequestException(
-        `MVP tournaments require exactly ${TOURNAMENT_MVP_PLAYER_COUNT} players`,
-      );
+  private validateGroupLayout(max: number, groupCount: number, groupSize: number): void {
+    if (groupCount * groupSize !== max) {
+      throw new BadRequestException('groupCount × groupSize must equal maxPlayers');
     }
   }
 
@@ -56,7 +57,10 @@ export class TournamentAdminService {
   }
 
   async create(dto: CreateTournamentDto): Promise<TournamentDocument> {
-    this.validateMvpPlayerCount(dto.maxPlayers, dto.minPlayers);
+    const groupCount = dto.groupCount ?? 5;
+    const groupSize = dto.groupSize ?? 10;
+    this.validateGroupLayout(dto.maxPlayers, groupCount, groupSize);
+
     const house = dto.houseFeePercent ?? 10;
     const first = dto.firstPlacePercent ?? 70;
     const second = dto.secondPlacePercent ?? 20;
@@ -66,14 +70,16 @@ export class TournamentAdminService {
     const startsAt = new Date(dto.startsAt);
 
     return this.tournamentModel.create({
-      title: dto.title.trim(),
-      description: (dto.description ?? '').trim(),
+      title: normalizeLanguageField(dto.title, 'TITLE'),
+      description: normalizeOptionalLanguageField(dto.description),
       game_id: game._id,
       game_socket_code: game.socket_code,
       status: TournamentStatus.DRAFT,
       buy_in: dto.buyIn,
       max_players: dto.maxPlayers,
       min_players: dto.minPlayers,
+      group_count: groupCount,
+      group_size: groupSize,
       starts_at: startsAt,
       registration_opens_at: dto.registrationOpensAt ? new Date(dto.registrationOpensAt) : undefined,
       registration_closes_at: dto.registrationClosesAt
@@ -96,6 +102,17 @@ export class TournamentAdminService {
       throw new BadRequestException('Only draft tournaments can be edited');
     }
 
+    const nextMax = dto.maxPlayers ?? t.max_players;
+    const nextGroupCount = dto.groupCount ?? t.group_count;
+    const nextGroupSize = dto.groupSize ?? t.group_size;
+    if (
+      dto.maxPlayers != null ||
+      dto.groupCount != null ||
+      dto.groupSize != null
+    ) {
+      this.validateGroupLayout(nextMax, nextGroupCount, nextGroupSize);
+    }
+
     if (dto.houseFeePercent != null || dto.firstPlacePercent != null || dto.secondPlacePercent != null) {
       this.validatePercents(
         dto.houseFeePercent ?? t.house_fee_percent,
@@ -109,9 +126,13 @@ export class TournamentAdminService {
       t.game_id = game._id as Types.ObjectId;
       t.game_socket_code = game.socket_code;
     }
-    if (dto.title != null) t.title = dto.title.trim();
-    if (dto.description != null) t.description = dto.description.trim();
+    if (dto.title != null) t.title = normalizeLanguageField(dto.title, 'TITLE');
+    if (dto.description != null) t.description = normalizeOptionalLanguageField(dto.description);
     if (dto.buyIn != null) t.buy_in = dto.buyIn;
+    if (dto.maxPlayers != null) t.max_players = dto.maxPlayers;
+    if (dto.minPlayers != null) t.min_players = dto.minPlayers;
+    if (dto.groupCount != null) t.group_count = dto.groupCount;
+    if (dto.groupSize != null) t.group_size = dto.groupSize;
     if (dto.startsAt != null) t.starts_at = new Date(dto.startsAt);
     if (dto.registrationOpensAt != null) t.registration_opens_at = new Date(dto.registrationOpensAt);
     if (dto.registrationClosesAt != null) t.registration_closes_at = new Date(dto.registrationClosesAt);
@@ -139,6 +160,7 @@ export class TournamentAdminService {
       throw new BadRequestException('startsAt must be in the future');
     }
     this.validatePercents(t.house_fee_percent, t.first_place_percent, t.second_place_percent);
+    this.validateGroupLayout(t.max_players, t.group_count, t.group_size);
     t.status = TournamentStatus.OPEN;
     if (!t.registration_opens_at) t.registration_opens_at = new Date();
     if (!t.registration_closes_at) t.registration_closes_at = t.starts_at;

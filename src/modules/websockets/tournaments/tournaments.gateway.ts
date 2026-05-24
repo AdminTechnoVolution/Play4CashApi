@@ -18,6 +18,7 @@ import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { Tournament, TournamentDocument } from '../../tournament/schemas/tournament.schema';
 import { TournamentStateService } from '../../tournament/services/tournament-state.service';
 import { TournamentPresenceService } from '../../tournament/services/tournament-presence.service';
+import { resolveWsLang } from '../../tournament/tournament-language.util';
 
 const EVENT = 'tournament';
 
@@ -56,13 +57,21 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
   async emitState(tournamentId: string): Promise<void> {
     const t = await this.tournamentModel.findById(tournamentId);
     if (!t) return;
-    const data = await this.stateService.toPublicDetail(t);
-    this.server.to(this.roomId(tournamentId)).emit(EVENT, {
-      success: true,
-      event: 'tournament:state',
-      data,
-      messages: [],
-    });
+    const room = this.roomId(tournamentId);
+    const sockets = await this.server.in(room).fetchSockets();
+    await Promise.all(
+      sockets.map(async (remote) => {
+        const lang = resolveWsLang(remote as unknown as Socket);
+        const uid = remote.data.player_id as string | undefined;
+        const data = await this.stateService.toPublicDetail(t, uid, lang);
+        remote.emit(EVENT, {
+          success: true,
+          event: 'tournament:state',
+          data,
+          messages: [],
+        });
+      }),
+    );
   }
 
   @SubscribeMessage('tournament:join')
@@ -76,13 +85,14 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
     }
     await client.join(this.roomId(tournamentId));
     client.data.tournament_id = tournamentId;
+    client.data.lang = resolveWsLang(client);
     const uid = client.data.player_id as string;
     if (uid) await this.presenceService.markPresent(tournamentId, uid);
     const t = await this.tournamentModel.findById(tournamentId);
     if (!t) {
       return client.emit(EVENT, { success: false, event: 'tournament:error', messages: ['Not found'] });
     }
-    const data = await this.stateService.toPublicDetail(t, uid);
+    const data = await this.stateService.toPublicDetail(t, uid, client.data.lang);
     client.emit(EVENT, { success: true, event: 'tournament:state', data, messages: [] });
   }
 
@@ -104,7 +114,8 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
     }
     const t = await this.tournamentModel.findById(tid);
     if (!t) return;
-    const data = await this.stateService.toPublicDetail(t, client.data.player_id);
+    const lang = client.data.lang ?? resolveWsLang(client);
+    const data = await this.stateService.toPublicDetail(t, client.data.player_id, lang);
     client.emit(EVENT, { success: true, event: 'tournament:state', data, messages: [] });
   }
 

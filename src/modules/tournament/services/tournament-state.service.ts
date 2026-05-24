@@ -15,6 +15,11 @@ import {
   TournamentMatchDocument,
 } from '../schemas/tournament-match.schema';
 import { TournamentStatus } from '../constants/tournament.constants';
+import {
+  pickLocalizedField,
+  resolveRequestLang,
+  toAdminTournamentRecord,
+} from '../tournament-language.util';
 
 export interface TournamentTimeProjection {
   serverNow: string;
@@ -62,7 +67,8 @@ export class TournamentStateService {
     };
   }
 
-  async toPublicDetail(t: TournamentDocument, userId?: string) {
+  async toPublicDetail(t: TournamentDocument, userId?: string, langHeader?: string) {
+    const lang = resolveRequestLang(langHeader);
     const time = this.buildTimeProjection(t);
     let myRegistration: {
       status: string;
@@ -83,8 +89,8 @@ export class TournamentStateService {
     }
     return {
       id: t._id.toString(),
-      title: t.title,
-      description: t.description,
+      title: pickLocalizedField(t.title, lang),
+      description: pickLocalizedField(t.description, lang),
       gameSocketCode: t.game_socket_code,
       gameId: t.game_id.toString(),
       buyIn: t.buy_in,
@@ -104,6 +110,35 @@ export class TournamentStateService {
       runnerUpUserId: t.runner_up_user_id?.toString() ?? null,
       myRegistration,
       ...time,
+    };
+  }
+
+  async toAdminDetail(t: TournamentDocument, userId?: string) {
+    const base = toAdminTournamentRecord(t);
+    let myRegistration: {
+      status: string;
+      seed?: number;
+      groupNumber?: number;
+    } | null = null;
+    if (userId) {
+      const reg = await this.participantModel
+        .findOne({ tournament_id: t._id, user_id: userId })
+        .lean();
+      if (reg) {
+        myRegistration = {
+          status: reg.status,
+          seed: reg.seed,
+          groupNumber: reg.group_number,
+        };
+      }
+    }
+    const time = this.buildTimeProjection(t);
+    return {
+      ...base,
+      myRegistration,
+      serverNow: time.serverNow,
+      remainingMs: time.remainingMs,
+      pauseRemainingMs: time.pauseRemainingMs,
     };
   }
 

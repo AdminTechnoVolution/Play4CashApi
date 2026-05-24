@@ -22,6 +22,7 @@ import {
   TournamentStatus,
   TOURNAMENT_GROUP_COUNT,
 } from '../constants/tournament.constants';
+import { pickLocalizedField } from '../tournament-language.util';
 import { TournamentBracketService } from './tournament-bracket.service';
 import { TournamentSettlementService } from './tournament-settlement.service';
 
@@ -55,7 +56,7 @@ export class TournamentMatchService {
     }
 
     const room = await this.roomModel.create({
-      name: `Tournament ${tournament.title}`,
+      name: `Tournament ${pickLocalizedField(tournament.title, 'en')}`,
       code,
       game_id: tournament.game_id,
       players,
@@ -178,7 +179,7 @@ export class TournamentMatchService {
       status: TournamentParticipantStatus.GROUP_WINNER,
     });
 
-    if (winners >= TOURNAMENT_GROUP_COUNT) {
+    if (winners >= tournament.group_count) {
       await this.bracketService.generateFinalsBracket(tournament);
       tournament.status = TournamentStatus.FINALS_RUNNING;
       tournament.current_phase = TournamentPhase.FINALS;

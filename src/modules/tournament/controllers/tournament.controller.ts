@@ -24,26 +24,36 @@ export class TournamentController {
 
   @Get()
   @ApiOperation({ summary: 'List visible tournaments' })
-  async list() {
+  async list(@Headers('accept-language') lang: string) {
     const list = await this.stateService.listVisible();
-    const data = await Promise.all(list.map((t) => this.stateService.toPublicDetail(t)));
+    const data = await Promise.all(
+      list.map((t) => this.stateService.toPublicDetail(t, undefined, lang)),
+    );
     return { success: true, messages: [], data };
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Tournament detail' })
   @ApiParam({ name: 'id' })
-  async getOne(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+  async getOne(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Headers('accept-language') lang: string,
+  ) {
     const t = await this.adminService.findById(id);
-    const data = await this.stateService.toPublicDetail(t, user.id);
+    const data = await this.stateService.toPublicDetail(t, user.id, lang);
     return { success: true, messages: [], data };
   }
 
   @Get(':id/state')
   @ApiOperation({ summary: 'Compact tournament state + official time' })
-  async getState(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+  async getState(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtPayload,
+    @Headers('accept-language') lang: string,
+  ) {
     const t = await this.adminService.findById(id);
-    const detail = await this.stateService.toPublicDetail(t, user.id);
+    const detail = await this.stateService.toPublicDetail(t, user.id, lang);
     return { success: true, messages: [], data: detail };
   }
 
