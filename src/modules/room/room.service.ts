@@ -76,6 +76,7 @@ export class RoomService {
       .find({
         game_id: new Types.ObjectId(gameId),
         status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
+        $or: [{ source: { $exists: false } }, { source: 'casual' }],
       })
       .populate('game_id', '-created_at')
       .populate('players.playerId', 'username')

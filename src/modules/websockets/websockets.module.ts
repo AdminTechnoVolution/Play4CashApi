@@ -17,10 +17,12 @@ import { UnoGame, UnoGameSchema } from './uno/schemas/uno-game.schema';
 import { BattleshipPlacement, BattleshipPlacementSchema } from '../naval-battle/schemas/battleship-placement.schema';
 import { User, UserSchema } from '../user/schemas/user.schema';
 import { Room, RoomSchema } from '../room/schemas/room.schema';
+import { TournamentModule } from '../tournament/tournament.module';
 import { Greeting, GreetingSchema } from '../greeting/schemas/greeting.schema';
 
 @Module({
   imports: [
+    TournamentModule,
     MongooseModule.forFeature([
       { name: ChessGame.name, schema: ChessGameSchema },
       { name: HalmaGame.name, schema: HalmaGameSchema },
