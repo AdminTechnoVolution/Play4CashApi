@@ -51,13 +51,13 @@ export class CreateTournamentDto {
   @Min(0.01)
   buyIn: number;
 
-  @ApiProperty({ default: 8, description: 'Even number — players are grouped in pairs (groupSize 2)' })
+  @ApiProperty({ default: 8, description: 'Power of 2 (2, 4, 8, 16…) — players are grouped in pairs (groupSize 2)' })
   @IsNumber()
   @Min(TOURNAMENT_MIN_PLAYERS)
   @Max(TOURNAMENT_MAX_PLAYERS)
   maxPlayers: number = 8;
 
-  @ApiProperty({ default: 4, description: 'Even number, at least 2, cannot exceed maxPlayers' })
+  @ApiProperty({ default: 4, description: 'Power of 2, at least 2, cannot exceed maxPlayers' })
   @IsNumber()
   @Min(TOURNAMENT_MIN_PLAYERS)
   @Max(TOURNAMENT_MAX_PLAYERS)

@@ -14,9 +14,15 @@ export interface TournamentLayout {
   groupCount: number;
 }
 
-export function assertEvenPlayerCount(value: number, field: string): void {
-  if (value % 2 !== 0) {
-    throw new BadRequestException(`${field} must be an even number (groups of 2)`);
+export function isPowerOfTwo(value: number): boolean {
+  return Number.isInteger(value) && value >= 2 && (value & (value - 1)) === 0;
+}
+
+export function assertPowerOfTwoPlayerCount(value: number, field: string): void {
+  if (!isPowerOfTwo(value)) {
+    throw new BadRequestException(
+      `${field} must be a power of 2 (e.g. 2, 4, 8, 16, 32…) for bracket sizing`,
+    );
   }
 }
 
@@ -35,8 +41,8 @@ export function resolveTournamentLayout(
       `maxPlayers must be between ${TOURNAMENT_MIN_PLAYERS} and ${TOURNAMENT_MAX_PLAYERS}`,
     );
   }
-  assertEvenPlayerCount(maxPlayers, 'maxPlayers');
-  assertEvenPlayerCount(minPlayers, 'minPlayers');
+  assertPowerOfTwoPlayerCount(maxPlayers, 'maxPlayers');
+  assertPowerOfTwoPlayerCount(minPlayers, 'minPlayers');
 
   if (minPlayers < TOURNAMENT_MIN_PLAYERS) {
     throw new BadRequestException(`minPlayers must be at least ${TOURNAMENT_MIN_PLAYERS}`);
