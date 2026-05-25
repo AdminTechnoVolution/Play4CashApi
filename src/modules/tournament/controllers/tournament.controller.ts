@@ -35,6 +35,16 @@ export class TournamentController {
     return { success: true, messages: [], data };
   }
 
+  @Get('history')
+  @ApiOperation({ summary: 'Past tournaments and results for current user' })
+  async history(
+    @CurrentUser() user: JwtPayload,
+    @Headers('accept-language') lang: string,
+  ) {
+    const data = await this.stateService.listHistoryForUser(user.id, lang);
+    return { success: true, messages: [], data };
+  }
+
   @Get('mine')
   @ApiOperation({ summary: 'My registered upcoming/live tournaments' })
   async mine(
