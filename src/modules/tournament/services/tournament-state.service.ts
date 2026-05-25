@@ -285,6 +285,87 @@ export class TournamentStateService {
     return Promise.all(tournaments.map((t) => this.toPublicDetail(t, userId, langHeader)));
   }
 
+  async listHistoryForUser(userId: string, langHeader?: string) {
+    const lang = resolveRequestLang(langHeader);
+    const uid = new Types.ObjectId(userId);
+    const parts = await this.participantModel
+      .find({ user_id: uid })
+      .sort({ registered_at: -1 })
+      .lean();
+    if (parts.length === 0) return [];
+
+    const partByTournament = new Map(parts.map((p) => [p.tournament_id.toString(), p]));
+    const tournamentIds = parts.map((p) => p.tournament_id);
+
+    const tournaments = await this.tournamentModel
+      .find({
+        _id: { $in: tournamentIds },
+        status: { $in: [TournamentStatus.FINISHED, TournamentStatus.CANCELLED] },
+      })
+      .sort({ finished_at: -1, starts_at: -1 })
+      .lean();
+
+    return tournaments
+      .map((t) => {
+        const p = partByTournament.get(t._id.toString());
+        if (!p) return null;
+
+        const { first, second } = this.resolvePlaceAmounts(t);
+        let prizeAmount = 0;
+        if (p.status === TournamentParticipantStatus.WINNER) {
+          prizeAmount = first;
+        } else if (p.status === TournamentParticipantStatus.RUNNER_UP) {
+          prizeAmount = second;
+        } else if (
+          t.status === TournamentStatus.CANCELLED &&
+          p.status !== TournamentParticipantStatus.REFUNDED
+        ) {
+          prizeAmount = t.buy_in;
+        }
+
+        return {
+          id: t._id.toString(),
+          title: pickLocalizedField(t.title, lang),
+          gameSocketCode: t.game_socket_code,
+          status: t.status,
+          buyIn: t.buy_in,
+          maxPlayers: t.max_players,
+          registeredCount: t.registered_count,
+          grossPrizePool: t.gross_prize_pool,
+          houseFeePercent: t.house_fee_percent,
+          firstPlacePercent: t.first_place_percent,
+          firstPlaceAmount: t.first_place_amount,
+          secondPlaceAmount: t.second_place_amount,
+          participantStatus: p.status,
+          finalRank: p.final_rank ?? null,
+          prizeAmount,
+          finishedAt: t.finished_at?.toISOString() ?? null,
+          startedAt: t.starts_at.toISOString(),
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row != null);
+  }
+
+  private resolvePlaceAmounts(
+    t: Pick<
+      TournamentDocument,
+      | 'gross_prize_pool'
+      | 'house_fee_percent'
+      | 'first_place_percent'
+      | 'first_place_amount'
+      | 'second_place_amount'
+    >,
+  ): { first: number; second: number } {
+    if (t.first_place_amount > 0 || t.second_place_amount > 0) {
+      return { first: t.first_place_amount, second: t.second_place_amount };
+    }
+    const gross = t.gross_prize_pool ?? 0;
+    const house = Math.round(gross * (t.house_fee_percent / 100) * 100) / 100;
+    const first = Math.round(gross * (t.first_place_percent / 100) * 100) / 100;
+    const second = Math.round(Math.max(0, gross - house - first) * 100) / 100;
+    return { first, second };
+  }
+
   async listVisible(): Promise<TournamentDocument[]> {
     return this.tournamentModel
       .find({

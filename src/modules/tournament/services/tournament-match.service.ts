@@ -2,7 +2,6 @@ import { Injectable, Logger, forwardRef, Inject } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { randomBytes } from 'crypto';
-import { appendFileSync } from 'fs';
 import {
   TournamentMatch,
   TournamentMatchDocument,
@@ -26,19 +25,6 @@ import { pickLocalizedField } from '../tournament-language.util';
 import { TournamentBracketService } from './tournament-bracket.service';
 import { TournamentSettlementService } from './tournament-settlement.service';
 import { TournamentsGateway } from '../../websockets/tournaments/tournaments.gateway';
-
-const DEBUG_LOG_PATH = '/Users/darricordoba/Documents/GitHub/Play4CashPWA/.cursor/debug-83380c.log';
-
-function agentDebugLog(payload: Record<string, unknown>): void {
-  try {
-    appendFileSync(
-      DEBUG_LOG_PATH,
-      `${JSON.stringify({ sessionId: '83380c', timestamp: Date.now(), ...payload })}\n`,
-    );
-  } catch {
-    /* ignore */
-  }
-}
 
 @Injectable()
 export class TournamentMatchService {
@@ -190,23 +176,9 @@ export class TournamentMatchService {
     const tournament = await this.tournamentModel.findById(tournamentId);
     if (!tournament) return;
 
-    // #region agent log
-    agentDebugLog({
-      hypothesisId: 'H2',
-      location: 'tournament-match.service.ts:checkRoundComplete',
-      message: 'round complete — advancing',
-      data: {
-        tournamentId: tournamentId.toString(),
-        roundIndex,
-        roundName: completedMatch.round_name,
-        tournamentStatus: tournament.status,
-        tournamentPhase: tournament.current_phase,
-      },
-    });
-    // #endregion
-
     if (completedMatch.round_name === TournamentMatchRoundName.GRAND_FINAL) {
       await this.settlement.settle(tournament, completedMatch.winner_user_id!, completedMatch.loser_user_id!);
+      void this.tournamentsGateway.emitMatchUpdate(tournamentId.toString());
       return;
     }
 
@@ -255,37 +227,13 @@ export class TournamentMatchService {
             decisive.winner_user_id as Types.ObjectId,
             (decisive.loser_user_id ?? decisive.winner_user_id) as Types.ObjectId,
           );
+          void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
         }
         return;
       }
-      // #region agent log
-      agentDebugLog({
-        hypothesisId: 'H1',
-        location: 'tournament-match.service.ts:handleGroupFinalsComplete',
-        message: 'group finals complete — generating finals bracket',
-        data: {
-          tournamentId: tournament._id.toString(),
-          winners,
-          groupCount: tournament.group_count,
-          roundIndex,
-        },
-      });
-      // #endregion
       await this.bracketService.generateFinalsBracket(tournament);
       const fresh = await this.tournamentModel.findById(tournament._id);
       if (!fresh) return;
-      // #region agent log
-      agentDebugLog({
-        hypothesisId: 'H1',
-        location: 'tournament-match.service.ts:handleGroupFinalsComplete',
-        message: 'finals bracket generated — scheduling finals pause',
-        data: {
-          tournamentId: fresh._id.toString(),
-          finalsRoundIndex: fresh.current_round_index,
-          pauseSeconds: fresh.between_rounds_pause_seconds,
-        },
-      });
-      // #endregion
       fresh.status = TournamentStatus.FINALS_PENDING;
       fresh.between_rounds_ends_at = new Date(
         Date.now() + fresh.between_rounds_pause_seconds * 1000,
@@ -337,22 +285,6 @@ export class TournamentMatchService {
       status: TournamentMatchStatus.PENDING,
     });
 
-    // #region agent log
-    agentDebugLog({
-      hypothesisId: 'H1',
-      location: 'tournament-match.service.ts:activateRoundMatches',
-      message: 'activateRoundMatches entry',
-      data: {
-        tournamentId: tournament._id.toString(),
-        roundIndex,
-        phase: tournament.current_phase,
-        status: tournament.status,
-        pendingCount: matches.length,
-        matchIds: matches.map((m) => m._id.toString()),
-      },
-    });
-    // #endregion
-
     for (const m of matches) {
       if (m.player_a_user_id && m.player_b_user_id) {
         await this.ensureRoomForMatch(tournament, m);
@@ -369,18 +301,6 @@ export class TournamentMatchService {
         ? TournamentStatus.FINALS_RUNNING
         : TournamentStatus.RUNNING;
     await tournament.save();
-    // #region agent log
-    agentDebugLog({
-      hypothesisId: 'H1',
-      location: 'tournament-match.service.ts:activateRoundMatches',
-      message: 'activateRoundMatches done',
-      data: {
-        tournamentId: tournament._id.toString(),
-        roundIndex,
-        newStatus: tournament.status,
-      },
-    });
-    // #endregion
     void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
   }
 }
