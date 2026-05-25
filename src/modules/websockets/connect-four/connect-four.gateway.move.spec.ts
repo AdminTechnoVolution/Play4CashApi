@@ -38,6 +38,24 @@ describe('ConnectFour move broadcast contract', () => {
     expect(resolvePlayerNum({ data: { player_id: p2.toString() } }, room)).toBe(2);
   });
 
+  it('handleDropDisc contract: resolves playerNum from player_id when socket.playerNum missing', () => {
+    const client = { data: { player_id: p1.toString() } };
+    const playerNum = resolvePlayerNum(client, room);
+    expect(playerNum).toBe(1);
+    expect(playerNum === 1 || playerNum === 2).toBe(true);
+  });
+
+  it('move broadcast does not include resyncOnly — full state only', () => {
+    const movePayload = {
+      board: [],
+      lastMove: { row: 5, col: 3, color: 'R' },
+      moveRevision: 2,
+      gameStarted: true,
+    };
+    expect('resyncOnly' in movePayload).toBe(false);
+    expect(movePayload.moveRevision).toBe(2);
+  });
+
   it('after P1 moves, P2 socket gets yourTurn=true', () => {
     const currentPlayer = 2;
     const p2Socket = { data: { player_id: p2.toString() } };

@@ -331,67 +331,68 @@ export class ConnectFourGateway
     client.data.room_id = room_id;
     client.data.isSpectator = !isMember;
 
-    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
-    const playerNum = playerIndex === 0 ? 1 : playerIndex === 1 ? 2 : 0;
-    if (playerNum) client.data.playerNum = playerNum;
-
-    const state = await this.buildPublicState(
-      room,
-      game,
-      client.data.isSpectator ? null : playerNum,
-      client.data.isSpectator,
+    this.logger.log(
+      `event=connect_four_join room=${room_id} sid=${client.id} player=${player_id} status=${room.status}`,
     );
 
-    if (room.status === 'started' && game && !client.data.isSpectator) {
+    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
+
+    if (client.data.isSpectator) {
+      if (room.status === 'started' && game) {
+        const state = await this.buildPublicState(room, game, null, true);
+        client.to(room_id).emit(EVENT, {
+          success: true,
+          data: { spectatorsCount: room.spectators?.length ?? 0 },
+          messages: [],
+        });
+        return this.emit(client, true, {
+          ...state,
+          waitingForOpponent: false,
+          gameStarted: true,
+          spectatorsCount: room.spectators?.length ?? 0,
+        }, []);
+      }
+      const lobbyState = await this.buildPublicState(room, game, null, true);
+      return this.emit(
+        client,
+        true,
+        {
+          ...lobbyState,
+          waitingForOpponent: true,
+          spectatorsCount: room.spectators?.length ?? 0,
+        },
+        [this.i18n.translate('ws.games.waitingOpponent', lang)],
+      );
+    }
+
+    const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
+    const playerNum = playerIndex + 1;
+    client.data.playerNum = playerNum;
+
+    if (room.status === 'started' && game) {
+      const state = await this.buildPublicState(room, game, playerNum, false);
       const isMyTurn = game.current_player === playerNum;
       if (isMyTurn) {
-        const timerSeconds = state.turnTimerSeconds as number;
-        this.startTimer(client, room_id, timerSeconds);
+        this.startTimer(client, room_id, state.turnTimerSeconds as number);
       }
-      return this.emit(client, true, { ...state, waitingForOpponent: false }, []);
-    }
-
-    if (room.status === 'started' && game && client.data.isSpectator) {
-      const spectatorState = {
+      return this.emit(client, true, {
         ...state,
-        spectatorsCount: room.spectators?.length ?? 0,
-      };
-      client.to(room_id).emit(EVENT, {
-        success: true,
-        data: { spectatorsCount: room.spectators?.length ?? 0 },
-        messages: [],
-      });
-      return this.emit(client, true, spectatorState, []);
+        waitingForOpponent: false,
+        gameStarted: true,
+      }, []);
     }
 
-    if (
-      !client.data.isSpectator &&
-      room.status === 'waiting' &&
-      room.players.length >= 2 &&
-      room.players[0]?.playerId &&
-      room.players[1]?.playerId
-    ) {
-      const playersJoined = await this.countPlayerSockets(room_id);
-      if (playersJoined >= 2) {
-        await this.tryStartConnectFourGame(room_id, lang);
-        const roomAfter = await this.roomModel
-          .findById(room_id)
-          .populate('game_id', 'turn_timer_seconds');
-        const gameAfter = await this.gameModel.findOne({
-          room_id: new Types.ObjectId(room_id),
-        });
-        if (roomAfter?.status === 'started' && gameAfter) {
-          return this.emitPlayStateToJoiner(
-            client,
-            roomAfter,
-            gameAfter,
-            playerNum as 1 | 2,
-            lang,
-          );
-        }
-      }
-    }
+    this.emit(
+      client,
+      true,
+      {
+        waitingForOpponent: true,
+        isSpectator: false,
+        playersJoined: await this.countPlayerSockets(room_id),
+        maxPlayers: 2,
+      },
+      [this.i18n.translate('ws.games.waitingOpponent', lang)],
+    );
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     if (socketsInRoom.length > 1) {
@@ -403,57 +404,16 @@ export class ConnectFourGateway
       });
     }
 
-    const lobbyState = await this.buildPublicState(
-      room,
-      game,
-      client.data.isSpectator ? null : playerNum,
-      client.data.isSpectator,
-    );
-    this.emit(
-      client,
-      true,
-      {
-        ...lobbyState,
-        waitingForOpponent: true,
-        playersJoined: await this.countPlayerSockets(room_id),
-        maxPlayers: 2,
-      },
-      [this.i18n.translate('ws.games.waitingOpponent', lang)],
-    );
-  }
-
-  private async emitPlayStateToJoiner(
-    client: Socket,
-    room: any,
-    game: ConnectFourGameDocument,
-    playerNum: 1 | 2,
-    lang: string,
-  ): Promise<void> {
-    const state = await this.buildPublicState(
-      room,
-      game,
-      client.data.isSpectator ? null : playerNum,
-      !!client.data.isSpectator,
-    );
-    const isMyTurn = !client.data.isSpectator && game.current_player === playerNum;
-    if (isMyTurn) {
-      this.startTimer(client, room._id.toString(), state.turnTimerSeconds as number);
+    const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
+    if (
+      socketsInRoom.length >= maxPlayers &&
+      room.status === 'waiting' &&
+      room.players.length >= maxPlayers &&
+      room.players[0]?.playerId &&
+      room.players[1]?.playerId
+    ) {
+      await this.tryStartConnectFourGame(room_id, lang);
     }
-    const messages = client.data.isSpectator
-      ? [this.i18n.translate('ws.games.gameStarted', lang)]
-      : isMyTurn
-        ? [this.i18n.translate('ws.games.yourTurn', lang)]
-        : [this.i18n.translate('ws.games.waitingOpponent', lang)];
-    return this.emit(
-      client,
-      true,
-      {
-        ...state,
-        waitingForOpponent: false,
-        gameStarted: true,
-      },
-      messages,
-    );
   }
 
   private resolvePlayerNum(socket: any, room: any): number {
@@ -559,6 +519,10 @@ export class ConnectFourGateway
 
     const freshPlayerSockets = (await this.server.in(room_id).fetchSockets()).filter(
       (s) => !(s as any).data?.isSpectator,
+    );
+
+    this.logger.log(
+      `event=connect_four_start room=${room_id} sockets=${freshPlayerSockets.length}`,
     );
 
     for (const s of freshPlayerSockets) {
@@ -729,19 +693,21 @@ export class ConnectFourGateway
 
     const room_id = payload?.room_id || client.data.room_id;
     const col = Number(payload?.col);
-    const playerNum = client.data.playerNum as 1 | 2;
 
     if (!room_id || !Number.isInteger(col)) {
       return this.emit(client, false, {}, [this.i18n.translate('ws.games.invalidMove', lang)]);
-    }
-    if (playerNum !== 1 && playerNum !== 2) {
-      return this.emit(client, false, {}, [this.i18n.translate('ws.games.notInRoom', lang)]);
     }
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room) {
       return this.emit(client, false, {}, [this.i18n.translate('ws.games.gameNotFound', lang)]);
     }
+
+    const playerNum = this.resolvePlayerNum(client, room) as 1 | 2;
+    if (playerNum !== 1 && playerNum !== 2) {
+      return this.emit(client, false, {}, [this.i18n.translate('ws.games.notInRoom', lang)]);
+    }
+    client.data.playerNum = playerNum;
     if (room.status === 'finished') {
       return this.emit(client, false, {}, [this.i18n.translate('ws.games.roomInactive', lang)]);
     }
@@ -812,6 +778,10 @@ export class ConnectFourGateway
         this.i18n.translate('ws.games.invalidMove', lang),
       ]);
     }
+
+    this.logger.log(
+      `event=connect_four_move room=${room_id} col=${col} revision=${game.move_revision} finished=${finished}`,
+    );
 
     const limit = room.game_id?.turn_timer_seconds || 30;
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -911,19 +881,6 @@ export class ConnectFourGateway
           emitErr,
         );
       }
-    }
-
-    if (!finished) {
-      this.server.to(room_id).emit(EVENT, {
-        success: true,
-        data: {
-          roomId: room_id,
-          status: 'started',
-          moveRevision: game.move_revision,
-          resyncOnly: true,
-        },
-        messages: [],
-      });
     }
 
     if (finished) {
