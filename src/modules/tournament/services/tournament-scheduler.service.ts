@@ -48,6 +48,7 @@ export class TournamentSchedulerService {
     await this.processBetweenRounds();
     await this.repairStuckMatchesFromFinishedRooms();
     await this.repairBrokenMatchRooms();
+    await this.activatePendingFinalsMatches();
   }
 
   private async withLock(tournamentId: string, fn: () => Promise<void>): Promise<void> {
@@ -100,19 +101,28 @@ export class TournamentSchedulerService {
   private async processBetweenRounds(): Promise<void> {
     const now = new Date();
     const paused = await this.tournamentModel.find({
-      status: TournamentStatus.BETWEEN_ROUNDS,
+      status: { $in: [TournamentStatus.BETWEEN_ROUNDS, TournamentStatus.FINALS_PENDING] },
       between_rounds_ends_at: { $lte: now },
     });
 
     for (const t of paused) {
       await this.withLock(t._id.toString(), async () => {
         const fresh = await this.tournamentModel.findById(t._id);
-        if (!fresh || fresh.status !== TournamentStatus.BETWEEN_ROUNDS) return;
+        if (
+          !fresh ||
+          (fresh.status !== TournamentStatus.BETWEEN_ROUNDS &&
+            fresh.status !== TournamentStatus.FINALS_PENDING)
+        ) {
+          return;
+        }
 
-        const nextRound = fresh.current_round_index + 1;
-        if (fresh.current_phase === 'finals') {
+        if (fresh.status === TournamentStatus.FINALS_PENDING) {
+          await this.matchService.activateRoundMatches(fresh, fresh.current_round_index);
+        } else if (fresh.current_phase === 'finals') {
+          const nextRound = fresh.current_round_index + 1;
           await this.matchService.activateRoundMatches(fresh, nextRound);
         } else {
+          const nextRound = fresh.current_round_index + 1;
           const maxGroupRound = await this.matchModel
             .findOne({ tournament_id: fresh._id, phase: TournamentPhase.GROUPS })
             .sort({ round_index: -1 })
@@ -217,6 +227,45 @@ export class TournamentSchedulerService {
           );
           void this.tournamentsGateway.emitMatchUpdate(tid);
         }
+      });
+    }
+  }
+
+  /** Heal finals that were generated but never activated (legacy bug). */
+  private async activatePendingFinalsMatches(): Promise<void> {
+    const finalsRunning = await this.tournamentModel.find({
+      status: TournamentStatus.FINALS_RUNNING,
+      current_phase: TournamentPhase.FINALS,
+    });
+
+    for (const t of finalsRunning) {
+      const pending = await this.matchModel.countDocuments({
+        tournament_id: t._id,
+        round_index: t.current_round_index,
+        status: TournamentMatchStatus.PENDING,
+        player_a_user_id: { $exists: true, $ne: null },
+        player_b_user_id: { $exists: true, $ne: null },
+      });
+      if (pending === 0) continue;
+
+      await this.withLock(t._id.toString(), async () => {
+        const fresh = await this.tournamentModel.findById(t._id);
+        if (!fresh || fresh.status !== TournamentStatus.FINALS_RUNNING) return;
+
+        const stillPending = await this.matchModel.countDocuments({
+          tournament_id: fresh._id,
+          round_index: fresh.current_round_index,
+          status: TournamentMatchStatus.PENDING,
+          player_a_user_id: { $exists: true, $ne: null },
+          player_b_user_id: { $exists: true, $ne: null },
+        });
+        if (stillPending === 0) return;
+
+        this.logger.log(
+          `event=tournament_finals_activated tournament=${fresh._id.toString()} round=${fresh.current_round_index} pending=${stillPending}`,
+        );
+        await this.matchService.activateRoundMatches(fresh, fresh.current_round_index);
+        void this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
       });
     }
   }

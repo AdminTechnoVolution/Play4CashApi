@@ -54,12 +54,17 @@ export class TournamentStateService {
     if (
       t.status === TournamentStatus.RUNNING ||
       t.status === TournamentStatus.FINALS_RUNNING ||
-      t.status === TournamentStatus.LOCKING
+      t.status === TournamentStatus.LOCKING ||
+      t.status === TournamentStatus.BETWEEN_ROUNDS ||
+      t.status === TournamentStatus.FINALS_PENDING
     ) {
       remainingMs = 0;
     }
     let pauseRemainingMs: number | null = null;
-    if (t.between_rounds_ends_at && t.status === TournamentStatus.BETWEEN_ROUNDS) {
+    if (
+      t.between_rounds_ends_at &&
+      (t.status === TournamentStatus.BETWEEN_ROUNDS || t.status === TournamentStatus.FINALS_PENDING)
+    ) {
       pauseRemainingMs = Math.max(0, t.between_rounds_ends_at.getTime() - now);
     }
     return {
