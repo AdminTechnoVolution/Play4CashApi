@@ -9,7 +9,9 @@ import {
   Min,
 } from 'class-validator';
 import {
-  TOURNAMENT_MVP_PLAYER_COUNT,
+  TOURNAMENT_GROUP_SIZE,
+  TOURNAMENT_MAX_PLAYERS,
+  TOURNAMENT_MIN_PLAYERS,
 } from '../constants/tournament.constants';
 
 const I18N_TITLE_EXAMPLE = {
@@ -49,31 +51,36 @@ export class CreateTournamentDto {
   @Min(0.01)
   buyIn: number;
 
-  @ApiProperty({ default: TOURNAMENT_MVP_PLAYER_COUNT })
+  @ApiProperty({ default: 8, description: 'Even number — players are grouped in pairs (groupSize 2)' })
   @IsNumber()
-  @Min(2)
-  @Max(1000)
-  maxPlayers: number = TOURNAMENT_MVP_PLAYER_COUNT;
+  @Min(TOURNAMENT_MIN_PLAYERS)
+  @Max(TOURNAMENT_MAX_PLAYERS)
+  maxPlayers: number = 8;
 
-  @ApiProperty({ default: TOURNAMENT_MVP_PLAYER_COUNT })
+  @ApiProperty({ default: 4, description: 'Even number, at least 2, cannot exceed maxPlayers' })
   @IsNumber()
-  @Min(2)
-  @Max(1000)
-  minPlayers: number = TOURNAMENT_MVP_PLAYER_COUNT;
+  @Min(TOURNAMENT_MIN_PLAYERS)
+  @Max(TOURNAMENT_MAX_PLAYERS)
+  minPlayers: number = 4;
 
-  @ApiPropertyOptional({ default: 5 })
+  @ApiPropertyOptional({
+    default: TOURNAMENT_GROUP_SIZE,
+    description: 'Must be 2 (pairs). groupCount is derived as maxPlayers / 2.',
+  })
   @IsOptional()
   @IsNumber()
-  @Min(1)
-  @Max(100)
-  groupCount?: number;
-
-  @ApiPropertyOptional({ default: 10 })
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  @Max(100)
+  @Min(TOURNAMENT_GROUP_SIZE)
+  @Max(TOURNAMENT_GROUP_SIZE)
   groupSize?: number;
+
+  @ApiPropertyOptional({
+    description: 'Optional; defaults to maxPlayers / 2. Must match when provided.',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(TOURNAMENT_MAX_PLAYERS / TOURNAMENT_GROUP_SIZE)
+  groupCount?: number;
 
   @ApiProperty()
   @IsDateString()
@@ -169,29 +176,29 @@ export class UpdateTournamentDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
-  @Min(2)
-  @Max(1000)
+  @Min(TOURNAMENT_MIN_PLAYERS)
+  @Max(TOURNAMENT_MAX_PLAYERS)
   maxPlayers?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
-  @Min(2)
-  @Max(1000)
+  @Min(TOURNAMENT_MIN_PLAYERS)
+  @Max(TOURNAMENT_MAX_PLAYERS)
   minPlayers?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
   @Min(1)
-  @Max(100)
+  @Max(TOURNAMENT_MAX_PLAYERS / TOURNAMENT_GROUP_SIZE)
   groupCount?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
-  @Min(1)
-  @Max(100)
+  @Min(TOURNAMENT_GROUP_SIZE)
+  @Max(TOURNAMENT_GROUP_SIZE)
   groupSize?: number;
 
   @ApiPropertyOptional()

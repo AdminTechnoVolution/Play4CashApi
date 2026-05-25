@@ -20,7 +20,6 @@ import {
   TournamentParticipantStatus,
   TournamentPhase,
   TournamentStatus,
-  TOURNAMENT_GROUP_COUNT,
 } from '../constants/tournament.constants';
 import { pickLocalizedField } from '../tournament-language.util';
 import { TournamentBracketService } from './tournament-bracket.service';
@@ -52,10 +51,10 @@ export class TournamentMatchService {
     const code = randomBytes(8).toString('hex');
     const players: Array<{ playerId: Types.ObjectId; ready: boolean }> = [];
     if (match.player_a_user_id) {
-      players.push({ playerId: match.player_a_user_id as Types.ObjectId, ready: true });
+      players.push({ playerId: match.player_a_user_id as Types.ObjectId, ready: false });
     }
     if (match.player_b_user_id) {
-      players.push({ playerId: match.player_b_user_id as Types.ObjectId, ready: true });
+      players.push({ playerId: match.player_b_user_id as Types.ObjectId, ready: false });
     }
 
     const room = await this.roomModel.create({
@@ -79,6 +78,41 @@ export class TournamentMatchService {
     await match.save();
     void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
     return room._id as Types.ObjectId;
+  }
+
+  /**
+   * Creates a tournament room when missing, or recreates it when the referenced room
+   * was deleted / finished. Idempotent for healthy matches.
+   */
+  async ensureRoomForMatch(
+    tournament: TournamentDocument,
+    match: TournamentMatchDocument,
+  ): Promise<Types.ObjectId | null> {
+    if (
+      match.status === TournamentMatchStatus.FINISHED ||
+      match.status === TournamentMatchStatus.FORFEITED ||
+      match.status === TournamentMatchStatus.CANCELLED
+    ) {
+      return null;
+    }
+    if (!match.player_a_user_id || !match.player_b_user_id) return null;
+
+    if (match.room_id) {
+      const existing = await this.roomModel.findById(match.room_id).select('status').lean();
+      if (existing) {
+        if (existing.status !== RoomStatus.FINISHED) {
+          if (match.status === TournamentMatchStatus.WAITING_PRESENCE) {
+            match.status = TournamentMatchStatus.READY;
+            await match.save();
+          }
+        }
+        return match.room_id as Types.ObjectId;
+      }
+      match.room_id = undefined;
+      await match.save();
+    }
+
+    return this.createTournamentRoom(tournament, match);
   }
 
   async advanceWinner(
@@ -184,6 +218,17 @@ export class TournamentMatchService {
     });
 
     if (winners >= tournament.group_count) {
+      if (tournament.group_count === 1) {
+        const decisive = gfMatches.find((m) => m.winner_user_id);
+        if (decisive?.winner_user_id) {
+          await this.settlement.settle(
+            tournament,
+            decisive.winner_user_id as Types.ObjectId,
+            (decisive.loser_user_id ?? decisive.winner_user_id) as Types.ObjectId,
+          );
+        }
+        return;
+      }
       await this.bracketService.generateFinalsBracket(tournament);
       tournament.status = TournamentStatus.FINALS_RUNNING;
       tournament.current_phase = TournamentPhase.FINALS;
@@ -236,9 +281,7 @@ export class TournamentMatchService {
 
     for (const m of matches) {
       if (m.player_a_user_id && m.player_b_user_id) {
-        m.status = TournamentMatchStatus.WAITING_PRESENCE;
-        m.presence_check_at = new Date(Date.now() + tournament.presence_window_seconds * 1000);
-        await m.save();
+        await this.ensureRoomForMatch(tournament, m);
       } else if (m.player_a_user_id && !m.player_b_user_id) {
         await this.advanceWinner(m, m.player_a_user_id as Types.ObjectId, 'bye');
       } else if (!m.player_a_user_id && m.player_b_user_id) {

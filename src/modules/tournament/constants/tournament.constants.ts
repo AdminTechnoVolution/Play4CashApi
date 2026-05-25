@@ -1,9 +1,15 @@
-/** MVP tournament format: exactly 50 players in 5 groups of 10. */
-export const TOURNAMENT_MVP_PLAYER_COUNT = 50;
-export const TOURNAMENT_GROUP_COUNT = 5;
-export const TOURNAMENT_GROUP_SIZE = 10;
+/** Fixed group format: pairs of 2 players per group. */
+export const TOURNAMENT_GROUP_SIZE = 2;
 
-/** 1v1 games eligible for tournament rooms in MVP. */
+export const TOURNAMENT_MIN_PLAYERS = 2;
+export const TOURNAMENT_MAX_PLAYERS = 1000;
+
+/** @deprecated Legacy MVP reference — layout is validated via resolveTournamentLayout(). */
+export const TOURNAMENT_MVP_PLAYER_COUNT = 50;
+/** @deprecated Legacy MVP reference. */
+export const TOURNAMENT_GROUP_COUNT = 5;
+
+/** 1v1 games eligible for tournament rooms. */
 export const TOURNAMENT_SUPPORTED_SOCKET_CODES = [
   'connect-four',
   'chess',
@@ -60,15 +66,15 @@ export enum TournamentMatchRoundName {
   GRAND_FINAL = 'grand_final',
 }
 
+export enum TournamentPhase {
+  GROUPS = 'groups',
+  FINALS = 'finals',
+}
+
 export enum TournamentTransactionType {
   REGISTRATION_DEBIT = 'registration_debit',
   REGISTRATION_REFUND = 'registration_refund',
   HOUSE_FEE = 'house_fee',
   FIRST_PLACE_PRIZE = 'first_place_prize',
   SECOND_PLACE_PRIZE = 'second_place_prize',
-}
-
-export enum TournamentPhase {
-  GROUPS = 'groups',
-  FINALS = 'finals',
 }

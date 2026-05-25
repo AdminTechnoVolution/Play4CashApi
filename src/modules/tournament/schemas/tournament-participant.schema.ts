@@ -25,7 +25,7 @@ export class TournamentParticipant {
   @Prop({ min: 1 })
   seed?: number;
 
-  @Prop({ min: 1, max: 5 })
+  @Prop({ min: 1, max: 500 })
   group_number?: number;
 
   @Prop({ type: Date, required: true })

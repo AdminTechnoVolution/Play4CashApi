@@ -580,7 +580,19 @@ export class RoomService {
     if (!updatedRoom) throw new BusinessException('Error updating room', 500);
 
     const maxPlayers = updatedRoom.player_limit || (updatedRoom.game_id as any)?.max_players;
-    const allReady = updatedRoom.players.length >= maxPlayers && updatedRoom.players.every((p: any) => p.ready);
+    const isTournamentRoom = updatedRoom.source === 'tournament';
+    let allReady: boolean;
+    if (isTournamentRoom) {
+      const placementCount = await this.placementModel.countDocuments({
+        room_id: new Types.ObjectId(roomId),
+      });
+      allReady =
+        updatedRoom.players.length >= maxPlayers && placementCount >= maxPlayers;
+    } else {
+      allReady =
+        updatedRoom.players.length >= maxPlayers &&
+        updatedRoom.players.every((p: any) => p.ready);
+    }
 
     if (allReady) {
       const startedRoom = await this.roomModel.findOneAndUpdate(

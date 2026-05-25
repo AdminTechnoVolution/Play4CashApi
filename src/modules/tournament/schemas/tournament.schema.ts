@@ -5,9 +5,8 @@ import {
   LanguageFieldSchema,
 } from '../../game/schemas/game.schema';
 import {
-  TOURNAMENT_GROUP_COUNT,
   TOURNAMENT_GROUP_SIZE,
-  TOURNAMENT_MVP_PLAYER_COUNT,
+  TOURNAMENT_MIN_PLAYERS,
   TournamentPhase,
   TournamentStatus,
 } from '../constants/tournament.constants';
@@ -39,16 +38,16 @@ export class Tournament {
   @Prop({ required: true, min: 0.01 })
   buy_in: number;
 
-  @Prop({ required: true, default: TOURNAMENT_MVP_PLAYER_COUNT })
+  @Prop({ required: true, default: 8, min: TOURNAMENT_MIN_PLAYERS })
   max_players: number;
 
-  @Prop({ required: true, default: TOURNAMENT_MVP_PLAYER_COUNT })
+  @Prop({ required: true, default: 4, min: TOURNAMENT_MIN_PLAYERS })
   min_players: number;
 
-  @Prop({ required: true, default: TOURNAMENT_GROUP_COUNT })
+  @Prop({ required: true, min: 1 })
   group_count: number;
 
-  @Prop({ required: true, default: TOURNAMENT_GROUP_SIZE })
+  @Prop({ required: true, default: TOURNAMENT_GROUP_SIZE, min: TOURNAMENT_GROUP_SIZE, max: TOURNAMENT_GROUP_SIZE })
   group_size: number;
 
   @Prop({ default: 0, min: 0 })

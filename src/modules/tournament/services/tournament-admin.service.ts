@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -17,6 +18,7 @@ import {
   normalizeLanguageField,
   normalizeOptionalLanguageField,
 } from '../tournament-language.util';
+import { resolveTournamentLayout } from '../tournament-layout.util';
 
 @Injectable()
 export class TournamentAdminService {
@@ -24,12 +26,6 @@ export class TournamentAdminService {
     @InjectModel(Tournament.name) private readonly tournamentModel: Model<TournamentDocument>,
     @InjectModel(Game.name) private readonly gameModel: Model<GameDocument>,
   ) {}
-
-  private validateGroupLayout(max: number, groupCount: number, groupSize: number): void {
-    if (groupCount * groupSize !== max) {
-      throw new BadRequestException('groupCount × groupSize must equal maxPlayers');
-    }
-  }
 
   private validatePercents(house: number, first: number, second: number): void {
     if (house + first + second !== 100) {
@@ -57,9 +53,12 @@ export class TournamentAdminService {
   }
 
   async create(dto: CreateTournamentDto): Promise<TournamentDocument> {
-    const groupCount = dto.groupCount ?? 5;
-    const groupSize = dto.groupSize ?? 10;
-    this.validateGroupLayout(dto.maxPlayers, groupCount, groupSize);
+    const layout = resolveTournamentLayout(
+      dto.maxPlayers,
+      dto.minPlayers,
+      dto.groupSize,
+      dto.groupCount,
+    );
 
     const house = dto.houseFeePercent ?? 10;
     const first = dto.firstPlacePercent ?? 70;
@@ -76,10 +75,10 @@ export class TournamentAdminService {
       game_socket_code: game.socket_code,
       status: TournamentStatus.DRAFT,
       buy_in: dto.buyIn,
-      max_players: dto.maxPlayers,
-      min_players: dto.minPlayers,
-      group_count: groupCount,
-      group_size: groupSize,
+      max_players: layout.maxPlayers,
+      min_players: layout.minPlayers,
+      group_count: layout.groupCount,
+      group_size: layout.groupSize,
       starts_at: startsAt,
       registration_opens_at: dto.registrationOpensAt ? new Date(dto.registrationOpensAt) : undefined,
       registration_closes_at: dto.registrationClosesAt
@@ -103,14 +102,23 @@ export class TournamentAdminService {
     }
 
     const nextMax = dto.maxPlayers ?? t.max_players;
-    const nextGroupCount = dto.groupCount ?? t.group_count;
-    const nextGroupSize = dto.groupSize ?? t.group_size;
+    const nextMin = dto.minPlayers ?? t.min_players;
     if (
       dto.maxPlayers != null ||
+      dto.minPlayers != null ||
       dto.groupCount != null ||
       dto.groupSize != null
     ) {
-      this.validateGroupLayout(nextMax, nextGroupCount, nextGroupSize);
+      const layout = resolveTournamentLayout(
+        nextMax,
+        nextMin,
+        dto.groupSize ?? t.group_size,
+        dto.groupCount ?? t.group_count,
+      );
+      t.max_players = layout.maxPlayers;
+      t.min_players = layout.minPlayers;
+      t.group_count = layout.groupCount;
+      t.group_size = layout.groupSize;
     }
 
     if (dto.houseFeePercent != null || dto.firstPlacePercent != null || dto.secondPlacePercent != null) {
@@ -129,10 +137,6 @@ export class TournamentAdminService {
     if (dto.title != null) t.title = normalizeLanguageField(dto.title, 'TITLE');
     if (dto.description != null) t.description = normalizeOptionalLanguageField(dto.description);
     if (dto.buyIn != null) t.buy_in = dto.buyIn;
-    if (dto.maxPlayers != null) t.max_players = dto.maxPlayers;
-    if (dto.minPlayers != null) t.min_players = dto.minPlayers;
-    if (dto.groupCount != null) t.group_count = dto.groupCount;
-    if (dto.groupSize != null) t.group_size = dto.groupSize;
     if (dto.startsAt != null) t.starts_at = new Date(dto.startsAt);
     if (dto.registrationOpensAt != null) t.registration_opens_at = new Date(dto.registrationOpensAt);
     if (dto.registrationClosesAt != null) t.registration_closes_at = new Date(dto.registrationClosesAt);
@@ -160,7 +164,7 @@ export class TournamentAdminService {
       throw new BadRequestException('startsAt must be in the future');
     }
     this.validatePercents(t.house_fee_percent, t.first_place_percent, t.second_place_percent);
-    this.validateGroupLayout(t.max_players, t.group_count, t.group_size);
+    resolveTournamentLayout(t.max_players, t.min_players, t.group_size, t.group_count);
     t.status = TournamentStatus.OPEN;
     if (!t.registration_opens_at) t.registration_opens_at = new Date();
     if (!t.registration_closes_at) t.registration_closes_at = t.starts_at;
