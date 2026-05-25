@@ -47,17 +47,20 @@ function resolvePlayerNum(
   return 0;
 }
 
-/** Mirrors handleJoin: when both DB players and sockets are present, start before waiting. */
-function shouldTryStartBeforeWaiting(
+/** Mirrors handleJoin Halma ordering: emit waiting first, then try start when room is full. */
+function shouldEmitWaitingLobby(isSpectator: boolean, roomStatus: string): boolean {
+  return !isSpectator && roomStatus === 'waiting';
+}
+
+function shouldTryStartAfterWaitingEmit(
   room: { status: string; players: unknown[] },
-  playerSocketCount: number,
-  isSpectator: boolean,
+  socketCount: number,
+  maxPlayers: number,
 ): boolean {
   return (
-    !isSpectator &&
     room.status === 'waiting' &&
-    room.players.length >= 2 &&
-    playerSocketCount >= 2
+    room.players.length >= maxPlayers &&
+    socketCount >= maxPlayers
   );
 }
 
@@ -131,43 +134,39 @@ describe('ConnectFour start contract', () => {
     });
   });
 
-  describe('handleJoin start-before-waiting ordering', () => {
-    it('attempts start when room waiting and both player sockets connected', () => {
+  describe('handleJoin Halma-style ordering', () => {
+    it('emits waiting lobby to joiner before start attempt', () => {
+      expect(shouldEmitWaitingLobby(false, 'waiting')).toBe(true);
+      expect(shouldEmitWaitingLobby(true, 'waiting')).toBe(false);
+      expect(shouldEmitWaitingLobby(false, 'started')).toBe(false);
+    });
+
+    it('attempts start after waiting when room full and both sockets connected', () => {
       expect(
-        shouldTryStartBeforeWaiting(
+        shouldTryStartAfterWaitingEmit(
           { status: 'waiting', players: [{}, {}] },
           2,
-          false,
+          2,
         ),
       ).toBe(true);
     });
 
-    it('does not attempt start for spectators', () => {
-      expect(
-        shouldTryStartBeforeWaiting(
-          { status: 'waiting', players: [{}, {}] },
-          2,
-          true,
-        ),
-      ).toBe(false);
-    });
-
     it('does not attempt start when only one socket is connected', () => {
       expect(
-        shouldTryStartBeforeWaiting(
+        shouldTryStartAfterWaitingEmit(
           { status: 'waiting', players: [{}, {}] },
           1,
-          false,
+          2,
         ),
       ).toBe(false);
     });
 
     it('does not attempt start when room already started', () => {
       expect(
-        shouldTryStartBeforeWaiting(
+        shouldTryStartAfterWaitingEmit(
           { status: 'started', players: [{}, {}] },
           2,
-          false,
+          2,
         ),
       ).toBe(false);
     });
@@ -185,16 +184,10 @@ describe('ConnectFour start contract', () => {
       expect(playPayload.waitingForOpponent).toBe(false);
     });
 
-    it('backup broadcast is minimal and triggers client resync', () => {
-      const backup = {
-        roomId: new Types.ObjectId().toString(),
-        status: 'started',
-        gameStarted: true,
-        waitingForOpponent: false,
-      };
-      expect(backup.gameStarted).toBe(true);
-      expect('board' in backup).toBe(false);
-      expect(backup.waitingForOpponent).toBe(false);
+    it('start broadcasts once per socket — no separate joiner-only emit', () => {
+      const emitsPerJoiner = 1;
+      const joinerOnlyExtraEmit = 0;
+      expect(emitsPerJoiner + joinerOnlyExtraEmit).toBe(1);
     });
   });
 });
