@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Tournament, TournamentDocument } from '../schemas/tournament.schema';
@@ -225,9 +225,18 @@ export class TournamentStateService {
   }
 
   async getBracket(tournamentId: string) {
-    const groups = await this.groupModel.find({ tournament_id: tournamentId }).sort({ group_number: 1 }).lean();
-    const matches = await this.matchModel.find({ tournament_id: tournamentId }).sort({ round_index: 1, match_index: 1 }).lean();
-    const participants = await this.participantModel.find({ tournament_id: tournamentId }).lean();
+    if (!Types.ObjectId.isValid(tournamentId)) {
+      throw new NotFoundException('Tournament not found');
+    }
+    const oid = new Types.ObjectId(tournamentId);
+    const exists = await this.tournamentModel.findById(oid).select('_id').lean();
+    if (!exists) {
+      throw new NotFoundException('Tournament not found');
+    }
+
+    const groups = await this.groupModel.find({ tournament_id: oid }).sort({ group_number: 1 }).lean();
+    const matches = await this.matchModel.find({ tournament_id: oid }).sort({ round_index: 1, match_index: 1 }).lean();
+    const participants = await this.participantModel.find({ tournament_id: oid }).lean();
     const byUser = new Map(participants.map((p) => [p.user_id.toString(), p]));
     const mapMatch = (m: typeof matches[0]) => ({
       id: m._id.toString(),
