@@ -387,7 +387,6 @@ export class TournamentStateService {
             TournamentStatus.BETWEEN_ROUNDS,
             TournamentStatus.FINALS_PENDING,
             TournamentStatus.FINALS_RUNNING,
-            TournamentStatus.FINISHED,
           ],
         },
       })
