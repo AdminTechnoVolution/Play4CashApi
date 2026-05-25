@@ -19,9 +19,9 @@ describe('Tournament layout', () => {
     expect(group(6, 3)).toBe(3);
   });
 
-  it('supports any even player count up to 1000', () => {
-    const layout = resolveTournamentLayout(100, 20);
-    expect(layout.groupCount).toBe(50);
+  it('supports power-of-two player counts up to 512', () => {
+    const layout = resolveTournamentLayout(512, 32);
+    expect(layout.groupCount).toBe(256);
     expect(layout.groupSize).toBe(2);
   });
 });
