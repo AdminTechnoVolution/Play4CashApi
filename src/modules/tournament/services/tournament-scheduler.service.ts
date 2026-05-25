@@ -15,13 +15,15 @@ import {
 } from '../schemas/tournament-match.schema';
 import {
   TournamentMatchStatus,
+  TournamentPhase,
   TournamentStatus,
 } from '../constants/tournament.constants';
 import { TournamentBracketService } from './tournament-bracket.service';
 import { TournamentMatchService } from './tournament-match.service';
-import { TournamentPresenceService } from './tournament-presence.service';
 import { TournamentLedgerService } from './tournament-ledger.service';
 import { TournamentsGateway } from '../../websockets/tournaments/tournaments.gateway';
+import { Room, RoomDocument } from '../../room/schemas/room.schema';
+import { RoomStatus } from '../../room/schemas/room.schema';
 
 @Injectable()
 export class TournamentSchedulerService {
@@ -32,9 +34,9 @@ export class TournamentSchedulerService {
     @InjectModel(TournamentParticipant.name)
     private readonly participantModel: Model<TournamentParticipantDocument>,
     @InjectModel(TournamentMatch.name) private readonly matchModel: Model<TournamentMatchDocument>,
+    @InjectModel(Room.name) private readonly roomModel: Model<RoomDocument>,
     private readonly bracketService: TournamentBracketService,
     private readonly matchService: TournamentMatchService,
-    private readonly presenceService: TournamentPresenceService,
     private readonly ledger: TournamentLedgerService,
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly tournamentsGateway: TournamentsGateway,
@@ -44,7 +46,8 @@ export class TournamentSchedulerService {
   async tick(): Promise<void> {
     await this.processStartTimes();
     await this.processBetweenRounds();
-    await this.processPresenceChecks();
+    await this.repairStuckMatchesFromFinishedRooms();
+    await this.repairBrokenMatchRooms();
   }
 
   private async withLock(tournamentId: string, fn: () => Promise<void>): Promise<void> {
@@ -109,47 +112,112 @@ export class TournamentSchedulerService {
         const nextRound = fresh.current_round_index + 1;
         if (fresh.current_phase === 'finals') {
           await this.matchService.activateRoundMatches(fresh, nextRound);
-        } else if (nextRound <= 3) {
-          await this.matchService.activateRoundMatches(fresh, nextRound);
+        } else {
+          const maxGroupRound = await this.matchModel
+            .findOne({ tournament_id: fresh._id, phase: TournamentPhase.GROUPS })
+            .sort({ round_index: -1 })
+            .select('round_index')
+            .lean();
+          const cap = maxGroupRound?.round_index ?? 0;
+          if (nextRound <= cap) {
+            await this.matchService.activateRoundMatches(fresh, nextRound);
+          }
         }
         fresh.between_rounds_ends_at = undefined;
         await fresh.save();
+        void this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
       });
     }
   }
 
-  private async processPresenceChecks(): Promise<void> {
-    const now = new Date();
-    const due = await this.matchModel.find({
-      status: TournamentMatchStatus.WAITING_PRESENCE,
-      presence_check_at: { $lte: now },
+  /** Advance tournament matches whose game room already finished but match doc is still open. */
+  private async repairStuckMatchesFromFinishedRooms(): Promise<void> {
+    const stuck = await this.matchModel.find({
+      status: {
+        $in: [
+          TournamentMatchStatus.WAITING_PRESENCE,
+          TournamentMatchStatus.READY,
+          TournamentMatchStatus.STARTED,
+        ],
+      },
+      room_id: { $exists: true, $ne: null },
     });
 
-    for (const m of due) {
+    for (const m of stuck) {
       const tid = m.tournament_id.toString();
-      const playerA = m.player_a_user_id?.toString();
-      const playerB = m.player_b_user_id?.toString();
-      if (!playerA || !playerB) continue;
+      await this.withLock(`stuck:${tid}:${m._id.toString()}`, async () => {
+        const freshMatch = await this.matchModel.findById(m._id);
+        if (!freshMatch?.room_id) return;
+        if (
+          freshMatch.status === TournamentMatchStatus.FINISHED ||
+          freshMatch.status === TournamentMatchStatus.FORFEITED
+        ) {
+          return;
+        }
 
-      const aPresent = await this.presenceService.isPresent(tid, playerA);
-      const bPresent = await this.presenceService.isPresent(tid, playerB);
+        const room = await this.roomModel.findById(freshMatch.room_id);
+        if (!room || room.status !== RoomStatus.FINISHED || !room.winner) return;
 
-      if (aPresent && bPresent) {
-        const tournament = await this.tournamentModel.findById(m.tournament_id);
-        if (tournament) {
-          await this.matchService.createTournamentRoom(tournament, m);
-          m.status = TournamentMatchStatus.STARTED;
-          m.started_at = new Date();
-          await m.save();
+        const winnerId = room.winner.toString();
+        const loserId = room.players
+          ?.find((p) => p.playerId.toString() !== winnerId)
+          ?.playerId?.toString();
+        const reason = room.winner_reason ?? 'normal';
+
+        await this.matchService.completeFromGameRoom(room, {
+          winnerId,
+          loserId,
+          reason,
+        });
+
+        this.logger.log(
+          `event=tournament_match_repaired_from_room matchId=${freshMatch._id.toString()} roomId=${room._id.toString()} winnerId=${winnerId}`,
+        );
+        void this.tournamentsGateway.emitMatchUpdate(tid);
+      });
+    }
+  }
+
+  /** Heal matches whose room_id is missing or points at a deleted/finished room. */
+  private async repairBrokenMatchRooms(): Promise<void> {
+    const active = await this.matchModel.find({
+      status: {
+        $in: [
+          TournamentMatchStatus.WAITING_PRESENCE,
+          TournamentMatchStatus.READY,
+          TournamentMatchStatus.STARTED,
+        ],
+      },
+      player_a_user_id: { $exists: true, $ne: null },
+      player_b_user_id: { $exists: true, $ne: null },
+    });
+
+    for (const m of active) {
+      const tid = m.tournament_id.toString();
+      await this.withLock(`repair:${tid}:${m._id.toString()}`, async () => {
+        const freshMatch = await this.matchModel.findById(m._id);
+        if (!freshMatch) return;
+
+        const tournament = await this.tournamentModel.findById(freshMatch.tournament_id);
+        if (!tournament) return;
+        if (
+          tournament.status === TournamentStatus.FINISHED ||
+          tournament.status === TournamentStatus.CANCELLED
+        ) {
+          return;
+        }
+
+        const beforeRoomId = freshMatch.room_id?.toString() ?? null;
+        const roomId = await this.matchService.ensureRoomForMatch(tournament, freshMatch);
+        const afterRoomId = roomId?.toString() ?? null;
+
+        if (afterRoomId && afterRoomId !== beforeRoomId) {
+          this.logger.log(
+            `event=tournament_room_repaired matchId=${freshMatch._id.toString()} roomId=${afterRoomId}`,
+          );
           void this.tournamentsGateway.emitMatchUpdate(tid);
         }
-      } else if (aPresent && !bPresent) {
-        await this.matchService.forfeitMatch(m._id.toString(), playerA, 'forfeit_absent_start');
-      } else if (!aPresent && bPresent) {
-        await this.matchService.forfeitMatch(m._id.toString(), playerB, 'forfeit_absent_start');
-      } else {
-        await this.matchService.forfeitMatch(m._id.toString(), playerA, 'forfeit_absent_start');
-      }
+      });
     }
   }
 }

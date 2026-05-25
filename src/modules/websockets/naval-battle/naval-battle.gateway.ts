@@ -216,7 +216,9 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!room_id) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (!room) {
+      return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    }
     if (room.status === RoomStatus.FINISHED) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);

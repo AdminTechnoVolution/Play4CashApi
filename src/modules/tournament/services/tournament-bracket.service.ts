@@ -17,7 +17,6 @@ import {
   TournamentMatchStatus,
   TournamentParticipantStatus,
   TournamentPhase,
-  TOURNAMENT_GROUP_COUNT,
 } from '../constants/tournament.constants';
 
 interface BracketMatchDef {
@@ -56,7 +55,42 @@ export class TournamentBracketService {
     return arr;
   }
 
-  private buildGroupBracketDefs(groupNumber: number, players: Types.ObjectId[], seed: string): BracketMatchDef[] {
+  private buildGroupBracketDefs(
+    groupNumber: number,
+    players: Types.ObjectId[],
+    seed: string,
+    groupSize: number,
+  ): BracketMatchDef[] {
+    if (groupSize === 2) {
+      if (players.length < 2) {
+        this.logger.warn(
+          `event=group_underfilled group=${groupNumber} players=${players.length} expected=2`,
+        );
+      }
+      return [
+        {
+          phase: TournamentPhase.GROUPS,
+          groupNumber,
+          roundName: TournamentMatchRoundName.GROUP_FINAL,
+          roundIndex: 0,
+          matchIndex: groupNumber * 10,
+          playerA: players[0],
+          playerB: players[1],
+        },
+      ];
+    }
+    if (groupSize === 10) {
+      return this.buildLegacyTenPlayerGroupBracket(groupNumber, players, seed);
+    }
+    throw new Error(`Unsupported group size: ${groupSize}`);
+  }
+
+  /** Legacy MVP bracket (10 players per group). Kept for existing tournaments. */
+  private buildLegacyTenPlayerGroupBracket(
+    groupNumber: number,
+    players: Types.ObjectId[],
+    seed: string,
+  ): BracketMatchDef[] {
     const defs: BracketMatchDef[] = [];
     const shuffle = this.seededShuffle(players.length, `${seed}:g${groupNumber}`);
     const prelimIdx = shuffle.slice(0, 4);
@@ -144,45 +178,93 @@ export class TournamentBracketService {
     return defs;
   }
 
+  /** 1-based seed positions for a single-elimination bracket of `bracketSize`. */
+  private bracketSeedOrder(bracketSize: number): number[] {
+    if (bracketSize <= 1) return [1];
+    const half = this.bracketSeedOrder(bracketSize / 2);
+    const out: number[] = [];
+    for (const s of half) {
+      out.push(s);
+      out.push(bracketSize + 1 - s);
+    }
+    return out;
+  }
+
+  private finalsRoundName(round: number, totalRounds: number): TournamentMatchRoundName {
+    if (round === totalRounds - 1) return TournamentMatchRoundName.GRAND_FINAL;
+    if (round === totalRounds - 2) return TournamentMatchRoundName.FINALS_SEMIFINAL;
+    return TournamentMatchRoundName.FINALS_PLAYIN;
+  }
+
   private buildFinalsDefs(winnerIds: Types.ObjectId[]): BracketMatchDef[] {
-    const sorted = [...winnerIds];
-    // winners already ordered by seed externally
-    const [s1, s2, s3, s4, s5] = sorted;
+    const n = winnerIds.length;
+    if (n < 2) {
+      throw new Error('Finals require at least 2 group winners');
+    }
+    if (n === 2) {
+      return [
+        {
+          phase: TournamentPhase.FINALS,
+          roundName: TournamentMatchRoundName.GRAND_FINAL,
+          roundIndex: 1000,
+          matchIndex: 0,
+          playerA: winnerIds[0],
+          playerB: winnerIds[1],
+        },
+      ];
+    }
+
+    const bracketSize = 2 ** Math.ceil(Math.log2(n));
+    const numRounds = Math.log2(bracketSize);
     const base = 1000;
-    return [
-      {
-        phase: TournamentPhase.FINALS,
-        roundName: TournamentMatchRoundName.FINALS_PLAYIN,
-        roundIndex: base,
-        matchIndex: 0,
-        playerA: s4,
-        playerB: s5,
-        nextRef: { roundIndex: base + 1, matchIndex: 0, slot: 'B' },
-      },
-      {
-        phase: TournamentPhase.FINALS,
-        roundName: TournamentMatchRoundName.FINALS_PLAYIN,
-        roundIndex: base,
-        matchIndex: 1,
-        playerA: s2,
-        playerB: s3,
-        nextRef: { roundIndex: base + 2, matchIndex: 0, slot: 'B' },
-      },
-      {
-        phase: TournamentPhase.FINALS,
-        roundName: TournamentMatchRoundName.FINALS_SEMIFINAL,
-        roundIndex: base + 1,
-        matchIndex: 0,
-        playerA: s1,
-        nextRef: { roundIndex: base + 2, matchIndex: 0, slot: 'A' },
-      },
-      {
-        phase: TournamentPhase.FINALS,
-        roundName: TournamentMatchRoundName.GRAND_FINAL,
-        roundIndex: base + 2,
-        matchIndex: 0,
-      },
-    ];
+    const seedOrder = this.bracketSeedOrder(bracketSize);
+    const defs: BracketMatchDef[] = [];
+
+    type Entrant = Types.ObjectId | undefined;
+    let slots: Entrant[] = seedOrder.map((seedNum) =>
+      seedNum <= n ? winnerIds[seedNum - 1] : undefined,
+    );
+
+    for (let r = 0; r < numRounds; r++) {
+      const roundIndex = base + r;
+      const nextSlots: Entrant[] = [];
+      const matchCount = slots.length / 2;
+
+      for (let m = 0; m < matchCount; m++) {
+        const a = slots[m * 2];
+        const b = slots[m * 2 + 1];
+        const isFinal = r === numRounds - 1;
+
+        if (!a && !b) {
+          nextSlots.push(undefined);
+          continue;
+        }
+
+        const def: BracketMatchDef = {
+          phase: TournamentPhase.FINALS,
+          roundName: this.finalsRoundName(r, numRounds),
+          roundIndex,
+          matchIndex: m,
+          playerA: a,
+          playerB: b,
+        };
+
+        if (!isFinal) {
+          def.nextRef = {
+            roundIndex: base + r + 1,
+            matchIndex: Math.floor(m / 2),
+            slot: m % 2 === 0 ? 'A' : 'B',
+          };
+        }
+
+        defs.push(def);
+        nextSlots.push(undefined);
+      }
+
+      slots = nextSlots;
+    }
+
+    return defs;
   }
 
   async generateGroupsAndBrackets(tournament: TournamentDocument): Promise<void> {
@@ -207,7 +289,7 @@ export class TournamentBracketService {
         .filter((p) => p.group_number === g)
         .sort((a, b) => (a.seed ?? 0) - (b.seed ?? 0))
         .map((p) => p.user_id as Types.ObjectId);
-      allDefs.push(...this.buildGroupBracketDefs(g, groupPlayers, seed));
+      allDefs.push(...this.buildGroupBracketDefs(g, groupPlayers, seed, tournament.group_size));
     }
 
     const refMap = new Map<string, Types.ObjectId>();

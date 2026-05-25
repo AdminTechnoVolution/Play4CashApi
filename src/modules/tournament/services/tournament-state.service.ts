@@ -14,6 +14,7 @@ import {
   TournamentMatch,
   TournamentMatchDocument,
 } from '../schemas/tournament-match.schema';
+import { Room, RoomDocument } from '../../room/schemas/room.schema';
 import {
   pickLocalizedField,
   resolveRequestLang,
@@ -43,6 +44,7 @@ export class TournamentStateService {
     private readonly participantModel: Model<TournamentParticipantDocument>,
     @InjectModel(TournamentGroup.name) private readonly groupModel: Model<TournamentGroupDocument>,
     @InjectModel(TournamentMatch.name) private readonly matchModel: Model<TournamentMatchDocument>,
+    @InjectModel(Room.name) private readonly roomModel: Model<RoomDocument>,
   ) {}
 
   buildTimeProjection(t: TournamentDocument): TournamentTimeProjection {
@@ -119,6 +121,12 @@ export class TournamentStateService {
 
     const roomId = match.room_id?.toString() ?? null;
     const status = match.status;
+
+    if (roomId) {
+      const room = await this.roomModel.findById(roomId).select('status').lean();
+      if (!room || room.status === 'finished') return null;
+    }
+
     return {
       matchId: match._id.toString(),
       status,
