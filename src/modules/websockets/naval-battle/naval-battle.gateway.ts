@@ -5,6 +5,7 @@ import {
 import { Inject, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
+import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -43,6 +44,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    private readonly turnDeadlines: TurnDeadlineService,
     @Optional() private readonly tournamentMatchService?: TournamentMatchService,
   ) {}
 
@@ -50,6 +52,9 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   onModuleInit() {
     this.grace.registerHandler('naval-battle', (playerId, roomId) =>
       this.executeForfeit(roomId, playerId),
+    );
+    this.turnDeadlines.registerHandler('naval-battle', (playerId, roomId) =>
+      this.executeNavalTurnTimeout(roomId, playerId),
     );
   }
 
@@ -540,15 +545,22 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
   public startTimer(socket: Socket, room_id: string, seconds: number) {
     if (!socket?.id) return;
     clearTimer(socket.id);
-    const t = setTimeout(async () => {
-      const room = await this.roomModel.findById(room_id);
-      if (!room || room.status !== 'started') return;
-      
-      const currentShooterId = socket.data.player_id;
-      const opponent = room.players.find((p: any) => p.playerId.toString() !== currentShooterId);
-      const winnerId = opponent?.playerId;
-      
-      if (winnerId) {
+    const playerId = (socket.data?.player_id as string) || '';
+    if (playerId) void this.turnDeadlines.schedule('naval-battle', room_id, playerId, seconds);
+    const t = setTimeout(() => void this.executeNavalTurnTimeout(room_id, playerId), seconds * 1000);
+    turnTimers.set(socket.id, t);
+  }
+
+  private async executeNavalTurnTimeout(room_id: string, currentShooterId?: string): Promise<void> {
+    await this.turnDeadlines.cancel('naval-battle', room_id);
+    const room = await this.roomModel.findById(room_id);
+    if (!room || room.status !== 'started') return;
+
+    const shooterId = currentShooterId || '';
+    const opponent = room.players.find((p: any) => p.playerId.toString() !== shooterId);
+    const winnerId = opponent?.playerId;
+
+    if (winnerId) {
         room.status = 'finished'; room.winner = winnerId; room.winner_reason = 'timeout'; room.finished_at = new Date();
         await room.save();
         await this.tournamentMatchService?.tryCompleteFromFinishedRoom(
@@ -577,7 +589,5 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
       }
-    }, seconds * 1000);
-    turnTimers.set(socket.id, t);
   }
 }

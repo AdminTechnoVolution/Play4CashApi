@@ -227,4 +227,15 @@ export class UserService {
     const registeredUsers = await this.userRepo.countRegisteredUsers();
     return { registeredUsers };
   }
+
+  async savePushSubscription(
+    userId: string,
+    sub: { endpoint: string; keys: { p256dh: string; auth: string } },
+  ): Promise<void> {
+    await this.userRepo.upsertPushSubscription(userId, sub);
+  }
+
+  async removePushSubscription(userId: string, endpoint: string): Promise<void> {
+    await this.userRepo.removePushSubscription(userId, endpoint);
+  }
 }

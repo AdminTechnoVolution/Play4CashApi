@@ -2,6 +2,7 @@ import { IoAdapter } from '@nestjs/platform-socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
 import type { ServerOptions } from 'socket.io';
+import { SOCKET_IO_PING_OPTIONS } from '../constants/socket-io.constants';
 
 /**
  * Enables cross-pod Socket.IO broadcasts when SOCKET_IO_REDIS_ADAPTER=true.
@@ -24,7 +25,7 @@ export class RedisIoAdapter extends IoAdapter {
   }
 
   createIOServer(port: number, options?: ServerOptions) {
-    const server = super.createIOServer(port, options);
+    const server = super.createIOServer(port, { ...SOCKET_IO_PING_OPTIONS, ...options });
     if (this.adapterConstructor) {
       server.adapter(this.adapterConstructor);
     }

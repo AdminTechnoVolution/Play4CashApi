@@ -9,12 +9,22 @@ import mongoSanitize from 'express-mongo-sanitize';
 import { createStripUntrustedGatewayUserMiddleware } from './common/middleware/strip-untrusted-gateway-user.middleware';
 import { createAppVersionHeadersMiddleware } from './common/middleware/app-version-headers.middleware';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
+import { SOCKET_IO_PING_OPTIONS } from './common/constants/socket-io.constants';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
 
-  if (config.get<boolean>('socketIoRedisAdapter')) {
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  const useRedisAdapter = config.get<boolean>('socketIoRedisAdapter');
+
+  if (nodeEnv === 'production' && !useRedisAdapter) {
+    throw new Error(
+      'SOCKET_IO_REDIS_ADAPTER must be true in production for cross-pod Socket.IO broadcasts',
+    );
+  }
+
+  if (useRedisAdapter) {
     const redisUri = config.get<string>('redisUri');
     if (!redisUri) {
       throw new Error('SOCKET_IO_REDIS_ADAPTER=true requires REDIS_URI');

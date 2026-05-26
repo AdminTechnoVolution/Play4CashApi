@@ -1,4 +1,6 @@
 import { GracePeriodService } from './grace-period.service';
+import { TurnDeadlineService } from '../turn-deadline/turn-deadline.service';
+import { WebPushService } from '../web-push/web-push.service';
 
 /**
  * Integration-style sanity check: each game gateway must register its forfeit handler
@@ -25,46 +27,63 @@ describe('Phase B — gateway grace-period handler registration', () => {
     cancel: jest.fn(),
   }) as unknown as GracePeriodService & { registerHandler: jest.Mock };
 
+  const mkTurnDeadlines = () => ({
+    registerHandler: jest.fn(),
+    schedule: jest.fn(),
+    cancel: jest.fn(),
+  }) as unknown as TurnDeadlineService & { registerHandler: jest.Mock };
+
+  const mkWebPush = () =>
+    ({ notifyYourTurn: jest.fn(), notifyUser: jest.fn(), isConfigured: () => false }) as unknown as WebPushService;
+
   const stub = {} as any;
 
   it('UnoGateway.onModuleInit() registers a handler for game="uno"', () => {
     const grace = mkGrace();
-    const gateway = new UnoGateway(stub, stub, stub, stub, stub, stub, stub, grace);
+    const turnDeadlines = mkTurnDeadlines();
+    const gateway = new UnoGateway(stub, stub, stub, stub, stub, stub, stub, grace, turnDeadlines);
     gateway.onModuleInit();
     expect((grace as any).registerHandler).toHaveBeenCalledWith('uno', expect.any(Function));
   });
 
   it('ChessGateway.onModuleInit() registers a handler for game="chess"', () => {
     const grace = mkGrace();
-    const gateway = new ChessGateway(stub, stub, stub, stub, stub, stub, stub, grace);
+    const turnDeadlines = mkTurnDeadlines();
+    const webPush = mkWebPush();
+    const gateway = new ChessGateway(stub, stub, stub, stub, stub, stub, stub, grace, turnDeadlines, webPush);
     gateway.onModuleInit();
     expect((grace as any).registerHandler).toHaveBeenCalledWith('chess', expect.any(Function));
   });
 
   it('HalmaGateway.onModuleInit() registers a handler for game="halma"', () => {
     const grace = mkGrace();
-    const gateway = new HalmaGateway(stub, stub, stub, stub, stub, stub, stub, grace);
+    const turnDeadlines = mkTurnDeadlines();
+    const webPush = mkWebPush();
+    const gateway = new HalmaGateway(stub, stub, stub, stub, stub, stub, stub, grace, turnDeadlines, webPush);
     gateway.onModuleInit();
     expect((grace as any).registerHandler).toHaveBeenCalledWith('halma', expect.any(Function));
   });
 
   it('DominoGateway.onModuleInit() registers a handler for game="domino"', () => {
     const grace = mkGrace();
-    const gateway = new DominoGateway(stub, stub, stub, stub, stub, stub, stub, grace);
+    const turnDeadlines = mkTurnDeadlines();
+    const gateway = new DominoGateway(stub, stub, stub, stub, stub, stub, stub, grace, turnDeadlines);
     gateway.onModuleInit();
     expect((grace as any).registerHandler).toHaveBeenCalledWith('domino', expect.any(Function));
   });
 
   it('NavalBattleGateway.onModuleInit() registers a handler for game="naval-battle"', () => {
     const grace = mkGrace();
-    const gateway = new NavalBattleGateway(stub, stub, stub, stub, stub, stub, stub, grace);
+    const turnDeadlines = mkTurnDeadlines();
+    const gateway = new NavalBattleGateway(stub, stub, stub, stub, stub, stub, stub, grace, turnDeadlines);
     gateway.onModuleInit();
     expect((grace as any).registerHandler).toHaveBeenCalledWith('naval-battle', expect.any(Function));
   });
 
   it('ConnectFourGateway.onModuleInit() registers a handler for game="connect-four"', () => {
     const grace = mkGrace();
-    const gateway = new ConnectFourGateway(stub, stub, stub, stub, stub, stub, stub, grace);
+    const turnDeadlines = mkTurnDeadlines();
+    const gateway = new ConnectFourGateway(stub, stub, stub, stub, stub, stub, stub, grace, turnDeadlines);
     gateway.onModuleInit();
     expect((grace as any).registerHandler).toHaveBeenCalledWith('connect-four', expect.any(Function));
   });

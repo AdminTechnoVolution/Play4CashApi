@@ -121,6 +121,14 @@ handshake URL because the browser cannot set `Authorization` on a WebSocket upgr
 | `VITE_DEV_PROXY_TARGET`   | Dev-only. When set, Vite proxies `/api` and `/socket.io` to that origin. |
 | `VITE_DEV_PROXY_INSECURE` | Dev-only. `true` to allow self-signed HTTPS targets. |
 
+## 8b. Web Push (API)
+
+| Variable | API | Notes |
+|----------|-----|-------|
+| `VAPID_PUBLIC_KEY` | ✅ | Must match `VITE_VAPID_PUBLIC_KEY` in the PWA. |
+| `VAPID_PRIVATE_KEY` | ✅ | Server-only; required to **send** push notifications. |
+| `VAPID_SUBJECT` | — | Default `mailto:support@play4cash.com`. |
+
 ## 9. PWA versioning contract
 
 Both ends agree on a semver published by the SPA. The API can force a hard reload when it
@@ -162,3 +170,13 @@ the forced-update flow silently breaks.
    `none` if cross-site), `NODE_ENV=production`.
 7. Bump `PWA_MIN_VERSION` only when the new build is **not** backward compatible with older
    PWA bundles. Otherwise leave it as-is and let the SW prompt flow handle the rollout.
+8. **`SOCKET_IO_REDIS_ADAPTER=true` is mandatory** when `NODE_ENV=production` (API throws at boot otherwise).
+
+## 11. WebSocket stability
+
+See Play4CashPWA `docs/SECURITY-ENV.md` §11 for the full matrix. API-specific:
+
+- `SOCKET_IO_REDIS_ADAPTER=true` + `REDIS_URI` required in production multi-instance.
+- Engine.IO ping: `pingInterval=25000`, `pingTimeout=20000` via `RedisIoAdapter`.
+- Game payloads include `stateVersion` + `turnDeadlineAt`; turn timeouts also registered in Mongo `turn_deadlines` collection.
+- Optional `VAPID_*` keys for outbound Web Push.
