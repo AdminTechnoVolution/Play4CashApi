@@ -74,15 +74,20 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
     );
   }
 
-  async emitMatchUpdate(tournamentId: string): Promise<void> {
-    await this.emitState(tournamentId);
+  async emitBracketUpdated(tournamentId: string): Promise<void> {
+    const bracket = await this.stateService.getBracket(tournamentId);
     const room = this.roomId(tournamentId);
     this.server.to(room).emit(EVENT, {
       success: true,
       event: 'tournament:bracketUpdated',
-      data: { tournamentId },
+      data: { tournamentId, bracket },
       messages: [],
     });
+  }
+
+  async emitMatchUpdate(tournamentId: string): Promise<void> {
+    await this.emitState(tournamentId);
+    await this.emitBracketUpdated(tournamentId);
   }
 
   @SubscribeMessage('tournament:join')

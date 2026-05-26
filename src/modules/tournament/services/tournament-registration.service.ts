@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { TournamentsGateway } from '../../websockets/tournaments/tournaments.gateway';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { IdempotencyService } from '../../../common/idempotency/idempotency.service';
@@ -28,6 +29,7 @@ export class TournamentRegistrationService {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly ledger: TournamentLedgerService,
     private readonly idempotency: IdempotencyService,
+    private readonly tournamentsGateway: TournamentsGateway,
   ) {}
 
   private static readonly UUID_RE =
@@ -98,6 +100,8 @@ export class TournamentRegistrationService {
       }
       await t.save();
 
+      void this.tournamentsGateway.emitMatchUpdate(t._id.toString());
+
       return {
         registered: true,
         participantId: participant._id.toString(),
@@ -147,6 +151,8 @@ export class TournamentRegistrationService {
         t.status = TournamentStatus.OPEN;
       }
       await t.save();
+
+      void this.tournamentsGateway.emitMatchUpdate(t._id.toString());
 
       return { unregistered: true, registeredCount: t.registered_count, status: t.status };
     });
