@@ -229,15 +229,59 @@ export class TournamentStateService {
       throw new NotFoundException('Tournament not found');
     }
     const oid = new Types.ObjectId(tournamentId);
-    const exists = await this.tournamentModel.findById(oid).select('_id').lean();
-    if (!exists) {
+    const tournament = await this.tournamentModel.findById(oid).select('_id group_count').lean();
+    if (!tournament) {
       throw new NotFoundException('Tournament not found');
     }
 
-    const groups = await this.groupModel.find({ tournament_id: oid }).sort({ group_number: 1 }).lean();
+    const groupsFromDb = await this.groupModel.find({ tournament_id: oid }).sort({ group_number: 1 }).lean();
     const matches = await this.matchModel.find({ tournament_id: oid }).sort({ round_index: 1, match_index: 1 }).lean();
-    const participants = await this.participantModel.find({ tournament_id: oid }).lean();
+    const participants = await this.participantModel
+      .find({
+        tournament_id: oid,
+        status: { $ne: TournamentParticipantStatus.REFUNDED },
+      })
+      .sort({ seed: 1 })
+      .lean();
+
     const byUser = new Map(participants.map((p) => [p.user_id.toString(), p]));
+
+    const rosterByGroup = new Map<
+      number,
+      Array<{ userId: string; username: string; seed?: number; status: string }>
+    >();
+    for (const p of participants) {
+      const gn = p.group_number;
+      if (!gn) continue;
+      if (!rosterByGroup.has(gn)) rosterByGroup.set(gn, []);
+      rosterByGroup.get(gn)!.push({
+        userId: p.user_id.toString(),
+        username: p.username,
+        seed: p.seed,
+        status: p.status,
+      });
+    }
+
+    const mapParticipantList = (groupNumber: number) => rosterByGroup.get(groupNumber) ?? [];
+
+    const groups =
+      groupsFromDb.length > 0
+        ? groupsFromDb.map((g) => ({
+            groupNumber: g.group_number,
+            status: g.status,
+            winnerUserId: g.winner_user_id?.toString() ?? null,
+            participants: mapParticipantList(g.group_number),
+          }))
+        : Array.from({ length: tournament.group_count }, (_, i) => {
+            const groupNumber = i + 1;
+            return {
+              groupNumber,
+              status: 'pending',
+              winnerUserId: null as string | null,
+              participants: mapParticipantList(groupNumber),
+            };
+          });
+
     const mapMatch = (m: typeof matches[0]) => ({
       id: m._id.toString(),
       groupNumber: m.group_number ?? null,
@@ -257,11 +301,7 @@ export class TournamentStateService {
       isBye: m.is_bye,
     });
     return {
-      groups: groups.map((g) => ({
-        groupNumber: g.group_number,
-        status: g.status,
-        winnerUserId: g.winner_user_id?.toString() ?? null,
-      })),
+      groups,
       groupMatches: matches.filter((m) => m.phase === 'groups').map(mapMatch),
       finalsMatches: matches.filter((m) => m.phase === 'finals').map(mapMatch),
     };
