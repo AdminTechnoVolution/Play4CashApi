@@ -20,6 +20,7 @@ import { RoomsGateway } from '../rooms/rooms.gateway';
 import { ConnectFourGame, ConnectFourGameDocument } from './schemas/connect-four-game.schema';
 import { I18nService } from '../../../common/i18n/i18n.service';
 import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
+import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
 import {
   coerceConnectFourBoard,
   colorForPlayerNum,
@@ -29,8 +30,8 @@ import {
   type ConnectFourBoard,
   type ConnectFourColor,
 } from './connect-four-game.logic';
-import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
-import { resolveTurnTimerSeconds } from '../../../common/utils/turn-timer.util';
+import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
+import { enrichGamePayload } from '../../../common/utils/game-state-version.util';
 
 const EVENT = 'connect-four';
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -59,12 +60,16 @@ export class ConnectFourGateway
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    private readonly turnDeadlines: TurnDeadlineService,
     @Optional() private readonly tournamentMatchService?: TournamentMatchService,
   ) {}
 
   onModuleInit() {
     this.grace.registerHandler('connect-four', (playerId, roomId) =>
       this.executeForfeit(roomId, playerId),
+    );
+    this.turnDeadlines.registerHandler('connect-four', (_playerId, roomId) =>
+      this.executeConnectFourTurnTimeout(roomId),
     );
   }
 
@@ -856,23 +861,29 @@ export class ConnectFourGateway
 
         (s as unknown as Socket).emit(EVENT, {
           success: true,
-          data: {
-            ...sState,
-            lastMove,
-            gameEnded: finished,
-            gameStarted: !finished,
-            youWon: isWinner && !sIsSpectator,
-            outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
-            prize: isWinner ? displayPrize : 0,
-            reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
-            isDraw: finished && isDraw,
-            winnerUserId:
-              finished && !isDraw && winnerNum
-                ? winnerNum === 1
-                  ? game.player1_id.toString()
-                  : game.player2_id.toString()
-                : null,
-          },
+          data: await enrichGamePayload(
+            this.redis,
+            'connect-four',
+            room_id,
+            {
+              ...sState,
+              lastMove,
+              gameEnded: finished,
+              gameStarted: !finished,
+              youWon: isWinner && !sIsSpectator,
+              outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
+              prize: isWinner ? displayPrize : 0,
+              reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
+              isDraw: finished && isDraw,
+              winnerUserId:
+                finished && !isDraw && winnerNum
+                  ? winnerNum === 1
+                    ? game.player1_id.toString()
+                    : game.player2_id.toString()
+                  : null,
+            },
+            { turnStart: game.turn_start_time, timerSeconds: limit },
+          ),
           messages: [msg],
         });
       } catch (emitErr) {
@@ -932,8 +943,15 @@ export class ConnectFourGateway
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {
     clearTimer(socket.id);
-    const t = setTimeout(async () => {
-      const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
+    const playerId = (socket.data?.player_id as string) || '';
+    if (playerId) void this.turnDeadlines.schedule('connect-four', room_id, playerId, seconds);
+    const t = setTimeout(() => void this.executeConnectFourTurnTimeout(room_id), seconds * 1000);
+    turnTimers.set(socket.id, t);
+  }
+
+  private async executeConnectFourTurnTimeout(room_id: string): Promise<void> {
+    await this.turnDeadlines.cancel('connect-four', room_id);
+    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) return;
       const winnerNum = game.current_player === 1 ? 2 : 1;
       const winnerId = winnerNum === 1 ? game.player1_id : game.player2_id;
@@ -999,7 +1017,5 @@ export class ConnectFourGateway
 
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
-    }, seconds * 1000);
-    turnTimers.set(socket.id, t);
   }
 }

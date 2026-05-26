@@ -60,6 +60,11 @@ export default () => ({
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  webPush: {
+    publicKey: (process.env.VAPID_PUBLIC_KEY || '').trim(),
+    privateKey: (process.env.VAPID_PRIVATE_KEY || '').trim(),
+    subject: (process.env.VAPID_SUBJECT || 'mailto:support@play4cash.com').trim(),
+  },
   pwa: {
     /**
      * Minimum PWA semver (e.g. "1.2.0") required by this API. When set, every response carries

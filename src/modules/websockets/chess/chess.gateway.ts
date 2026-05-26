@@ -5,6 +5,9 @@ import {
 import { Inject, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
+import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
+import { enrichGamePayload } from '../../../common/utils/game-state-version.util';
+import { WebPushService } from '../../../common/web-push/web-push.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -62,12 +65,17 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    private readonly turnDeadlines: TurnDeadlineService,
+    private readonly webPush: WebPushService,
     @Optional() private readonly tournamentMatchService?: TournamentMatchService,
   ) {}
 
   /** Phase B: register the forfeit handler with the distributed grace sweeper. */
   onModuleInit() {
     this.grace.registerHandler('chess', (playerId, roomId) => this.executeForfeit(roomId, playerId));
+    this.turnDeadlines.registerHandler('chess', (_playerId, roomId) =>
+      this.executeTurnTimeout(roomId),
+    );
   }
 
   afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
@@ -432,7 +440,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const sockets = await this.server.in(room_id).fetchSockets();
     const opponent = sockets.find(s => (s as any).data.playerNum === game.current_player);
     clearTimer(client.id);
-    if (opponent) this.startTimer(opponent as unknown as Socket, room_id, limit);
+    if (opponent) {
+      this.startTimer(opponent as unknown as Socket, room_id, limit);
+      const opponentId = (opponent as any).data?.player_id as string | undefined;
+      if (opponentId && !result.finished) {
+        this.webPush.notifyYourTurn(opponentId, 'chess', room_id);
+      }
+    }
     
     room.turn_start_time = new Date();
     await room.save();
@@ -517,7 +531,14 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         msg = inCheckNow ? this.i18n.translate('ws.chess.check', sLang) : (s.id === client.id ? this.i18n.translate('ws.games.moveAccepted', sLang) : this.i18n.translate('ws.games.opponentMoved', sLang));
       }
 
-      (s as unknown as Socket).emit('chess', { success: true, data: sData, messages: [msg] });
+      (s as unknown as Socket).emit('chess', {
+        success: true,
+        data: await enrichGamePayload(this.redis, 'chess', room_id, sData, {
+          turnStart: room.turn_start_time,
+          timerSeconds: limit,
+        }),
+        messages: [msg],
+      });
     }
   }
 
@@ -530,7 +551,15 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {
     clearTimer(socket.id);
-    const t = setTimeout(async () => {
+    const playerId = (socket.data.player_id as string) || '';
+    if (playerId) void this.turnDeadlines.schedule('chess', room_id, playerId, seconds);
+    const t = setTimeout(() => void this.executeTurnTimeout(room_id, socket.id), seconds * 1000);
+    turnTimers.set(socket.id, t);
+  }
+
+  private async executeTurnTimeout(room_id: string, socketId?: string): Promise<void> {
+    if (socketId) clearTimer(socketId);
+    await this.turnDeadlines.cancel('chess', room_id);
       const game = await this.chessGameModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) return;
       const winnerNum = game.current_player === 1 ? 2 : 1;
@@ -576,7 +605,5 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
       }
-    }, seconds * 1000);
-    turnTimers.set(socket.id, t);
   }
 }

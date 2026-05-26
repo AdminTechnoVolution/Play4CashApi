@@ -5,6 +5,9 @@ import {
 import { Inject, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
+import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
+import { enrichGamePayload } from '../../../common/utils/game-state-version.util';
+import { WebPushService } from '../../../common/web-push/web-push.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -47,12 +50,17 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    private readonly turnDeadlines: TurnDeadlineService,
+    private readonly webPush: WebPushService,
     @Optional() private readonly tournamentMatchService?: TournamentMatchService,
   ) {}
 
   /** Phase B: register the forfeit handler with the distributed grace sweeper. */
   onModuleInit() {
     this.grace.registerHandler('halma', (playerId, roomId) => this.executeForfeit(roomId, playerId));
+    this.turnDeadlines.registerHandler('halma', (_playerId, roomId) =>
+      this.executeHalmaTurnTimeout(roomId),
+    );
   }
 
   afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
@@ -467,7 +475,10 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       }
       (s as unknown as Socket).emit('halma', { 
         success: true, 
-        data: sData, 
+        data: await enrichGamePayload(this.redis, 'halma', room_id, sData, {
+          turnStart: game.turn_start_time,
+          timerSeconds: remaining,
+        }),
         messages: sIsSpectator ? [this.i18n.translate(chainPossible ? 'ws.games.continuingJump' : 'ws.games.opponentMoved', sLang)] : [this.i18n.translate(chainPossible ? 'ws.games.opponentContinuingJump' : 'ws.games.opponentMoved', sLang)] 
       });
     }
@@ -506,7 +517,11 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const opponent = sockets.find(s => (s as any).data.playerNum === game.current_player);
 
     clearTimer(client.id);
-    if (opponent) this.startTimer(opponent as unknown as Socket, room_id, timerSec);
+    if (opponent) {
+      this.startTimer(opponent as unknown as Socket, room_id, timerSec);
+      const opponentId = (opponent as any).data?.player_id as string | undefined;
+      if (opponentId) this.webPush.notifyYourTurn(opponentId, 'halma', room_id);
+    }
 
     // 2. Win Condition Check
     const b = game.board as number[][];
@@ -601,14 +616,28 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         sData.player2 = p2NameUser;
         sData.turnOf = game.current_player === 1 ? p1NameUser : p2NameUser;
       }
-      (s as unknown as Socket).emit('halma', { success: true, data: sData, messages: msg });
+      (s as unknown as Socket).emit('halma', {
+        success: true,
+        data: await enrichGamePayload(this.redis, 'halma', room_id, sData, {
+          turnStart: game.turn_start_time,
+          timerSeconds: timerSec,
+        }),
+        messages: msg,
+      });
     }
   }
 
   private startTimer(socket: Socket, room_id: string, seconds: number) {
     clearTimer(socket.id);
-    const t = setTimeout(async () => {
-      const game = await this.halmaModel.findOne({ room_id: new Types.ObjectId(room_id) });
+    const playerId = (socket.data?.player_id as string) || '';
+    if (playerId) void this.turnDeadlines.schedule('halma', room_id, playerId, seconds);
+    const t = setTimeout(() => void this.executeHalmaTurnTimeout(room_id), seconds * 1000);
+    turnTimers.set(socket.id, t);
+  }
+
+  private async executeHalmaTurnTimeout(room_id: string): Promise<void> {
+    await this.turnDeadlines.cancel('halma', room_id);
+    const game = await this.halmaModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) return;
       const winnerNum = game.current_player === 1 ? 2 : 1;
       const winnerId = winnerNum === 1 ? game.player1_id : game.player2_id;
@@ -653,7 +682,5 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
         if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
       }
-    }, seconds * 1000);
-    turnTimers.set(socket.id, t);
   }
 }

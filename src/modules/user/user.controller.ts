@@ -40,6 +40,16 @@ class ConfirmWalletOtpDto {
   verification_code: string;
 }
 
+class PushSubscriptionDto {
+  @ApiProperty() @IsString() endpoint: string;
+  @ApiProperty() @IsString() p256dh: string;
+  @ApiProperty() @IsString() auth: string;
+}
+
+class RemovePushSubscriptionDto {
+  @ApiProperty() @IsString() endpoint: string;
+}
+
 @ApiTags('User')
 @ApiBearerAuth()
 @Controller('user')
@@ -147,5 +157,24 @@ export class UserController {
   @ApiOperation({ summary: 'Update user profile' })
   updateProfile(@CurrentUser() user: JwtPayload, @Body() dto: UpdateProfileDto) {
     return this.userService.updateProfile(user.id, dto);
+  }
+
+  @Post('push-subscription')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Register Web Push subscription for background alerts' })
+  async savePushSubscription(@CurrentUser() user: JwtPayload, @Body() dto: PushSubscriptionDto) {
+    await this.userService.savePushSubscription(user.id, {
+      endpoint: dto.endpoint,
+      keys: { p256dh: dto.p256dh, auth: dto.auth },
+    });
+    return { success: true, messages: [], data: { saved: true } };
+  }
+
+  @Post('push-subscription/remove')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Remove Web Push subscription' })
+  async removePushSubscription(@CurrentUser() user: JwtPayload, @Body() dto: RemovePushSubscriptionDto) {
+    await this.userService.removePushSubscription(user.id, dto.endpoint);
+    return { success: true, messages: [], data: { removed: true } };
   }
 }

@@ -65,7 +65,8 @@ function instantiateGateway(roomModel: any, roomsGateway: any) {
   const redis = {} as any;
   const i18n = { translate: (k: string) => k } as any;
   const grace = { start: jest.fn(), cancel: jest.fn(), registerHandler: jest.fn() } as any;
-  return new UnoGateway(unoModel, roomModel, userModel, config, roomsGateway, redis, i18n, grace);
+  const turnDeadlines = { schedule: jest.fn(), cancel: jest.fn(), registerHandler: jest.fn() } as any;
+  return new UnoGateway(unoModel, roomModel, userModel, config, roomsGateway, redis, i18n, grace, turnDeadlines);
 }
 
 describe('Phase D — UnoGateway.handleDisconnect broadcasts lobby updates', () => {

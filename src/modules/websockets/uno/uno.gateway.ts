@@ -7,6 +7,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
+import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
@@ -62,6 +63,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    private readonly turnDeadlines: TurnDeadlineService,
   ) {}
 
   /**
@@ -72,6 +74,9 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   onModuleInit() {
     this.grace.registerHandler('uno', (playerId, roomId) =>
       this.eliminatePlayer(roomId, playerId, 'forfeit'),
+    );
+    this.turnDeadlines.registerHandler('uno', (playerId, roomId) =>
+      this.eliminatePlayer(roomId, playerId, 'timeout'),
     );
   }
 
@@ -1434,6 +1439,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const player_id = socket.data?.player_id;
     if (!player_id) return;
     clearTimer(socket.id);
+    void this.turnDeadlines.schedule('uno', room_id, player_id, seconds);
     const t = setTimeout(async () => {
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) return;

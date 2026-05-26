@@ -5,6 +5,7 @@ import {
 import { Inject, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { GracePeriodService } from '../../../common/grace-period/grace-period.service';
+import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
@@ -46,6 +47,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly i18n: I18nService,
     private readonly grace: GracePeriodService,
+    private readonly turnDeadlines: TurnDeadlineService,
   ) {}
 
   /**
@@ -56,6 +58,9 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
   onModuleInit() {
     this.grace.registerHandler('domino', (playerId, roomId) =>
       this.eliminatePlayer(roomId, playerId, 'forfeit'),
+    );
+    this.turnDeadlines.registerHandler('domino', (playerId, roomId) =>
+      this.eliminatePlayer(roomId, playerId, 'timeout'),
     );
   }
 
@@ -627,6 +632,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     if (!player_id) return;
 
     clearTimer(socket.id);
+    void this.turnDeadlines.schedule('domino', room_id, player_id, seconds);
     const t = setTimeout(async () => {
       // Re-verify if player is still in turn via DB to be safe
       const game = await this.dominoModel.findOne({ room_id: new Types.ObjectId(room_id) });

@@ -67,6 +67,9 @@ export class User {
     lowercase: true,
   })
   role: UserRole;
+
+  @Prop({ type: [{ endpoint: String, keys: { p256dh: String, auth: String } }], default: [] })
+  push_subscriptions: Array<{ endpoint: string; keys: { p256dh: string; auth: string } }>;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

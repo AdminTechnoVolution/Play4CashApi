@@ -42,6 +42,27 @@ export class UserRepository {
     return this.userModel.countDocuments().exec();
   }
 
+  async upsertPushSubscription(
+    userId: string,
+    sub: { endpoint: string; keys: { p256dh: string; auth: string } },
+  ): Promise<void> {
+    await this.userModel.updateOne(
+      { _id: userId },
+      { $pull: { push_subscriptions: { endpoint: sub.endpoint } } },
+    );
+    await this.userModel.updateOne(
+      { _id: userId },
+      { $push: { push_subscriptions: sub } },
+    );
+  }
+
+  async removePushSubscription(userId: string, endpoint: string): Promise<void> {
+    await this.userModel.updateOne(
+      { _id: userId },
+      { $pull: { push_subscriptions: { endpoint } } },
+    );
+  }
+
   async getTotalBalances(): Promise<any> {
     const result = await this.userModel.aggregate([
       {
