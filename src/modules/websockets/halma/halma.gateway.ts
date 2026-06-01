@@ -19,6 +19,11 @@ import { createHalmaBoard, isValidStep, isValidJump, canJumpFurther, HalmaBoard,
 import { I18nService } from '../../../common/i18n/i18n.service';
 import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
 import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
+import {
+  buildFinishedRoomSyncData,
+  emitDbOpponentJoinedIfPresent,
+  scheduleWaitingRoomReconcile,
+} from '../../../common/ws/waiting-room-sync.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -168,7 +173,13 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room) return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-    if (room.status === 'finished') return client.emit('halma', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+    if (room.status === 'finished') {
+      return client.emit('halma', {
+        success: true,
+        messages: [this.i18n.translate('ws.games.playerDisconnected', lang)],
+        data: buildFinishedRoomSyncData(room, player_id),
+      });
+    }
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
@@ -240,97 +251,115 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       }
     }
 
-    client.emit('halma', { success: true, data: { waitingForOpponent: true, isPlayerOne: playerNum === 1, isSpectator: false }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
+    client.emit('halma', { success: true, data: { waitingForOpponent: true, isPlayerOne: playerNum === 1, isSpectator: false, playersJoined: room.players.length, maxPlayers: room.player_limit || room.game_id?.max_players || 2 }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
 
-    const socketsInRoom = await this.server.in(room_id).fetchSockets();
-    if (socketsInRoom.length > 1) {
-      const user = await this.userModel.findById(player_id).select('username');
-      const username = user?.username || 'Opponent';
-      client.to(room_id).emit('halma', { success: true, data: { opponentJoined: true, opponentName: username }, messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })] });
-    }
+    await emitDbOpponentJoinedIfPresent({
+      room,
+      joiningPlayerId: player_id,
+      getUsername: (id) => this.getCachedUsername(id),
+      notifyJoiner: (opponentName) => {
+        client.emit('halma', {
+          success: true,
+          data: { opponentJoined: true, opponentName },
+          messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: opponentName })],
+        });
+      },
+      notifyOthers: (joinerName) => {
+        client.to(room_id).emit('halma', {
+          success: true,
+          data: { opponentJoined: true, opponentName: joinerName },
+          messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: joinerName })],
+        });
+      },
+    });
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-
-    if (socketsInRoom.length >= maxPlayers && room.status === 'waiting') {
-      // Phase A hardening: only start when the room actually has the expected number of
-      // distinct players. Defeats the "two tabs from the same account" socket-count race.
-      if (room.players.length < maxPlayers || !room.players[0]?.playerId || !room.players[1]?.playerId) {
-        return;
-      }
-      const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
-      if (!started) return;
-
-      const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
-      const paid: any[] = [];
-
-      // Phase A hardening: atomic deduction with $gte + compensation if the deal or
-      // model.create fails. Replaces the previous read-then-updateOne pattern that
-      // could overdraw and silently lose stake on a create failure.
-      const compensate = async (errKey: string, reason: string) => {
-        this.logger.error(`event=halma_start_failed room=${room_id} reason=${reason}`);
-        for (const pid of paid) {
-          await this.userModel
-            .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
-            .catch((e) => this.logger.error(`[Halma] Refund failed | player=${pid}`, e));
-        }
-        await this.halmaModel
-          .deleteOne({ room_id: new Types.ObjectId(room_id) })
-          .catch((e) => this.logger.error(`[Halma] Game cleanup failed | room=${room_id}`, e));
-        await this.roomModel
-          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
-          .catch((e) => this.logger.error(`[Halma] Room status reset failed | room=${room_id}`, e));
-        this.server
-          .to(room_id)
-          .emit('halma', { success: false, messages: [this.i18n.translate(errKey, lang)] });
-      };
-
-      const deduct1 = await this.userModel.findOneAndUpdate(
-        { _id: p1id, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
-      );
-      if (!deduct1) {
-        await compensate('ws.games.insufficientBalance', 'p1_insufficient');
-        return;
-      }
-      paid.push(p1id);
-
-      const deduct2 = await this.userModel.findOneAndUpdate(
-        { _id: p2id, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
-      );
-      if (!deduct2) {
-        await compensate('ws.games.insufficientBalance', 'p2_insufficient');
-        return;
-      }
-      paid.push(p2id);
-
-      const board = createHalmaBoard();
-      try {
-        await this.halmaModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, turn_start_time: new Date() });
-      } catch (e) {
-        this.logger.error(`[Halma] Game create failed | room=${room_id}`, e);
-        await compensate('ws.games.matchmakingError', 'game_create_failed');
-        return;
-      }
-
-      for (const s of socketsInRoom) {
-        const sIsSpectator = (s as any).data.isSpectator || false;
-        const pNum = (s as any).data.playerNum || 1;
-        const isTurn = pNum === 1;
-        const sLang = this.getLang(s as unknown as Socket);
-        (s as unknown as Socket).emit('halma', { 
-          success: true, 
-          data: { board, yourTurn: isTurn && !sIsSpectator, isPlayerOne: pNum === 1, gameStarted: true, turnTimerSeconds: 30, isSpectator: sIsSpectator }, 
-          messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.waitingOpponent', sLang)] 
-        });
-        if (isTurn) this.startTimer(s as unknown as Socket, room_id, 30);
-      }
-      const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
-      if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
+    if (room.players.length >= maxPlayers && room.status === 'waiting') {
+      await this.tryStartHalmaGame(room_id, lang);
     }
+    scheduleWaitingRoomReconcile(room_id, () => this.tryStartHalmaGame(room_id, lang));
+  }
+
+  private async tryStartHalmaGame(room_id: string, lang: string): Promise<void> {
+    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
+    if (!room || room.status !== 'waiting') return;
+
+    const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
+    if (room.players.length < maxPlayers || !room.players[0]?.playerId || !room.players[1]?.playerId) {
+      return;
+    }
+
+    const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
+    if (!started) return;
+
+    const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
+    const paid: any[] = [];
+
+    const compensate = async (errKey: string, reason: string) => {
+      this.logger.error(`event=halma_start_failed room=${room_id} reason=${reason}`);
+      for (const pid of paid) {
+        await this.userModel
+          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+          .catch((e) => this.logger.error(`[Halma] Refund failed | player=${pid}`, e));
+      }
+      await this.halmaModel
+        .deleteOne({ room_id: new Types.ObjectId(room_id) })
+        .catch((e) => this.logger.error(`[Halma] Game cleanup failed | room=${room_id}`, e));
+      await this.roomModel
+        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+        .catch((e) => this.logger.error(`[Halma] Room status reset failed | room=${room_id}`, e));
+      this.server
+        .to(room_id)
+        .emit('halma', { success: false, messages: [this.i18n.translate(errKey, lang)] });
+    };
+
+    const deduct1 = await this.userModel.findOneAndUpdate(
+      { _id: p1id, balance: { $gte: room.bet_amount } },
+      { $inc: { balance: -room.bet_amount } },
+      { returnDocument: 'after' },
+    );
+    if (!deduct1) {
+      await compensate('ws.games.insufficientBalance', 'p1_insufficient');
+      return;
+    }
+    paid.push(p1id);
+
+    const deduct2 = await this.userModel.findOneAndUpdate(
+      { _id: p2id, balance: { $gte: room.bet_amount } },
+      { $inc: { balance: -room.bet_amount } },
+      { returnDocument: 'after' },
+    );
+    if (!deduct2) {
+      await compensate('ws.games.insufficientBalance', 'p2_insufficient');
+      return;
+    }
+    paid.push(p2id);
+
+    const board = createHalmaBoard();
+    try {
+      await this.halmaModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, turn_start_time: new Date() });
+    } catch (e) {
+      this.logger.error(`[Halma] Game create failed | room=${room_id}`, e);
+      await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+
+    const freshSockets = await this.server.in(room_id).fetchSockets();
+    for (const s of freshSockets) {
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const pNum = (s as any).data.playerNum || 1;
+      const isTurn = pNum === 1;
+      const sLang = this.getLang(s as unknown as Socket);
+      (s as unknown as Socket).emit('halma', {
+        success: true,
+        data: { board, yourTurn: isTurn && !sIsSpectator, isPlayerOne: pNum === 1, gameStarted: true, turnTimerSeconds: 30, isSpectator: sIsSpectator },
+        messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.waitingOpponent', sLang)],
+      });
+      if (isTurn) this.startTimer(s as unknown as Socket, room_id, 30);
+    }
+    const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+    const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+    if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
   }
 
   @SubscribeMessage('move')

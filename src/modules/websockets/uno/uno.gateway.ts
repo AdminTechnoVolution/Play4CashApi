@@ -35,6 +35,11 @@ import {
 } from './uno-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
 import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
+import {
+  buildFinishedRoomSyncData,
+  emitDbOpponentJoinedIfPresent,
+  scheduleWaitingRoomReconcile,
+} from '../../../common/ws/waiting-room-sync.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => {
@@ -256,8 +261,9 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     }
     if (room.status === 'finished') {
       return client.emit('uno', {
-        success: false,
-        messages: ['ws.games.roomInactive'],
+        success: true,
+        messages: ['ws.games.playerDisconnected'],
+        data: buildFinishedRoomSyncData(room, player_id),
       });
     }
 
@@ -292,37 +298,54 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       return;
     }
 
-    const socketsInRoom = await this.server.in(room_id).fetchSockets();
     client.emit('uno', {
       success: true,
       data: {
         waitingForOpponent: true,
         isPlayerOne: playerIndex === 0,
-        playersJoined: socketsInRoom.length,
+        playersJoined: room.players.length,
         maxPlayers,
         isSpectator: false,
       },
       messages: ['ws.games.waitingOpponent'],
     });
 
-    if (socketsInRoom.length > 1 && room.status === 'waiting' && socketsInRoom.length < maxPlayers) {
-      const username = await this.getCachedUsername(player_id);
-      client.to(room_id).emit('uno', {
-        success: true,
-        data: {
-          opponentJoined: true,
-          opponentName: username,
-          waitingForOpponent: true,
-          playersJoined: socketsInRoom.length,
-          maxPlayers,
-        },
-        messages: ['ws.games.opponentJoined'],
-      });
-    }
+    await emitDbOpponentJoinedIfPresent({
+      room,
+      joiningPlayerId: player_id,
+      getUsername: (id) => this.getCachedUsername(id),
+      notifyJoiner: (opponentName) => {
+        client.emit('uno', {
+          success: true,
+          data: {
+            opponentJoined: true,
+            opponentName,
+            waitingForOpponent: true,
+            playersJoined: room.players.length,
+            maxPlayers,
+          },
+          messages: ['ws.games.opponentJoined'],
+        });
+      },
+      notifyOthers: (joinerName) => {
+        client.to(room_id).emit('uno', {
+          success: true,
+          data: {
+            opponentJoined: true,
+            opponentName: joinerName,
+            waitingForOpponent: true,
+            playersJoined: room.players.length,
+            maxPlayers,
+          },
+          messages: ['ws.games.opponentJoined'],
+        });
+      },
+    });
 
-    if (socketsInRoom.length >= maxPlayers && room.status === 'waiting') {
+    if (room.players.length >= maxPlayers && room.status === 'waiting') {
       await this.tryStartUnoGame(room_id, lang);
     }
+    scheduleWaitingRoomReconcile(room_id, () => this.tryStartUnoGame(room_id, lang));
   }
 
   /** Idempotent start when the room is full and still waiting */

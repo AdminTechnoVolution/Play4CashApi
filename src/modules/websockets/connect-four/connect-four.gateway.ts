@@ -32,6 +32,12 @@ import {
 } from './connect-four-game.logic';
 import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
 import { enrichGamePayload } from '../../../common/utils/game-state-version.util';
+import {
+  agentDebugLog,
+  buildFinishedRoomSyncData,
+  emitDbOpponentJoinedIfPresent,
+  scheduleWaitingRoomReconcile,
+} from '../../../common/ws/waiting-room-sync.util';
 
 const EVENT = 'connect-four';
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -323,7 +329,10 @@ export class ConnectFourGateway
       return this.emit(client, false, {}, [this.i18n.translate('ws.games.gameNotFound', lang)]);
     }
     if (room.status === 'finished') {
-      return this.emit(client, false, {}, [this.i18n.translate('ws.games.roomInactive', lang)]);
+      agentDebugLog('connect-four.gateway.ts:handleJoin', 'finished_resync', { room_id, player_id, reason: room.winner_reason }, 'H4');
+      return this.emit(client, true, buildFinishedRoomSyncData(room, player_id), [
+        this.i18n.translate('ws.games.playerDisconnected', lang),
+      ]);
     }
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
@@ -393,32 +402,48 @@ export class ConnectFourGateway
       {
         waitingForOpponent: true,
         isSpectator: false,
-        playersJoined: await this.countPlayerSockets(room_id),
+        playersJoined: room.players.length,
         maxPlayers: 2,
       },
       [this.i18n.translate('ws.games.waitingOpponent', lang)],
     );
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
-    if (socketsInRoom.length > 1) {
-      const username = await this.getCachedUsername(player_id);
-      client.to(room_id).emit(EVENT, {
-        success: true,
-        messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })],
-        data: { opponentJoined: true, opponentName: username },
-      });
-    }
+    agentDebugLog('connect-four.gateway.ts:handleJoin', 'waiting_join', {
+      room_id,
+      player_id,
+      dbPlayers: room.players.length,
+      socketCount: socketsInRoom.length,
+    }, 'H1');
+
+    await emitDbOpponentJoinedIfPresent({
+      room,
+      joiningPlayerId: player_id,
+      getUsername: (id) => this.getCachedUsername(id),
+      notifyJoiner: (opponentName) => {
+        this.emit(client, true, { opponentJoined: true, opponentName }, [
+          this.i18n.translate('ws.games.opponentJoined', lang, { username: opponentName }),
+        ]);
+      },
+      notifyOthers: (joinerName) => {
+        client.to(room_id).emit(EVENT, {
+          success: true,
+          messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: joinerName })],
+          data: { opponentJoined: true, opponentName: joinerName },
+        });
+      },
+    });
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
     if (
-      socketsInRoom.length >= maxPlayers &&
-      room.status === 'waiting' &&
       room.players.length >= maxPlayers &&
+      room.status === 'waiting' &&
       room.players[0]?.playerId &&
       room.players[1]?.playerId
     ) {
       await this.tryStartConnectFourGame(room_id, lang);
     }
+    scheduleWaitingRoomReconcile(room_id, () => this.tryStartConnectFourGame(room_id, lang));
   }
 
   private resolvePlayerNum(socket: any, room: any): number {
@@ -445,9 +470,10 @@ export class ConnectFourGateway
       return;
     }
 
-    const socketsInRoom = await this.server.in(room_id).fetchSockets();
-    const playerSockets = socketsInRoom.filter((s) => !(s as any).data?.isSpectator);
-    if (playerSockets.length < 2) return;
+    agentDebugLog('connect-four.gateway.ts:tryStartConnectFourGame', 'start_attempt', {
+      room_id,
+      dbPlayers: room.players.length,
+    }, 'H2');
 
     const started = await this.roomModel.findOneAndUpdate(
       { _id: room_id, status: 'waiting' },
