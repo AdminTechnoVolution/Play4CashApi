@@ -10,7 +10,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "Der Benutzer hat bereits eine Auszahlung, die auf die Verifizierung wartet.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Sie haben nicht genügend Guthaben, um diese Auszahlung vorzunehmen",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "Sie haben nicht genügend Guthaben, um diesen Einsatz zu platzieren",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "UNO-Räume müssen eine gerade Spieleranzahl haben: 2, 4, 6, 8 oder 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Du bist bereits in einem aktiven Raum. Beende oder verlasse das aktuelle Spiel, bevor du einem anderen beitrittst.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Entspricht nicht dem Mindestauszahlungsbetrag",
     "ERROR_WITHDRAWAL_CODE_INVALID": "Der Verifizierungscode ist ungültig oder abgelaufen",

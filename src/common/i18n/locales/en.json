@@ -10,7 +10,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "The user already has a withdrawal pending verification.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "You do not have sufficient balance to make this withdrawal",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "You do not have sufficient balance to place this bet",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "UNO rooms must use an even player count: 2, 4, 6, 8, or 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "You are already in an active room. Finish or leave the current match before joining another.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Does not meet the minimum withdrawal amount",
     "ERROR_WITHDRAWAL_CODE_INVALID": "The verification code is invalid or has expired",
