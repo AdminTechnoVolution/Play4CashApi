@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { UNO_SOCKET_CODE, isValidUnoPlayerCount } from '../../common/constants/uno-game.constants';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Room, RoomDocument, RoomStatus } from './schemas/room.schema';
@@ -184,9 +183,6 @@ export class RoomService {
     const effectivePlayerLimit = playerLimit ?? game.max_players;
     if (effectivePlayerLimit < game.min_players || effectivePlayerLimit > game.max_players) {
       throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
-    }
-    if (game.socket_code === UNO_SOCKET_CODE && !isValidUnoPlayerCount(effectivePlayerLimit)) {
-      throw new BusinessException('ERROR_UNO_INVALID_PLAYER_LIMIT', 400);
     }
 
     const user = await this.userModel.findById(userId);

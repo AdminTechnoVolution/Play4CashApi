@@ -10,7 +10,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "El usuario ya tiene un retiro en proceso de verificación.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "No cuentas con saldo suficiente para realizar este retiro",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "No cuentas con el saldo suficiente para realizar esta apuesta",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "Las salas de UNO deben usar un número par de jugadores: 2, 4, 6, 8 o 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Ya estás en una sala activa. Termina o sal de la partida actual antes de unirte a otra.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "No cumple con el monto mínimo de retiro",
     "ERROR_WITHDRAWAL_CODE_INVALID": "El código de verificación es inválido o ha expirado",

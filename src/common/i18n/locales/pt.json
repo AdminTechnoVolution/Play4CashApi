@@ -10,7 +10,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "O usuário já possui um saque aguardando verificação.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Você não tem saldo suficiente para realizar este saque",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "Você não tem saldo suficiente para fazer esta aposta",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "Salas de UNO devem usar número par de jogadores: 2, 4, 6, 8 ou 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Você já está em uma sala ativa. Termine ou saia da partida atual antes de entrar em outra.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Não atinge o valor mínimo de saque",
     "ERROR_WITHDRAWAL_CODE_INVALID": "O código de verificação é inválido ou expirou",

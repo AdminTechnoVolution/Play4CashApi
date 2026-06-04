@@ -10,7 +10,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "L'utente ha già un prelievo in attesa di verifica.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Non hai un saldo sufficiente per effettuare questo prelievo",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "Non hai un saldo sufficiente per piazzare questa scommessa",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "Le stanze UNO devono avere un numero pari di giocatori: 2, 4, 6, 8 o 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Sei già in una stanza attiva. Termina o esci dalla partita in corso prima di entrare in un'altra.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Non soddisfa l'importo minimo di prelievo",
     "ERROR_WITHDRAWAL_CODE_INVALID": "Il codice di verifica non è valido o è scaduto",
