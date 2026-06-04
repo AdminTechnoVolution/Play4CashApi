@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { UNO_SOCKET_CODE, isValidUnoPlayerCount } from '../../common/constants/uno-game.constants';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Room, RoomDocument, RoomStatus } from './schemas/room.schema';
@@ -12,6 +11,7 @@ import { ChessGateway } from '../websockets/chess/chess.gateway';
 import { DominoGateway } from '../websockets/domino/domino.gateway';
 import { UnoGateway } from '../websockets/uno/uno.gateway';
 import { ConnectFourGateway } from '../websockets/connect-four/connect-four.gateway';
+import { agentDebugLog } from '../../common/ws/waiting-room-sync.util';
 
 @Injectable()
 export class RoomService {
@@ -183,9 +183,6 @@ export class RoomService {
     const effectivePlayerLimit = playerLimit ?? game.max_players;
     if (effectivePlayerLimit < game.min_players || effectivePlayerLimit > game.max_players) {
       throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
-    }
-    if (game.socket_code === UNO_SOCKET_CODE && !isValidUnoPlayerCount(effectivePlayerLimit)) {
-      throw new BusinessException('ERROR_UNO_INVALID_PLAYER_LIMIT', 400);
     }
 
     const user = await this.userModel.findById(userId);
@@ -658,6 +655,15 @@ export class RoomService {
   private async emitToOthers(gateway: any, roomId: string, excludeUserId: string, eventName: string, playerPayload: any, spectatorPayload: any) {
     if (!gateway?.server) return;
     const sockets = await gateway.server.in(roomId).fetchSockets();
+    // #region agent log
+    agentDebugLog('room.service.ts:emitToOthers', 'emit_to_others', {
+      roomId,
+      excludeUserId,
+      eventName,
+      connectedSockets: sockets.length,
+      gameEnded: !!playerPayload?.data?.gameEnded,
+    }, 'H3');
+    // #endregion
     for (const s of sockets) {
       if (s.data?.player_id !== excludeUserId) {
         const isSpectator = (s as any).data?.isSpectator || false;

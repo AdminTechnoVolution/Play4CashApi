@@ -70,8 +70,8 @@ export const GAME_CATALOG_RULES: Record<string, LanguageField[]> = {
 
   domino: [
     loc(
-      'Double-6 domino: rooms for 2 or 4 players; 7 tiles dealt each. Highest double opens; if none, highest pip sum opens.',
-      'Dominó doble-6: salas de 2 o 4 jugadores; 7 fichas cada uno. Abre el doble más alto; si no hay, la suma de puntos más alta.',
+      'Double-6 domino: rooms for 2 to 4 players; 7 tiles each; undistributed tiles go to the boneyard. Highest double opens; if none, highest pip sum opens.',
+      'Dominó doble-6: salas de 2 a 4 jugadores; 7 fichas cada uno; las fichas no repartidas van al pozo. Abre el doble más alto; si no hay, la suma de puntos más alta.',
     ),
     loc(
       'On your turn, play a tile matching an open end of the chain, or draw one tile from the boneyard — you keep the turn after drawing.',
@@ -97,8 +97,8 @@ export const GAME_CATALOG_RULES: Record<string, LanguageField[]> = {
 
   uno: [
     loc(
-      'Classic UNO for 2, 4, 6, 8, or 10 players (even counts). The match ends when a player reaches the catalog match point target (shown in lobby).',
-      'UNO clásico para 2, 4, 6, 8 o 10 jugadores (pares). El match termina al alcanzar el objetivo de puntos del catálogo (lobby).',
+      'Classic UNO for 2-10 players. The match ends when a player reaches the catalog match point target (shown in lobby).',
+      'UNO clásico para 2-10 jugadores. El match termina al alcanzar el objetivo de puntos del catálogo (lobby).',
     ),
     loc(
       'Multiple rounds: the round winner scores the pip value of every other active player\'s remaining cards.',

@@ -29,6 +29,12 @@ import {
   Board,
   GameState,
 } from './chess-game.logic';
+import {
+  agentDebugLog,
+  buildFinishedRoomSyncData,
+  emitDbOpponentJoinedIfPresent,
+  scheduleWaitingRoomReconcile,
+} from '../../../common/ws/waiting-room-sync.util';
 
 // Timer map stored in-memory per pod (acceptable for single-instance deployments)
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -204,7 +210,14 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-    if (room.status === 'finished') return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+    if (room.status === 'finished') {
+      agentDebugLog('chess.gateway.ts:handleJoin', 'finished_resync', { room_id, player_id, reason: room.winner_reason }, 'H4');
+      return client.emit('chess', {
+        success: true,
+        messages: [this.i18n.translate('ws.games.playerDisconnected', lang)],
+        data: buildFinishedRoomSyncData(room, player_id),
+      });
+    }
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
@@ -278,105 +291,143 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       }
     }
 
-    client.emit('chess', { success: true, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)], data: { room_id, waitingForOpponent: true, isPlayerOne: playerNum === 1, isSpectator: false } });
+    client.emit('chess', { success: true, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)], data: { room_id, waitingForOpponent: true, isPlayerOne: playerNum === 1, isSpectator: false, playersJoined: room.players.length, maxPlayers: 2 } });
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
-    if (socketsInRoom.length > 1) {
-      const user = await this.userModel.findById(player_id).select('username');
-      const username = user?.username || 'Opponent';
-      client.to(room_id).emit('chess', { success: true, messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })], data: { opponentJoined: true, opponentName: username } });
-    }
+    agentDebugLog('chess.gateway.ts:handleJoin', 'waiting_join', {
+      room_id,
+      player_id,
+      dbPlayers: room.players.length,
+      socketCount: socketsInRoom.length,
+      roomStatus: room.status,
+    }, 'H1');
 
-    if (socketsInRoom.length >= 2 && room.status === 'waiting') {
-      // Phase A hardening: require the room's `players` collection to be full as well —
-      // not just the socket count — to defeat the double-tab race where a single user's
-      // two sockets satisfy the count while `players[1]` is undefined.
-      if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId) {
-        return;
-      }
-      const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
-      if (!started) return;
-
-      const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
-      const paid: any[] = [];
-
-      // Phase A hardening: atomic deduction with $gte balance guard. Refund + revert
-      // status if any participant lacks funds, the deal fails, or chessGameModel.create
-      // throws. Never leave a player charged without a game.
-      const compensate = async (errKey: string, reason: string) => {
-        this.logger.error(`event=chess_start_failed room=${room_id} reason=${reason}`);
-        for (const pid of paid) {
-          await this.userModel
-            .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
-            .catch((e) => this.logger.error(`[Chess] Refund failed | player=${pid}`, e));
-        }
-        await this.chessGameModel
-          .deleteOne({ room_id: new Types.ObjectId(room_id) })
-          .catch((e) => this.logger.error(`[Chess] Game cleanup failed | room=${room_id}`, e));
-        await this.roomModel
-          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
-          .catch((e) => this.logger.error(`[Chess] Room status reset failed | room=${room_id}`, e));
-        this.server
-          .to(room_id)
-          .emit('chess', { success: false, messages: [this.i18n.translate(errKey, lang)] });
-      };
-
-      const deduct1 = await this.userModel.findOneAndUpdate(
-        { _id: p1id, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
-      );
-      if (!deduct1) {
-        await compensate('ws.games.insufficientBalance', 'p1_insufficient');
-        return;
-      }
-      paid.push(p1id);
-
-      const deduct2 = await this.userModel.findOneAndUpdate(
-        { _id: p2id, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
-      );
-      if (!deduct2) {
-        await compensate('ws.games.insufficientBalance', 'p2_insufficient');
-        return;
-      }
-      paid.push(p2id);
-
-      const board = createInitialBoard();
-      try {
-        await this.chessGameModel.create({
-          room_id,
-          player1_id: p1id,
-          player2_id: p2id,
-          board,
-          current_player: 1,
-          castling_rights: { wK: true, wQ: true, bK: true, bQ: true },
-          en_passant_target: null,
-          turn_start_time: new Date(),
+    await emitDbOpponentJoinedIfPresent({
+      room,
+      joiningPlayerId: player_id,
+      getUsername: (id) => this.getCachedUsername(id),
+      notifyJoiner: (opponentName) => {
+        client.emit('chess', {
+          success: true,
+          messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: opponentName })],
+          data: { opponentJoined: true, opponentName },
         });
-      } catch (e) {
-        this.logger.error(`[Chess] Game create failed | room=${room_id}`, e);
-        await compensate('ws.games.matchmakingError', 'game_create_failed');
-        return;
-      }
-      const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
+      },
+      notifyOthers: (joinerName) => {
+        client.to(room_id).emit('chess', {
+          success: true,
+          messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: joinerName })],
+          data: { opponentJoined: true, opponentName: joinerName },
+        });
+      },
+    });
 
-      const initialState: GameState = { current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null };
-      for (const s of socketsInRoom) {
-        const sPNum = (s as any).data.playerNum;
-        const sIsSpectator = (s as any).data.isSpectator || false;
-        const isFirst = sPNum === 1;
-        const sLang = this.getLang(s as unknown as Socket);
-        (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst && !sIsSpectator, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false, isSpectator: sIsSpectator,
-          castlingAvailable: this.getCastlingAvailable(board, initialState, sPNum as 1 | 2) },
-          messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isFirst ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.waitingOpponent', sLang)] });
-        if (isFirst) this.startTimer(s as unknown as Socket, room_id, timerSeconds);
-      }
-      const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
-      if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
+    if (room.players.length >= 2 && room.status === 'waiting') {
+      await this.tryStartChessGame(room_id, lang);
     }
+    scheduleWaitingRoomReconcile(room_id, () => this.tryStartChessGame(room_id, lang));
+  }
+
+  /** Idempotent start when DB has two players; socket count must not gate start. */
+  private async tryStartChessGame(room_id: string, lang: string): Promise<void> {
+    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
+    if (!room || room.status !== 'waiting') return;
+    if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId) {
+      return;
+    }
+
+    const socketsInRoom = await this.server.in(room_id).fetchSockets();
+    agentDebugLog('chess.gateway.ts:tryStartChessGame', 'start_attempt', {
+      room_id,
+      dbPlayers: room.players.length,
+      socketCount: socketsInRoom.length,
+    }, 'H2');
+
+    const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
+    if (!started) return;
+
+    const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
+    const paid: any[] = [];
+
+    const compensate = async (errKey: string, reason: string) => {
+      this.logger.error(`event=chess_start_failed room=${room_id} reason=${reason}`);
+      for (const pid of paid) {
+        await this.userModel
+          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+          .catch((e) => this.logger.error(`[Chess] Refund failed | player=${pid}`, e));
+      }
+      await this.chessGameModel
+        .deleteOne({ room_id: new Types.ObjectId(room_id) })
+        .catch((e) => this.logger.error(`[Chess] Game cleanup failed | room=${room_id}`, e));
+      await this.roomModel
+        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+        .catch((e) => this.logger.error(`[Chess] Room status reset failed | room=${room_id}`, e));
+      this.server
+        .to(room_id)
+        .emit('chess', { success: false, messages: [this.i18n.translate(errKey, lang)] });
+    };
+
+    const deduct1 = await this.userModel.findOneAndUpdate(
+      { _id: p1id, balance: { $gte: room.bet_amount } },
+      { $inc: { balance: -room.bet_amount } },
+      { returnDocument: 'after' },
+    );
+    if (!deduct1) {
+      await compensate('ws.games.insufficientBalance', 'p1_insufficient');
+      return;
+    }
+    paid.push(p1id);
+
+    const deduct2 = await this.userModel.findOneAndUpdate(
+      { _id: p2id, balance: { $gte: room.bet_amount } },
+      { $inc: { balance: -room.bet_amount } },
+      { returnDocument: 'after' },
+    );
+    if (!deduct2) {
+      await compensate('ws.games.insufficientBalance', 'p2_insufficient');
+      return;
+    }
+    paid.push(p2id);
+
+    const board = createInitialBoard();
+    try {
+      await this.chessGameModel.create({
+        room_id,
+        player1_id: p1id,
+        player2_id: p2id,
+        board,
+        current_player: 1,
+        castling_rights: { wK: true, wQ: true, bK: true, bQ: true },
+        en_passant_target: null,
+        turn_start_time: new Date(),
+      });
+    } catch (e) {
+      this.logger.error(`[Chess] Game create failed | room=${room_id}`, e);
+      await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+    const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
+
+    const initialState: GameState = { current_player: 1, castling_rights: { wK:true,wQ:true,bK:true,bQ:true }, en_passant_target: null };
+    const freshSockets = await this.server.in(room_id).fetchSockets();
+    agentDebugLog('chess.gateway.ts:tryStartChessGame', 'game_started', {
+      room_id,
+      emitSocketCount: freshSockets.length,
+    }, 'H2');
+
+    for (const s of freshSockets) {
+      const sPNum = (s as any).data.playerNum;
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const isFirst = sPNum === 1;
+      const sLang = this.getLang(s as unknown as Socket);
+      (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst && !sIsSpectator, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false, isSpectator: sIsSpectator,
+        castlingAvailable: this.getCastlingAvailable(board, initialState, sPNum as 1 | 2) },
+        messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isFirst ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.waitingOpponent', sLang)] });
+      if (isFirst) this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+    }
+    const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+    const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+    if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
   }
 
 

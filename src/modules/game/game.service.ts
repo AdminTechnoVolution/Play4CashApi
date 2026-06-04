@@ -92,8 +92,8 @@ export class GameService implements OnModuleInit {
     await this.gameModel.create({
       name: localized('UNO', 'UNO'),
       description: localized(
-        'Classic card game for 2–10 players (even counts). Match color or number, use action cards, and empty your hand to win the round.',
-        'Juego de cartas clásico para 2–10 jugadores (cantidades pares). Iguala color o número, usa cartas de acción y quédate sin cartas para ganar la ronda.',
+        'Classic card game for 2–10 players. Match color or number, use action cards, and empty your hand to win the round.',
+        'Juego de cartas clásico para 2–10 jugadores. Iguala color o número, usa cartas de acción y quédate sin cartas para ganar la ronda.',
       ),
       active: true,
       min_players: 2,

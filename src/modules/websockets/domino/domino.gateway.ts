@@ -16,6 +16,11 @@ import { DominoGame, DominoGameDocument } from './schemas/domino-game.schema';
 import { deal, getStartingPlayerIndex, getNextActivePlayerIndex, hasValidMoves, validateMove, getDominoGameResult } from './domino-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
 import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
+import {
+  buildFinishedRoomSyncData,
+  emitDbOpponentJoinedIfPresent,
+  scheduleWaitingRoomReconcile,
+} from '../../../common/ws/waiting-room-sync.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -176,7 +181,13 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
     if (!room) return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-    if (room.status === 'finished') return client.emit('domino', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+    if (room.status === 'finished') {
+      return client.emit('domino', {
+        success: true,
+        messages: [this.i18n.translate('ws.games.playerDisconnected', lang)],
+        data: buildFinishedRoomSyncData(room, player_id),
+      });
+    }
 
     await client.join(room_id);
     client.data.room_id = room_id;
@@ -268,105 +279,121 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-    const socketsInRoom = await this.server.in(room_id).fetchSockets();
 
     client.emit('domino', {
       success: true,
-      data: { waitingForOpponent: true, isPlayerOne: playerIndex === 0, playersJoined: socketsInRoom.length, maxPlayers, isSpectator: false },
-      messages: [this.i18n.translate('ws.games.waitingOpponent', lang)]
+      data: { waitingForOpponent: true, isPlayerOne: playerIndex === 0, playersJoined: room.players.length, maxPlayers, isSpectator: false },
+      messages: [this.i18n.translate('ws.games.waitingOpponent', lang)],
     });
 
-    if (socketsInRoom.length > 1 && room.status === 'waiting' && socketsInRoom.length < maxPlayers) {
-      const username = await this.getCachedUsername(player_id);
-      client.to(room_id).emit('domino', {
-        success: true,
-        data: { opponentJoined: true, opponentName: username, waitingForOpponent: true, playersJoined: socketsInRoom.length, maxPlayers },
-        messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })]
-      });
+    await emitDbOpponentJoinedIfPresent({
+      room,
+      joiningPlayerId: player_id,
+      getUsername: (id) => this.getCachedUsername(id),
+      notifyJoiner: (opponentName) => {
+        client.emit('domino', {
+          success: true,
+          data: { opponentJoined: true, opponentName, waitingForOpponent: true, playersJoined: room.players.length, maxPlayers },
+          messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: opponentName })],
+        });
+      },
+      notifyOthers: (joinerName) => {
+        client.to(room_id).emit('domino', {
+          success: true,
+          data: { opponentJoined: true, opponentName: joinerName, waitingForOpponent: true, playersJoined: room.players.length, maxPlayers },
+          messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: joinerName })],
+        });
+      },
+    });
+
+    if (room.players.length >= maxPlayers && room.status === 'waiting') {
+      await this.tryStartDominoGame(room_id, lang);
+    }
+    scheduleWaitingRoomReconcile(room_id, () => this.tryStartDominoGame(room_id, lang));
+  }
+
+  private async tryStartDominoGame(room_id: string, lang: string): Promise<void> {
+    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
+    if (!room || room.status !== 'waiting') return;
+
+    const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
+    if (room.players.length < maxPlayers) return;
+
+    const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
+    if (!started) return;
+
+    const playerIds = room.players.map((p: any) => p.playerId);
+    const paid: Types.ObjectId[] = [];
+
+    const compensate = async (errKey: string, reason: string) => {
+      this.logger.error(`event=domino_start_failed room=${room_id} reason=${reason}`);
+      for (const pid of paid) {
+        await this.userModel
+          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+          .catch((e) => this.logger.error(`[Domino] Refund failed | player=${pid}`, e));
+      }
+      await this.dominoModel
+        .deleteOne({ room_id: new Types.ObjectId(room_id) })
+        .catch((e) => this.logger.error(`[Domino] Game cleanup failed | room=${room_id}`, e));
+      await this.roomModel
+        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+        .catch((e) => this.logger.error(`[Domino] Room status reset failed | room=${room_id}`, e));
+      this.server
+        .to(room_id)
+        .emit('domino', { success: false, messages: [this.i18n.translate(errKey, lang)] });
+    };
+
+    let allPaid = true;
+    for (const pid of playerIds) {
+      const deducted = await this.userModel.findOneAndUpdate({ _id: pid, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } });
+      if (!deducted) { allPaid = false; break; }
+      paid.push(pid);
+    }
+    if (!allPaid) {
+      await compensate('ws.games.insufficientBalance', 'insufficient_balance');
+      return;
     }
 
-    if (socketsInRoom.length >= maxPlayers && room.status === 'waiting') {
-      // Phase A hardening: gate on DB players, not just socket count.
-      if (room.players.length < maxPlayers) return;
-
-      const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
-      if (!started) return;
-
-      const playerIds = room.players.map((p: any) => p.playerId);
-      const paid: Types.ObjectId[] = [];
-
-      // Phase A: single compensating action for any post-deduction failure (deal,
-      // domino.create, etc.). Previously a thrown create would silently lose every
-      // player's stake.
-      const compensate = async (errKey: string, reason: string) => {
-        this.logger.error(`event=domino_start_failed room=${room_id} reason=${reason}`);
-        for (const pid of paid) {
-          await this.userModel
-            .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
-            .catch((e) => this.logger.error(`[Domino] Refund failed | player=${pid}`, e));
-        }
-        await this.dominoModel
-          .deleteOne({ room_id: new Types.ObjectId(room_id) })
-          .catch((e) => this.logger.error(`[Domino] Game cleanup failed | room=${room_id}`, e));
-        await this.roomModel
-          .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
-          .catch((e) => this.logger.error(`[Domino] Room status reset failed | room=${room_id}`, e));
-        this.server
-          .to(room_id)
-          .emit('domino', { success: false, messages: [this.i18n.translate(errKey, lang)] });
-      };
-
-      let allPaid = true;
-      for (const pid of playerIds) {
-        const deducted = await this.userModel.findOneAndUpdate({ _id: pid, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } });
-        if (!deducted) { allPaid = false; break; }
-        paid.push(pid);
-      }
-      if (!allPaid) {
-        await compensate('ws.games.insufficientBalance', 'insufficient_balance');
-        return;
-      }
-
-      let hands: Map<string, any>;
-      let boneyard: any[];
-      let startIdx: number;
-      try {
-        const dealt = deal(playerIds.map((p: any) => p.toString()));
-        hands = dealt.hands;
-        boneyard = dealt.boneyard;
-        startIdx = getStartingPlayerIndex(playerIds.map((p: any) => p.toString()), hands);
-      } catch (e) {
-        this.logger.error(`[Domino] Deal failed | room=${room_id}`, e);
-        await compensate('ws.games.matchmakingError', 'deal_failed');
-        return;
-      }
-
-      const handsRecord: Record<string, any> = {};
-      hands.forEach((v, k) => { handsRecord[k] = v; });
-      try {
-        await this.dominoModel.create({ room_id, player_ids: playerIds, hands: handsRecord, boneyard, current_player_index: startIdx, turn_start_time: new Date() });
-      } catch (e) {
-        this.logger.error(`[Domino] Game create failed | room=${room_id}`, e);
-        await compensate('ws.games.matchmakingError', 'game_create_failed');
-        return;
-      }
-
-      const timerSec = room.game_id?.turn_timer_seconds ?? 30;
-      const startingPlayerId = playerIds[startIdx].toString();
-      const startingUsername = await this.getCachedUsername(startingPlayerId);
-      for (const s of socketsInRoom) {
-        const pid = (s as any).data.player_id;
-        const sIsSpectator = (s as any).data.isSpectator || false;
-        const myHand = sIsSpectator ? [] : (hands.get(pid) || []);
-        const isMyTurn = sIsSpectator ? false : startingPlayerId === pid;
-        const sLang = this.getLang(s as unknown as Socket);
-        (s as unknown as Socket).emit('domino', { success: true, data: { hand: myHand, board: [], boneyardCount: boneyard.length, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: startingUsername, gameStarted: true, isSpectator: sIsSpectator }, messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isMyTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.gameStarted', sLang)] });
-        if (isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
-      }
-      const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
-      if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
+    let hands: Map<string, any>;
+    let boneyard: any[];
+    let startIdx: number;
+    try {
+      const dealt = deal(playerIds.map((p: any) => p.toString()));
+      hands = dealt.hands;
+      boneyard = dealt.boneyard;
+      startIdx = getStartingPlayerIndex(playerIds.map((p: any) => p.toString()), hands);
+    } catch (e) {
+      this.logger.error(`[Domino] Deal failed | room=${room_id}`, e);
+      await compensate('ws.games.matchmakingError', 'deal_failed');
+      return;
     }
+
+    const handsRecord: Record<string, any> = {};
+    hands.forEach((v, k) => { handsRecord[k] = v; });
+    try {
+      await this.dominoModel.create({ room_id, player_ids: playerIds, hands: handsRecord, boneyard, current_player_index: startIdx, turn_start_time: new Date() });
+    } catch (e) {
+      this.logger.error(`[Domino] Game create failed | room=${room_id}`, e);
+      await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+
+    const timerSec = room.game_id?.turn_timer_seconds ?? 30;
+    const startingPlayerId = playerIds[startIdx].toString();
+    const startingUsername = await this.getCachedUsername(startingPlayerId);
+    const freshSockets = await this.server.in(room_id).fetchSockets();
+    for (const s of freshSockets) {
+      const pid = (s as any).data.player_id;
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const myHand = sIsSpectator ? [] : (hands.get(pid) || []);
+      const isMyTurn = sIsSpectator ? false : startingPlayerId === pid;
+      const sLang = this.getLang(s as unknown as Socket);
+      (s as unknown as Socket).emit('domino', { success: true, data: { hand: myHand, board: [], boneyardCount: boneyard.length, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: startingUsername, gameStarted: true, isSpectator: sIsSpectator }, messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isMyTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.gameStarted', sLang)] });
+      if (isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
+    }
+    const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
+    const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
+    if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
   }
 
   @SubscribeMessage('move')
