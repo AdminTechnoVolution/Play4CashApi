@@ -29,6 +29,7 @@ import { TurnDeadlineModule } from './common/turn-deadline/turn-deadline.module'
 import { WebPushModule } from './common/web-push/web-push.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { TournamentModule } from './modules/tournament/tournament.module';
+import { ContactUsModule } from './modules/contact-us/contact-us.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -87,6 +88,7 @@ import { TournamentModule } from './modules/tournament/tournament.module';
     WebPushModule,
     IdempotencyModule,
     TournamentModule,
+    ContactUsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

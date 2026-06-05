@@ -193,5 +193,7 @@
     "ws.domino.opponentDrew": "{{username}} hat einen Stein gezogen.",
     "ws.domino.passed": "Du hast gepasst.",
     "ws.domino.opponentPassed": "{{username}} hat gepasst.",
-    "ws.domino.boneyardEmpty": "Der Talon ist leer! Du musst passen, wenn du keine Züge hast."
+    "ws.domino.boneyardEmpty": "Der Talon ist leer! Du musst passen, wenn du keine Züge hast.",
+    "SUCCESS_CONTACT_SUBMITTED": "Ihre Nachricht wurde erfolgreich gesendet. Unser Team wird sie in Kürze prüfen.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Bitte wählen Sie mindestens ein Spiel aus oder wählen Sie „Alle Spiele“."
 }
