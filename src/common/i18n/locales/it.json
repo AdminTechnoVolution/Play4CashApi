@@ -193,5 +193,7 @@
     "ws.domino.opponentDrew": "{{username}} ha pescato una tessera.",
     "ws.domino.passed": "Hai passato il turno.",
     "ws.domino.opponentPassed": "{{username}} ha passato il turno.",
-    "ws.domino.boneyardEmpty": "Il cimitero è vuoto! Devi passare se non hai mosse."
+    "ws.domino.boneyardEmpty": "Il cimitero è vuoto! Devi passare se non hai mosse.",
+    "SUCCESS_CONTACT_SUBMITTED": "Il tuo messaggio è stato inviato con successo. Il nostro team lo esaminerà a breve.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Seleziona almeno un gioco o scegli \"Tutti i giochi\"."
 }

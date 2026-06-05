@@ -193,5 +193,7 @@
     "ws.domino.opponentDrew": "{{username}} a tiré une tuile.",
     "ws.domino.passed": "Vous avez passé votre tour.",
     "ws.domino.opponentPassed": "{{username}} a passé son tour.",
-    "ws.domino.boneyardEmpty": "La pioche est vide ! Vous devez passer si vous n'avez pas de mouvements."
+    "ws.domino.boneyardEmpty": "La pioche est vide ! Vous devez passer si vous n'avez pas de mouvements.",
+    "SUCCESS_CONTACT_SUBMITTED": "Votre message a été envoyé avec succès. Notre équipe l'examinera bientôt.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Veuillez sélectionner au moins un jeu ou choisir « Tous les jeux »."
 }
