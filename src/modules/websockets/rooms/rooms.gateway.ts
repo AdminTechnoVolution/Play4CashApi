@@ -5,6 +5,7 @@ import {
 import { Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 
@@ -13,7 +14,7 @@ import { REDIS_CLIENT } from '../../../common/redis/redis.module';
  * Clients subscribe to Game-scoped channels (game:{game_id}) and receive
  * broadcasts when rooms in that game change, preventing broadcast storms.
  */
-@WebSocketGateway({ namespace: '/rooms', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/rooms', cors: buildWebSocketCorsOptions() })
 export class RoomsGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(RoomsGateway.name);

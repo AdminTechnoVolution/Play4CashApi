@@ -13,6 +13,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model } from 'mongoose';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { Tournament, TournamentDocument } from '../../tournament/schemas/tournament.schema';
@@ -22,7 +23,7 @@ import { resolveWsLang } from '../../tournament/tournament-language.util';
 
 const EVENT = 'tournament';
 
-@WebSocketGateway({ namespace: '/tournaments', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/tournaments', cors: buildWebSocketCorsOptions() })
 export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(TournamentsGateway.name);

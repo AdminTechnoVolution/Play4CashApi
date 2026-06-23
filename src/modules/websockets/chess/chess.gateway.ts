@@ -11,6 +11,7 @@ import { WebPushService } from '../../../common/web-push/web-push.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { RoomsGateway } from '../rooms/rooms.gateway';
@@ -44,7 +45,7 @@ function clearTimer(socketId: string) {
   if (t) { clearTimeout(t); turnTimers.delete(socketId); }
 }
 
-@WebSocketGateway({ namespace: '/chess', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/chess', cors: buildWebSocketCorsOptions() })
 export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(ChessGateway.name);

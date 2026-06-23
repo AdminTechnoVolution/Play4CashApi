@@ -5,11 +5,12 @@ import {
 import { Inject, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 
 /** Rock-Paper-Scissors matchmaking gateway */
-@WebSocketGateway({ namespace: '/rps', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/rps', cors: buildWebSocketCorsOptions() })
 export class RpsGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(RpsGateway.name);

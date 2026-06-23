@@ -10,6 +10,7 @@ import { createStripUntrustedGatewayUserMiddleware } from './common/middleware/s
 import { createAppVersionHeadersMiddleware } from './common/middleware/app-version-headers.middleware';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 import { SOCKET_IO_PING_OPTIONS } from './common/constants/socket-io.constants';
+import { createOriginChecker } from './common/cors/origin-policy';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -83,15 +84,13 @@ async function bootstrap(): Promise<void> {
 
   // ─── CORS ─────────────────────────────────────────────────────────────────
   const allowedOrigins = config.get<string[]>('cors.allowedOrigins') || [];
+  if (nodeEnv === 'production' && allowedOrigins.length === 0) {
+    throw new Error(
+      'API: ALLOWED_ORIGINS must list at least one origin when NODE_ENV=production (credentials are enabled).',
+    );
+  }
   app.enableCors({
-    origin: (origin: string | undefined, callback: Function) => {
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        // Return false (403) without throwing — avoids polluting the error logs
-        callback(null, false);
-      }
-    },
+    origin: createOriginChecker(allowedOrigins, { failClosedWhenEmpty: nodeEnv === 'production' }),
     credentials: true,
     // Expose so browser JS (PWA) can read the app version contract header.
     exposedHeaders: ['X-App-Min-Version'],
@@ -138,4 +137,3 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap();
-

@@ -7,6 +7,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model } from 'mongoose';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 
@@ -16,7 +17,7 @@ import { REDIS_CLIENT } from '../../../common/redis/redis.module';
  * Players join with their room_id, then can send greeting IDs
  * which get resolved to localized text per recipient.
  */
-@WebSocketGateway({ namespace: '/chat', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/chat', cors: buildWebSocketCorsOptions() })
 export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(ChatGateway.name);

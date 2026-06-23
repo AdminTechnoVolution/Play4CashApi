@@ -40,24 +40,25 @@ removes spoofable headers).
 
 | Variable          | PWA | Gateway | API | Notes |
 |-------------------|-----|---------|-----|-------|
-| `ALLOWED_ORIGINS` | —   | ✅       | ✅   | Comma-separated. MUST include the PWA origin. Gateway refuses to start with empty `CORS_ORIGINS` when `NODE_ENV=production`. |
+| `ALLOWED_ORIGINS` | —   | ✅       | ✅   | Comma-separated. MUST include the PWA origin. API refuses to start with empty `ALLOWED_ORIGINS` when `NODE_ENV=production`. |
 | `VITE_API_URL`    | ✅   | —       | —   | Base URL the SPA hits. Leave empty in dev when using `VITE_DEV_PROXY_TARGET`. |
 
 When using the httpOnly refresh cookie, the SPA's origin MUST match the API origin OR the
 API/Gateway must respond with `Access-Control-Allow-Credentials: true` and an explicit
-`Access-Control-Allow-Origin` matching the SPA origin. In production, the Gateway sits in
-front of both and CORS is configured there.
+`Access-Control-Allow-Origin` matching the SPA origin. HTTP and WebSocket origins use the same
+allowlist in production.
 
-## 3. Refresh cookie
+## 3. Cookies
 
 | Variable                          | API | Notes |
 |-----------------------------------|-----|-------|
-| `AUTH_REFRESH_COOKIE_NAME`        | ✅   | e.g. `p4c_rt`. |
+| `AUTH_ACCESS_COOKIE_NAME`         | ✅   | Browser access cookie, default `p4c_access`. |
+| `AUTH_REFRESH_COOKIE_NAME`        | ✅   | Refresh cookie, e.g. `p4c_rt`. |
 | `AUTH_REFRESH_COOKIE_SAMESITE`    | ✅   | `lax` (same-site), `strict`, or `none` (cross-site). |
 | `AUTH_REFRESH_COOKIE_SECURE`      | ✅   | `true` in production. Auto-forced `true` when SameSite=none. |
 
-The SPA never reads or writes this cookie. It only sends requests with
-`withCredentials: true`. Logout and `POST /api/login/invalidate-browser-session` clear it.
+The SPA never reads or writes either cookie. It only sends requests with
+`withCredentials: true`. Logout and `POST /api/login/invalidate-browser-session` clear them.
 
 ## 4. Gateway → API internal trust
 
@@ -103,14 +104,15 @@ The Gateway reads only the prefix `accessTokens:` (via `REDIS_TOKEN_PREFIX`, def
 | `REDIS_TOKEN_PREFIX` | ✅       | —   | Must equal the API constant `accessTokens:`. |
 | `SOCKET_IO_REDIS_ADAPTER` | —  | ✅   | Set `true` when running **multiple API replicas** so Socket.IO broadcasts reach all pods. Requires `REDIS_URI`. Default off (single-pod). |
 
-## 7. Tokens in URLs
+## 7. Token query fallback (legacy/native only)
 
-Default is **off** for HTTP and **on for WebSockets** (the Gateway needs `?token=` in the WS
-handshake URL because the browser cannot set `Authorization` on a WebSocket upgrade).
+Browser clients authenticate with cookies. The Gateway and API still accept `?token=` and
+`Authorization: Bearer ...` for legacy/native callers, but the web PWA should not depend on
+that path.
 
 | Variable                 | Gateway | Notes |
 |--------------------------|---------|-------|
-| `ALLOW_HTTP_TOKEN_QUERY` | ✅       | Default `false`. Set to `true` only if you absolutely need it (logs can leak it). |
+| `ALLOW_HTTP_TOKEN_QUERY` | ✅       | Default `false`. Enable only for legacy/native callers that cannot use cookies. |
 
 ## 8. PWA-only
 
@@ -153,6 +155,8 @@ Two headers cross the wire on every API call:
 | Allow `X-App-Version` on preflight | Gateway | `allowedHeaders: [..., 'X-App-Version']` |
 | Expose `X-App-Min-Version` to JS | Gateway **and** API | `exposedHeaders: ['X-App-Min-Version']` |
 | Pass headers through unchanged | Gateway | `http-proxy-middleware` defaults — do not add filters |
+
+API WebSocket gateways use the same `ALLOWED_ORIGINS` list as HTTP CORS.
 
 If you ever introduce a custom proxy that rewrites response headers, re-add the contract or
 the forced-update flow silently breaks.

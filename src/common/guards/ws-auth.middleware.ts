@@ -3,6 +3,7 @@ import * as jwt from 'jsonwebtoken';
 import { Server, Socket } from 'socket.io';
 import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
 import { jwtVerifyOptions, isAccessTokenPayload } from '../auth/jwt-token.util';
+import { accessCookieName, readCookieFromHeader } from '../../modules/auth/auth-cookie.util';
 
 /**
  * Registers a socket.io USE middleware on the given server/namespace
@@ -16,7 +17,12 @@ export function applyWsAuth(server: Server, config: ConfigService, redis: any): 
   const verifyOpts = jwtVerifyOptions(config);
 
   server.use(async (socket: Socket, next) => {
+    const cookieToken = readCookieFromHeader(
+      socket.handshake.headers?.cookie as string | undefined,
+      accessCookieName(config),
+    );
     let token: string =
+      cookieToken ||
       (socket.handshake.auth?.token as string) ||
       (socket.handshake.query?.token as string) ||
       (socket.handshake.headers?.authorization as string) || '';

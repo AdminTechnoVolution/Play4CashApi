@@ -12,6 +12,7 @@ function makeConfig(): ConfigService {
     'jwt.secret': SECRET,
     'jwt.issuer': ISSUER,
     'jwt.audience': AUDIENCE,
+    'auth.accessCookieName': 'p4c_access',
   };
   return { get: <T>(k: string) => values[k] as T } as ConfigService;
 }
@@ -60,6 +61,20 @@ describe('applyWsAuth', () => {
     await getMiddleware()(socket, next);
 
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: 'ERROR_AUTH' }));
+  });
+
+  it('accepts a valid access token from the cookie header', async () => {
+    const { server, getMiddleware } = captureServerMiddleware();
+    const exists = jest.fn().mockResolvedValue(1);
+    applyWsAuth(server, makeConfig(), { exists });
+
+    const token = signAccess({ id: 'u-cookie' });
+    const socket = makeSocket({ headers: { cookie: `p4c_access=${token}` } });
+    const next = jest.fn();
+    await getMiddleware()(socket, next);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(socket.data.player_id).toBe('u-cookie');
   });
 
   it('rejects refresh-typed tokens', async () => {

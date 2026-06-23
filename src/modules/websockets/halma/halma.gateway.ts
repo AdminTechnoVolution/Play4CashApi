@@ -11,6 +11,7 @@ import { WebPushService } from '../../../common/web-push/web-push.service';
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { RoomsGateway } from '../rooms/rooms.gateway';
@@ -28,7 +29,7 @@ import {
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
 
-@WebSocketGateway({ namespace: '/halma', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/halma', cors: buildWebSocketCorsOptions() })
 export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(HalmaGateway.name);
