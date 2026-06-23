@@ -1,11 +1,11 @@
 import { Body, Controller, Headers, HttpCode, HttpStatus, Post } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ContactUsService } from './contact-us.service';
 import { SubmitContactDto } from './dtos/submit-contact.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { I18nService } from '../../common/i18n/i18n.service';
+import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 
 @ApiTags('Contact Us')
 @ApiBearerAuth()
@@ -16,7 +16,7 @@ export class ContactUsController {
     private readonly i18n: I18nService,
   ) {}
 
-  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @RateLimit({ limit: 5, ttlMs: 60_000 })
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Submit a contact message (comment, suggestion, or error report)' })

@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Algo deu errado. Tente novamente mais tarde",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Muitas solicitações. Tente novamente mais tarde.",
     "ERROR_BAD_REQUEST_RESPONSE": "Requisição inválida. Não foi possível processar os dados enviados",
     "ERROR_LOGIN": "Falha no login. Tente novamente ou redefina sua senha",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Não foi possível concluir a verificação. Tente novamente",

@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Une erreur s'est produite. Veuillez réessayer plus tard",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Trop de requêtes. Veuillez réessayer plus tard.",
     "ERROR_BAD_REQUEST_RESPONSE": "Mauvaise requête. Impossible de traiter les données envoyées",
     "ERROR_LOGIN": "Échec de la connexion. Veuillez réessayer ou réinitialiser votre mot de passe",
     "ERROR_VERIFICATIONCODE_RESPONSE": "La vérification n'a pas pu être effectuée. Veuillez réessayer",

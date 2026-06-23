@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Something went wrong. Please try again later",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Too many requests. Please try again later.",
     "ERROR_BAD_REQUEST_RESPONSE": "Bad request. Could not process the sent data",
     "ERROR_LOGIN": "Failed to log in. Please try again or reset your password",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Verification could not be completed. Please try again",

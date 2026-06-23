@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Qualcosa è andato storto. Riprova più tardi",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Troppe richieste. Riprova più tardi.",
     "ERROR_BAD_REQUEST_RESPONSE": "Richiesta errata. Impossibile elaborare i dati inviati",
     "ERROR_LOGIN": "Accesso fallito. Riprova o reimposta la password",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Impossibile completare la verifica. Riprova",

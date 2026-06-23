@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Etwas ist schief gelaufen. Bitte versuchen Sie es später noch einmal",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Zu viele Anfragen. Bitte versuchen Sie es später noch einmal.",
     "ERROR_BAD_REQUEST_RESPONSE": "Ungültige Anfrage. Die gesendeten Daten konnten nicht verarbeitet werden",
     "ERROR_LOGIN": "Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut oder setzen Sie Ihr Passwort zurück",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Die Verifizierung konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut",

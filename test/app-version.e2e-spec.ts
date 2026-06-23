@@ -1,8 +1,7 @@
 import { INestApplication, HttpStatus } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ConfigModule } from '@nestjs/config';
 import request from 'supertest';
 import { Server } from 'http';
 import { AppVersionController } from '../src/modules/app-version/app-version.controller';
@@ -10,13 +9,12 @@ import { AppVersionStatsService } from '../src/modules/app-version/app-version-s
 import { REDIS_CLIENT } from '../src/common/redis/redis.module';
 import { RolesGuard } from '../src/common/guards/roles.guard';
 import { Reflector } from '@nestjs/core';
+import { RateLimitGuard } from '../src/common/guards/rate-limit.guard';
 
 interface FakeRedis {
   store: Map<string, Record<string, number>>;
   hGetAll: jest.Mock;
-  hIncrBy: jest.Mock;
-  expire: jest.Mock;
-  exists: jest.Mock;
+  eval: jest.Mock;
 }
 
 function makeFakeRedis(opts: { failHash?: boolean } = {}): FakeRedis {
@@ -30,9 +28,21 @@ function makeFakeRedis(opts: { failHash?: boolean } = {}): FakeRedis {
       for (const [k, v] of Object.entries(h)) out[k] = String(v);
       return out;
     }),
-    hIncrBy: jest.fn(async () => 1),
-    expire: jest.fn(async () => 1),
-    exists: jest.fn(async () => 1),
+    eval: jest.fn(async (_script: string, options: { keys: string[]; arguments: string[] }) => {
+      const key = options.keys[0];
+      const ttlMs = Number(options.arguments[0]);
+      const limit = Number(options.arguments[1]);
+      const bucket = store.get(key) ?? { count: 0, expiresAt: Date.now() + ttlMs };
+      if (bucket.expiresAt <= Date.now()) {
+        bucket.count = 0;
+        bucket.expiresAt = Date.now() + ttlMs;
+      }
+      bucket.count += 1;
+      store.set(key, bucket);
+      const remainingTtl = Math.max(1, bucket.expiresAt - Date.now());
+      const allowed = bucket.count <= limit;
+      return [Math.max(0, limit - bucket.count), remainingTtl, allowed ? 1 : 0];
+    }),
   };
 }
 
@@ -59,17 +69,18 @@ async function buildApp(redis: FakeRedis): Promise<INestApplication> {
             'pwa.statsSampleRate': 0.0,
             'pwa.statsRetentionDays': 7,
             'admin.emails': [],
+            'throttle.limit': 50,
+            'throttle.ttlMs': 60_000,
           }),
         ],
       }),
-      ThrottlerModule.forRoot([{ ttl: 60_000, limit: 30 }]),
     ],
     controllers: [AppVersionController],
     providers: [
       AppVersionStatsService,
       Reflector,
       { provide: REDIS_CLIENT, useValue: redis },
-      { provide: APP_GUARD, useClass: ThrottlerGuard },
+      { provide: APP_GUARD, useClass: RateLimitGuard },
     ],
   })
     .overrideGuard(RolesGuard)
