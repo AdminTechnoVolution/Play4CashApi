@@ -23,10 +23,13 @@ export default () => ({
     cookieDomain: (process.env.AUTH_COOKIE_DOMAIN || '').trim() || undefined,
     /**
      * Cross-site browser auth needs `none` so the cookie is sent on XHR/fetch.
-     * We default production to `none` and local dev to `lax` unless overridden.
+     * Production forces `none` unless an explicit `strict` override is desired for
+     * a same-site deployment. Local dev defaults to `lax`.
      */
-    refreshCookieSameSite: (process.env.AUTH_REFRESH_COOKIE_SAMESITE ||
-      (process.env.NODE_ENV === 'production' ? 'none' : 'lax')) as 'lax' | 'strict' | 'none',
+    refreshCookieSameSite: resolveCookieSameSite(
+      process.env.AUTH_REFRESH_COOKIE_SAMESITE,
+      process.env.NODE_ENV === 'production',
+    ),
     refreshCookieSecure:
       process.env.AUTH_REFRESH_COOKIE_SECURE === 'true' ||
       process.env.NODE_ENV === 'production',
@@ -107,4 +110,15 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 function clamp01(n: number): number {
   if (Number.isNaN(n)) return 0;
   return Math.min(1, Math.max(0, n));
+}
+
+function resolveCookieSameSite(
+  raw: string | undefined,
+  isProduction: boolean,
+): 'lax' | 'strict' | 'none' {
+  const normalized = (raw || '').trim().toLowerCase();
+  if (normalized === 'strict') return 'strict';
+  if (normalized === 'none') return 'none';
+  if (isProduction) return 'none';
+  return 'lax';
 }
