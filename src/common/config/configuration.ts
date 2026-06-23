@@ -16,8 +16,17 @@ export default () => ({
     refreshCookieName: process.env.AUTH_REFRESH_COOKIE_NAME || 'p4c_refresh',
     /** HttpOnly cookie for access token (browser clients). */
     accessCookieName: process.env.AUTH_ACCESS_COOKIE_NAME || 'p4c_access',
-    /** Use `none` when the SPA is on a different site than the API (requires secure cookies). */
-    refreshCookieSameSite: (process.env.AUTH_REFRESH_COOKIE_SAMESITE || 'lax') as 'lax' | 'strict' | 'none',
+    /**
+     * Optional cookie domain shared across subdomains (e.g. techno-volution.com).
+     * Leave empty for host-only cookies in local dev.
+     */
+    cookieDomain: (process.env.AUTH_COOKIE_DOMAIN || '').trim() || undefined,
+    /**
+     * Cross-site browser auth needs `none` so the cookie is sent on XHR/fetch.
+     * We default production to `none` and local dev to `lax` unless overridden.
+     */
+    refreshCookieSameSite: (process.env.AUTH_REFRESH_COOKIE_SAMESITE ||
+      (process.env.NODE_ENV === 'production' ? 'none' : 'lax')) as 'lax' | 'strict' | 'none',
     refreshCookieSecure:
       process.env.AUTH_REFRESH_COOKIE_SECURE === 'true' ||
       process.env.NODE_ENV === 'production',

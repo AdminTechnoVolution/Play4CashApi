@@ -29,4 +29,16 @@ describe('configuration throttle defaults', () => {
     process.env.THROTTLE_TTL_MS = 'oops';
     expect(configuration().throttle.ttlMs).toBe(60_000);
   });
+
+  it('defaults auth cookies to SameSite=None in production', () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.AUTH_REFRESH_COOKIE_SAMESITE;
+    expect(configuration().auth.refreshCookieSameSite).toBe('none');
+  });
+
+  it('defaults auth cookies to SameSite=Lax outside production', () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.AUTH_REFRESH_COOKIE_SAMESITE;
+    expect(configuration().auth.refreshCookieSameSite).toBe('lax');
+  });
 });

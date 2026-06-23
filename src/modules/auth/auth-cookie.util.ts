@@ -27,16 +27,21 @@ function buildCookieOptions(
 ): CookieOptions {
   const sameSite = config.get<'lax' | 'strict' | 'none'>('auth.refreshCookieSameSite')!;
   let secure = config.get<boolean>('auth.refreshCookieSecure')!;
+  const domain = config.get<string>('auth.cookieDomain');
   if (sameSite === 'none' && !secure) {
     secure = true;
   }
-  return {
+  const options: CookieOptions = {
     httpOnly: true,
     secure,
     sameSite,
     maxAge: ttlSecs * 1000,
     path: '/',
   };
+  if (domain) {
+    options.domain = domain;
+  }
+  return options;
 }
 
 export function buildRefreshCookieOptions(config: ConfigService): CookieOptions {
@@ -52,15 +57,20 @@ export function buildAccessCookieOptions(config: ConfigService): CookieOptions {
 export function buildClearRefreshCookieOptions(config: ConfigService): CookieOptions {
   const sameSite = config.get<'lax' | 'strict' | 'none'>('auth.refreshCookieSameSite')!;
   let secure = config.get<boolean>('auth.refreshCookieSecure')!;
+  const domain = config.get<string>('auth.cookieDomain');
   if (sameSite === 'none' && !secure) {
     secure = true;
   }
-  return {
+  const options: CookieOptions = {
     httpOnly: true,
     secure,
     sameSite,
     path: '/',
   };
+  if (domain) {
+    options.domain = domain;
+  }
+  return options;
 }
 
 export function setRefreshCookie(res: Response, config: ConfigService, refreshToken: string): void {

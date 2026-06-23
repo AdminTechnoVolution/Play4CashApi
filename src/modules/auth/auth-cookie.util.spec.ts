@@ -66,6 +66,7 @@ describe('auth-cookie.util', () => {
           'jwt.refreshTtlSecs': 60,
           'auth.refreshCookieSameSite': 'lax',
           'auth.refreshCookieSecure': false,
+          'auth.cookieDomain': 'techno-volution.com',
         }),
       );
       expect(opts).toMatchObject({
@@ -74,6 +75,7 @@ describe('auth-cookie.util', () => {
         sameSite: 'lax',
         path: '/',
         maxAge: 60_000,
+        domain: 'techno-volution.com',
       });
     });
     it('forces secure=true when sameSite=none', () => {
@@ -82,6 +84,7 @@ describe('auth-cookie.util', () => {
           'jwt.refreshTtlSecs': 1,
           'auth.refreshCookieSameSite': 'none',
           'auth.refreshCookieSecure': false,
+          'auth.cookieDomain': 'techno-volution.com',
         }),
       );
       expect(opts.secure).toBe(true);
@@ -96,6 +99,7 @@ describe('auth-cookie.util', () => {
           'jwt.accessTtlSecs': 90,
           'auth.refreshCookieSameSite': 'lax',
           'auth.refreshCookieSecure': false,
+          'auth.cookieDomain': 'techno-volution.com',
         }),
       );
       expect(opts).toMatchObject({
@@ -104,6 +108,7 @@ describe('auth-cookie.util', () => {
         sameSite: 'lax',
         path: '/',
         maxAge: 90_000,
+        domain: 'techno-volution.com',
       });
     });
   });
@@ -114,6 +119,7 @@ describe('auth-cookie.util', () => {
         configMock({
           'auth.refreshCookieSameSite': 'strict',
           'auth.refreshCookieSecure': true,
+          'auth.cookieDomain': 'techno-volution.com',
         }),
       );
       expect(opts).toEqual({
@@ -121,6 +127,7 @@ describe('auth-cookie.util', () => {
         secure: true,
         sameSite: 'strict',
         path: '/',
+        domain: 'techno-volution.com',
       });
     });
   });
@@ -131,6 +138,7 @@ describe('auth-cookie.util', () => {
       'jwt.refreshTtlSecs': 30,
       'auth.refreshCookieSameSite': 'lax',
       'auth.refreshCookieSecure': false,
+      'auth.cookieDomain': 'techno-volution.com',
     });
 
     it('sets the named cookie with refresh options', () => {
@@ -151,6 +159,7 @@ describe('auth-cookie.util', () => {
       'jwt.accessTtlSecs': 30,
       'auth.refreshCookieSameSite': 'lax',
       'auth.refreshCookieSecure': false,
+      'auth.cookieDomain': 'techno-volution.com',
     });
 
     it('sets the named cookie with access options', () => {
