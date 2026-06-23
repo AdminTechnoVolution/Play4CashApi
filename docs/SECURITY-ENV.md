@@ -54,6 +54,7 @@ allowlist in production.
 |-----------------------------------|-----|-------|
 | `AUTH_ACCESS_COOKIE_NAME`         | ✅   | Browser access cookie, default `p4c_access`. |
 | `AUTH_REFRESH_COOKIE_NAME`        | ✅   | Refresh cookie, e.g. `p4c_rt`. |
+| `AUTH_COOKIE_DOMAIN`              | ✅   | Optional shared parent domain for subdomains, e.g. `techno-volution.com`. Leave empty for host-only local dev cookies. |
 | `AUTH_REFRESH_COOKIE_SAMESITE`    | ✅   | `lax` (same-site), `strict`, or `none` (cross-site). |
 | `AUTH_REFRESH_COOKIE_SECURE`      | ✅   | `true` in production. Auto-forced `true` when SameSite=none. |
 
@@ -171,7 +172,8 @@ the forced-update flow silently breaks.
    no leading-wildcard subdomains in production.
 5. PWA `VITE_API_URL` points to the Gateway, not the API directly.
 6. In production: `AUTH_REFRESH_COOKIE_SECURE=true`, `AUTH_REFRESH_COOKIE_SAMESITE=lax` (or
-   `none` if cross-site), `NODE_ENV=production`.
+   `none` if cross-site), `AUTH_COOKIE_DOMAIN=<parent-domain>` when the API and Gateway/PWA
+   live on sibling subdomains, and `NODE_ENV=production`.
 7. Bump `PWA_MIN_VERSION` only when the new build is **not** backward compatible with older
    PWA bundles. Otherwise leave it as-is and let the SW prompt flow handle the rollout.
 8. **`SOCKET_IO_REDIS_ADAPTER=true` is mandatory** when `NODE_ENV=production` (API throws at boot otherwise).
