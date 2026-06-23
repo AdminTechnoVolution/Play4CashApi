@@ -10,6 +10,7 @@ import { GracePeriodService } from '../../../common/grace-period/grace-period.se
 import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline.service';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import {
@@ -53,7 +54,7 @@ const clearTimer = (id: string) => {
 /** Seconds between rounds before auto-start kicks in. */
 const BETWEEN_ROUNDS_SECONDS = 8;
 
-@WebSocketGateway({ namespace: '/uno', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/uno', cors: buildWebSocketCorsOptions() })
 export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(UnoGateway.name);

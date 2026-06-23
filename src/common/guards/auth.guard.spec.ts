@@ -17,6 +17,7 @@ function makeConfig(): ConfigService {
     'jwt.secret': SECRET,
     'jwt.issuer': ISSUER,
     'jwt.audience': AUDIENCE,
+    'auth.accessCookieName': 'p4c_access',
   };
   return { get: <T>(k: string) => values[k] as T } as ConfigService;
 }
@@ -29,7 +30,7 @@ function makeRedis(exists = 1): FakeRedis {
   return { exists: jest.fn().mockResolvedValue(exists) };
 }
 
-function makeContext(headers: Record<string, string>): ExecutionContext {
+function makeContext(headers: Record<string, string> & { cookie?: string } = {}): ExecutionContext {
   const request = { headers, user: undefined as unknown, token: undefined as unknown };
   return {
     getHandler: () => undefined,
@@ -56,6 +57,15 @@ describe('AuthGuard', () => {
   it('rejects when Authorization header is missing', async () => {
     const guard = new AuthGuard(makeReflector(false), makeConfig(), makeRedis() as unknown as object);
     await expect(guard.canActivate(makeContext({}))).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('accepts a valid access token from the access cookie', async () => {
+    const redis = makeRedis(1);
+    const guard = new AuthGuard(makeReflector(false), makeConfig(), redis as unknown as object);
+    const token = signAccess({ id: 'u-cookie' });
+    const ctx = makeContext({ cookie: `p4c_access=${token}` });
+
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
   });
 
   it('rejects when token is malformed (jwt.verify throws)', async () => {

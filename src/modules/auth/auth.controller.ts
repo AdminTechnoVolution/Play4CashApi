@@ -21,9 +21,12 @@ import { LogoutDto } from './dto/logout.dto';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import {
   clearRefreshCookie,
+  clearAccessCookie,
   readCookieFromHeader,
   refreshCookieName,
+  accessCookieName,
   setRefreshCookie,
+  setAccessCookie,
 } from './auth-cookie.util';
 
 @ApiTags('Auth')
@@ -42,7 +45,11 @@ export class AuthController {
   @ApiOperation({ summary: 'Login with Google OAuth token' })
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.loginUser(dto.token);
+    const access = result?.data?.token;
     const refresh = result?.data?.refreshToken;
+    if (access) {
+      setAccessCookie(res, this.config, access);
+    }
     if (refresh) {
       setRefreshCookie(res, this.config, refresh);
     }
@@ -61,10 +68,12 @@ export class AuthController {
     @Headers('accept-language') lang: string,
   ) {
     const token = authHeader?.replace('Bearer ', '') || '';
+    const accessFromCookie = readCookieFromHeader(req.headers.cookie, accessCookieName(this.config));
     const cookieName = refreshCookieName(this.config);
     const refreshFromCookie = readCookieFromHeader(req.headers.cookie, cookieName);
     const refreshToken = dto.refreshToken || refreshFromCookie;
-    await this.authService.logoutUser(token, refreshToken);
+    await this.authService.logoutUser(token || accessFromCookie || '', refreshToken);
+    clearAccessCookie(res, this.config);
     clearRefreshCookie(res, this.config);
     const message = this.i18n.translate('SUCCESS_LOGOUT', lang);
     return { success: true, messages: [message], data: null };
@@ -86,7 +95,11 @@ export class AuthController {
       throw new BusinessException('ERROR_AUTH', HttpStatus.UNAUTHORIZED);
     }
     const result = await this.authService.refreshToken(refresh);
+    const access = result?.data?.token;
     const newRefresh = result?.data?.refreshToken;
+    if (access) {
+      setAccessCookie(res, this.config, access);
+    }
     if (newRefresh) {
       setRefreshCookie(res, this.config, newRefresh);
     }
@@ -100,6 +113,7 @@ export class AuthController {
     summary: 'Clear httpOnly refresh cookie in the browser (e.g. after client auth failure)',
   })
   clearBrowserRefreshCookie(@Res({ passthrough: true }) res: Response): void {
+    clearAccessCookie(res, this.config);
     clearRefreshCookie(res, this.config);
   }
 }

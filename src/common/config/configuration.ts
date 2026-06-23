@@ -14,6 +14,8 @@ export default () => ({
   auth: {
     /** HttpOnly cookie for refresh token (browser clients). Name must match PWA expectations if overridden. */
     refreshCookieName: process.env.AUTH_REFRESH_COOKIE_NAME || 'p4c_refresh',
+    /** HttpOnly cookie for access token (browser clients). */
+    accessCookieName: process.env.AUTH_ACCESS_COOKIE_NAME || 'p4c_access',
     /** Use `none` when the SPA is on a different site than the API (requires secure cookies). */
     refreshCookieSameSite: (process.env.AUTH_REFRESH_COOKIE_SAMESITE || 'lax') as 'lax' | 'strict' | 'none',
     refreshCookieSecure:
