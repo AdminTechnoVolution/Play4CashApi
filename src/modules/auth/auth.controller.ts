@@ -8,13 +8,13 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { I18nService } from '../../common/i18n/i18n.service';
 import { Public } from '../../common/decorators/public.decorator';
+import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
@@ -35,7 +35,7 @@ export class AuthController {
     private readonly config: ConfigService,
   ) {}
 
-  @Throttle({ default: { limit: 40, ttl: 900_000 } })
+  @RateLimit({ limit: 40, ttlMs: 900_000 })
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -70,7 +70,6 @@ export class AuthController {
     return { success: true, messages: [message], data: null };
   }
 
-  @Throttle({ default: { limit: 60, ttl: 900_000 } })
   @Public()
   @Post('login/refresh')
   @HttpCode(HttpStatus.OK)
@@ -94,7 +93,6 @@ export class AuthController {
     return result;
   }
 
-  @Throttle({ default: { limit: 60, ttl: 900_000 } })
   @Public()
   @Post('login/invalidate-browser-session')
   @HttpCode(HttpStatus.NO_CONTENT)

@@ -60,6 +60,10 @@ export default () => ({
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  throttle: {
+    ttlMs: parsePositiveInt(process.env.THROTTLE_TTL_MS, 60_000),
+    limit: parsePositiveInt(process.env.THROTTLE_LIMIT, 50),
+  },
   webPush: {
     publicKey: (process.env.VAPID_PUBLIC_KEY || '').trim(),
     privateKey: (process.env.VAPID_PRIVATE_KEY || '').trim(),
@@ -81,6 +85,13 @@ export default () => ({
     statsRetentionDays: Math.max(1, parseInt(process.env.PWA_STATS_RETENTION_DAYS || '31', 10) || 31),
   },
 });
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
 
 function clamp01(n: number): number {
   if (Number.isNaN(n)) return 0;

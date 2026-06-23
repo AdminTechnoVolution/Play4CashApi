@@ -8,10 +8,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
 import { AppVersionStatsService, AppVersionStatsSummary } from './app-version-stats.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 
 @ApiTags('Admin · App Version')
 @ApiBearerAuth()
@@ -23,7 +23,7 @@ export class AppVersionController {
 
   @Get('stats')
   // 30 calls/min is plenty for an admin dashboard and protects Redis from accidental tight loops.
-  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @RateLimit({ limit: 30, ttlMs: 60_000 })
   @ApiOperation({
     summary: 'Distribution of `X-App-Version` headers across the last N days (sampled).',
   })

@@ -1,6 +1,5 @@
 import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Put, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserService } from './user.service';
 import { AdminGuard } from '../../common/guards/admin.guard';
@@ -8,6 +7,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { I18nService } from '../../common/i18n/i18n.service';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -69,11 +69,10 @@ export class UserController {
   }
 
   // GET /api/user/public/stats — login / marketing (no auth)
-  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Public()
   @Get('public/stats')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Public: registered user count (rate-limited)' })
+  @ApiOperation({ summary: 'Public: registered user count (rate-limited globally)' })
   getPublicStats() {
     return this.userService.getPublicUserStats();
   }
@@ -96,7 +95,7 @@ export class UserController {
   }
 
   // POST /api/user/register  (public)
-  @Throttle({ default: { limit: 20, ttl: 900_000 } })
+  @RateLimit({ limit: 20, ttlMs: 900_000 })
   @Public()
   @Post('register')
   @HttpCode(HttpStatus.OK)
@@ -106,7 +105,7 @@ export class UserController {
   }
 
   // POST /api/user/request-wallet-change
-  @Throttle({ default: { limit: 15, ttl: 900_000 } })
+  @RateLimit({ limit: 15, ttlMs: 900_000 })
   @Post('request-wallet-change')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Request wallet update (sends OTP to email)' })
@@ -143,7 +142,7 @@ export class UserController {
   }
 
   // POST /api/user/verify-code  (public)
-  @Throttle({ default: { limit: 30, ttl: 900_000 } })
+  @RateLimit({ limit: 30, ttlMs: 900_000 })
   @Public()
   @Post('verify-code')
   @HttpCode(HttpStatus.OK)

@@ -133,7 +133,7 @@ Si necesitás rotar sin invalidar todo, requiere implementar un esquema de
 GET /api/admin/app-versions/stats?days=7
 
 # Auth: Bearer <admin-jwt>
-# Throttler: 30 req/min
+# Rate limit: 30 req/min
 ```
 
 Respuesta:

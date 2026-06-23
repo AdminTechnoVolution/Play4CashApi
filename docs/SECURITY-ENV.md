@@ -78,11 +78,11 @@ downstream handlers can't re-inject it.
 
 | Variable          | API | Notes |
 |-------------------|-----|-------|
-| `THROTTLE_TTL_MS` | ✅   | Default 60 000. Global throttler window. |
-| `THROTTLE_LIMIT`  | ✅   | Default 300/window. Specific endpoints (login, refresh, register, verify-code) override with stricter limits. |
+| `THROTTLE_TTL_MS` | ✅   | Default 60 000. Global rate-limit window. |
+| `THROTTLE_LIMIT`  | ✅   | Default 50/window per IP. Some endpoints (login, register, verify-code, admin app-version stats, contact-us) override with stricter limits. |
 
 `app.set('trust proxy', 1)` is enabled so client IPs are read from `X-Forwarded-For` behind
-the Gateway.
+the Gateway. The limiter uses Redis so the same IP is counted consistently across replicas.
 
 ## 6. Redis (token allowlist + session families)
 

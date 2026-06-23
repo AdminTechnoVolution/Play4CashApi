@@ -1,0 +1,32 @@
+import configuration from './configuration';
+
+describe('configuration throttle defaults', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.THROTTLE_LIMIT;
+    delete process.env.THROTTLE_TTL_MS;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('falls back to 50 when THROTTLE_LIMIT is empty or invalid', () => {
+    process.env.THROTTLE_LIMIT = '';
+    expect(configuration().throttle.limit).toBe(50);
+
+    process.env.THROTTLE_LIMIT = 'not-a-number';
+    expect(configuration().throttle.limit).toBe(50);
+  });
+
+  it('falls back to 60000 when THROTTLE_TTL_MS is empty or invalid', () => {
+    process.env.THROTTLE_TTL_MS = '';
+    expect(configuration().throttle.ttlMs).toBe(60_000);
+
+    process.env.THROTTLE_TTL_MS = 'oops';
+    expect(configuration().throttle.ttlMs).toBe(60_000);
+  });
+});
