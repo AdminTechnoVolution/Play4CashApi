@@ -36,6 +36,12 @@ describe('configuration throttle defaults', () => {
     expect(configuration().auth.refreshCookieSameSite).toBe('none');
   });
 
+  it('forces SameSite=None in production even when env is lax', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.AUTH_REFRESH_COOKIE_SAMESITE = 'lax';
+    expect(configuration().auth.refreshCookieSameSite).toBe('none');
+  });
+
   it('defaults auth cookies to SameSite=Lax outside production', () => {
     process.env.NODE_ENV = 'development';
     delete process.env.AUTH_REFRESH_COOKIE_SAMESITE;
