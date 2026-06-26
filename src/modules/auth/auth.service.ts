@@ -294,6 +294,8 @@ export class AuthService {
     await this.redis
       .multi()
       .setEx(`${REDIS_KEY_SESSION_FAMILY}${familyId}`, refreshTtl, JSON.stringify(family))
+      .setEx(`${REDIS_KEY_REFRESH_TOKEN}${refreshToken}`, refreshTtl, '1')
+      .setEx(`${REDIS_KEY_ACCESS_TOKEN}${accessToken}`, this.config.get<number>('jwt.accessTtlSecs')!, '1')
       .sAdd(refreshSet, refreshToken)
       .expire(refreshSet, refreshTtl)
       .sAdd(accessSet, accessToken)
@@ -318,6 +320,8 @@ export class AuthService {
       .del(`${REDIS_KEY_REFRESH_TOKEN}${currentRefreshToken}`)
       .sRem(refreshSet, currentRefreshToken)
       .setEx(familyKey, refreshTtl, JSON.stringify(family))
+      .setEx(`${REDIS_KEY_REFRESH_TOKEN}${newRefresh}`, refreshTtl, '1')
+      .setEx(`${REDIS_KEY_ACCESS_TOKEN}${newAccess}`, this.config.get<number>('jwt.accessTtlSecs')!, '1')
       .sAdd(refreshSet, newRefresh)
       .expire(refreshSet, refreshTtl)
       .sAdd(accessSet, newAccess)
