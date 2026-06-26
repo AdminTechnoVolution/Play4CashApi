@@ -34,10 +34,15 @@ describe('strip-untrusted-gateway-user.middleware', () => {
         'gateway.trustSecret': 's3cret',
         'gateway.trustedIps': [],
       }),
-      { headers: { 'x-gateway-user': 'real', 'x-gateway-internal': 's3cret' } },
+      { headers: { 'x-gateway-user': JSON.stringify({ id: 'u1', email: 'a@b.com' }), 'x-gateway-internal': 's3cret' } },
     );
-    expect(r.headers['x-gateway-user']).toBe('real');
+    expect(r.headers['x-gateway-user']).toBe(JSON.stringify({ id: 'u1', email: 'a@b.com' }));
     expect(r.headers['x-gateway-internal']).toBeUndefined();
+    expect((r as ReqLike & { gatewayTrusted?: boolean; user?: unknown }).gatewayTrusted).toBe(true);
+    expect((r as ReqLike & { gatewayTrusted?: boolean; user?: unknown }).user).toEqual({
+      id: 'u1',
+      email: 'a@b.com',
+    });
   });
 
   it('strips x-gateway-user when secret mismatches', () => {

@@ -3,24 +3,29 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { AppConfig, AppConfigDocument } from './schemas/app-config.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { TtlCache } from '../../common/ttl-cache';
 
 @Injectable()
 export class AppConfigService {
+  private readonly configCache = new TtlCache<any>();
+
   constructor(
     @InjectModel(AppConfig.name) private readonly configModel: Model<AppConfigDocument>,
   ) {}
 
   /** Internal helper — returns full config doc (used by other services) */
   async getRawConfig(): Promise<any> {
-    let config = await this.configModel.findOne({ key: 'global' }).lean();
-    if (!config) {
-      config = await this.configModel.findOneAndUpdate(
-        { key: 'global' },
-        { $setOnInsert: { key: 'global', withdrawal_daily_limit: 10000 } },
-        { upsert: true, returnDocument: 'after', lean: true },
-      );
-    }
-    return config;
+    return this.configCache.getOrSet('global', 30_000, async () => {
+      let config = await this.configModel.findOne({ key: 'global' }).lean();
+      if (!config) {
+        config = await this.configModel.findOneAndUpdate(
+          { key: 'global' },
+          { $setOnInsert: { key: 'global', withdrawal_daily_limit: 10000 } },
+          { upsert: true, returnDocument: 'after', lean: true },
+        );
+      }
+      return config;
+    });
   }
 
   /** GET /api/config — matches original: only exposes { withdrawal_daily_limit } */
@@ -35,6 +40,7 @@ export class AppConfigService {
     if (withdrawal_daily_limit === undefined || isNaN(withdrawal_daily_limit) || withdrawal_daily_limit <= 0) {
       throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
     }
+    this.configCache.delete('global');
 
     const config = await this.configModel.findOneAndUpdate(
       { key: 'global' },

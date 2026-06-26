@@ -30,6 +30,10 @@ export class AuthGuard implements CanActivate {
     if (isPublic) return true;
 
     const request = context.switchToHttp().getRequest();
+    if (request.gatewayTrusted && request.user) {
+      return true;
+    }
+
     const authHeader: string = request.headers['authorization'] || '';
     const cookieToken = readCookieFromHeader(request.headers.cookie, accessCookieName(this.config));
     const token = cookieToken || (authHeader.startsWith('Bearer ')

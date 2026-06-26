@@ -31,6 +31,10 @@ export class RateLimitGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<Request & { ip?: string; ips?: string[] }>();
     const response = context.switchToHttp().getResponse<Response>();
+    if ((request as Request & { gatewayTrusted?: boolean }).gatewayTrusted) {
+      return true;
+    }
+
     const clientIp = normalizeIp(this.resolveClientIp(request));
     const globalLimit = this.getDefaultLimit();
     const globalTtlMs = this.getDefaultTtlMs();
