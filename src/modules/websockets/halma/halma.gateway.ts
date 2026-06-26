@@ -281,6 +281,11 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartHalmaGame(room_id, lang));
   }
 
+  @SubscribeMessage('get_state')
+  async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    return this.handleJoin(client, payload);
+  }
+
   private async tryStartHalmaGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room || room.status !== 'waiting') return;

@@ -313,6 +313,11 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartDominoGame(room_id, lang));
   }
 
+  @SubscribeMessage('get_state')
+  async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    return this.handleJoin(client, payload);
+  }
+
   private async tryStartDominoGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
     if (!room || room.status !== 'waiting') return;

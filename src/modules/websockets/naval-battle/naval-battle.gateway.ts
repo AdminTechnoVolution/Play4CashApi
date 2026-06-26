@@ -217,6 +217,11 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     await this.syncPlayerState(client, room_id, player_id);
   }
 
+  @SubscribeMessage('get_state')
+  async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    await this.syncPlayerState(client, payload?.room_id || client.data.room_id, client.data.player_id);
+  }
+
   private async syncPlayerState(client: Socket, room_id: string, player_id: string) {
     const lang = this.getLang(client);
     if (!room_id) return client.emit('naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });

@@ -349,6 +349,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartUnoGame(room_id, lang));
   }
 
+  @SubscribeMessage('get_state')
+  async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    return this.handleJoin(client, payload);
+  }
+
   /** Idempotent start when the room is full and still waiting */
   private async tryStartUnoGame(room_id: string, lang: string) {
     // Phase C: gate on the persisted player count, not the socket count. A single

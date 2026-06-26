@@ -1438,6 +1438,7 @@ export class ConnectFourGateway
     @MessageBody() payload: { room_id: string },
   ) {
     const lang = this.getLang(client);
+    const player_id = client.data.player_id;
     const room_id = payload?.room_id || client.data.room_id;
     if (!room_id) {
       return this.emit(client, false, {}, [this.i18n.translate('ws.invalidMessageFormat', lang)]);
@@ -1447,6 +1448,15 @@ export class ConnectFourGateway
     if (!room) {
       return this.emit(client, false, {}, [this.i18n.translate('ws.games.gameNotFound', lang)]);
     }
+    if (room.status === 'finished') {
+      return this.emit(client, true, buildFinishedRoomSyncData(room, player_id), []);
+    }
+
+    const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
+    const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
+    if (!isMember && !isSpectator) {
+      return this.emit(client, false, {}, [this.i18n.translate('ws.games.notInRoom', lang)]);
+    }
 
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
     const playerNum = this.resolvePlayerNum(client, room) || client.data.playerNum || 0;
@@ -1454,10 +1464,16 @@ export class ConnectFourGateway
     const state = await this.buildPublicState(
       room,
       game,
-      client.data.isSpectator ? null : playerNum,
-      !!client.data.isSpectator,
+      isSpectator ? null : playerNum,
+      !!isSpectator,
     );
-    this.emit(client, true, { gameState: state }, []);
+    client.data.room_id = room_id;
+    client.data.isSpectator = !isMember;
+    this.emit(client, true, {
+      ...state,
+      waitingForOpponent: room.status !== 'started',
+      gameStarted: room.status === 'started',
+    }, []);
   }
 
   private async finalizeConnectFourMatch(
