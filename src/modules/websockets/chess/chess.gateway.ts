@@ -329,6 +329,11 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartChessGame(room_id, lang));
   }
 
+  @SubscribeMessage('get_state')
+  async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    return this.handleJoin(client, payload);
+  }
+
   /** Idempotent start when DB has two players; socket count must not gate start. */
   private async tryStartChessGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
