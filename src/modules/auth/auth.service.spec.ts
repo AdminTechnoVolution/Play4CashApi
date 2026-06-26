@@ -2,6 +2,7 @@ import * as jwt from 'jsonwebtoken';
 import { AuthService } from './auth.service';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import {
+  REDIS_KEY_ACCESS_TOKEN,
   REDIS_KEY_REFRESH_TOKEN,
   REDIS_KEY_SESSION_FAMILY,
   REDIS_KEY_FAMILY_REFRESHES,
@@ -150,6 +151,8 @@ describe('AuthService.refreshToken', () => {
     expect(out.data.refreshToken).not.toBe(refresh);
 
     expect(redis.strings.has(`${REDIS_KEY_REFRESH_TOKEN}${refresh}`)).toBe(false);
+    expect(redis.strings.has(`${REDIS_KEY_REFRESH_TOKEN}${out.data.refreshToken}`)).toBe(true);
+    expect(redis.strings.has(`${REDIS_KEY_ACCESS_TOKEN}${out.data.token}`)).toBe(true);
     const family = JSON.parse(redis.strings.get(`${REDIS_KEY_SESSION_FAMILY}fam-1`)!);
     expect(family.currentJti).not.toBe('jti-1');
   });
