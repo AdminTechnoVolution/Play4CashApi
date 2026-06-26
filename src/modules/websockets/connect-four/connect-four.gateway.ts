@@ -111,7 +111,7 @@ export class ConnectFourGateway
     this.turnDeadlines.registerHandler('connect-four', (_playerId, roomId) =>
       this.executeConnectFourTurnTimeout(roomId),
     );
-    void this.startEdgeCommandConsumer();
+    // Direct /connect-four WebSocket proxy is preferred; disable Redis Streams consumer when unused.
   }
 
   afterInit(server: Server) {
@@ -1644,6 +1644,9 @@ export class ConnectFourGateway
 
     try {
       await game.save();
+      this.logger.log(
+        `[${new Date().toISOString()}] API game.save done room=${room_id} revision=${game.move_revision}`,
+      );
     } catch (err) {
       this.logger.error(
         `event=connect_four_save_failed room=${room_id} finished=${finished}`,
@@ -1655,7 +1658,7 @@ export class ConnectFourGateway
     }
 
     this.logger.log(
-      `event=connect_four_move room=${room_id} col=${col} revision=${game.move_revision} finished=${finished}`,
+      `[${new Date().toISOString()}] API handleDropDisc start room=${room_id} player=${client.data.player_id} col=${col}`,
     );
 
     const limit = room.game_id?.turn_timer_seconds || 30;
@@ -1676,6 +1679,7 @@ export class ConnectFourGateway
         : winnerNum === 1
           ? game.player1_id
           : game.player2_id;
+      await room.save();
     } else {
       const opponent = sockets.find(
         (s) => this.resolvePlayerNum(s, room) === game.current_player,
@@ -1684,7 +1688,7 @@ export class ConnectFourGateway
         this.startTimer(opponent as unknown as Socket, room_id, limit);
       }
       room.turn_start_time = new Date();
-      await room.save();
+      // Avoid persisting room state on every Connect Four move; keep the fast path aligned with Domino.
     }
 
     const displayPrize = winnerDisplayedPrize(
@@ -1699,66 +1703,80 @@ export class ConnectFourGateway
       color,
       at: new Date().toISOString(),
     };
+    const stateVersion = await bumpGameStateVersion(this.redis, 'connect-four', room_id);
+    const turnDeadlineAt = computeTurnDeadlineAt(game.turn_start_time, limit);
 
-    for (const s of sockets) {
+    this.logger.log(
+      `[${new Date().toISOString()}] API emit connect-four room=${room_id} revision=${game.move_revision} stateVersion=${stateVersion} sockets=${sockets.length}`,
+    );
+
+    const socketInfos = sockets.map((s) => {
+      const socket = s as unknown as Socket;
+      const sLang = this.getLang(socket);
+      const sIsSpectator = (s as any).data.isSpectator || false;
+      const sPNum = this.resolvePlayerNum(socket, room);
+      if (sPNum) (s as any).data.playerNum = sPNum;
+      return { socket, sLang, sIsSpectator, sPNum };
+    });
+
+    const playerStateByNum = new Map<number, Record<string, unknown>>();
+    for (const info of socketInfos) {
+      if (!info.sIsSpectator && info.sPNum) {
+        playerStateByNum.set(info.sPNum, await this.buildPublicState(room, game, info.sPNum, false));
+      }
+    }
+    const spectatorState = socketInfos.some((info) => info.sIsSpectator)
+      ? await this.buildPublicState(room, game, null, true)
+      : null;
+
+    for (const info of socketInfos) {
       try {
-        const sLang = this.getLang(s as unknown as Socket);
-        const sIsSpectator = (s as any).data.isSpectator || false;
-        const sPNum = this.resolvePlayerNum(s, room);
-        if (sPNum) (s as any).data.playerNum = sPNum;
-        const isWinner = finished && !isDraw && winnerNum === sPNum;
-        const sState = await this.buildPublicState(
-          room,
-          game,
-          sIsSpectator ? null : sPNum,
-          sIsSpectator,
-        );
+        const isWinner = finished && !isDraw && winnerNum === info.sPNum;
+        const sState = info.sIsSpectator
+          ? spectatorState ?? await this.buildPublicState(room, game, null, true)
+          : playerStateByNum.get(info.sPNum ?? 1) ?? await this.buildPublicState(room, game, info.sPNum ?? 1, false);
 
         let msg = '';
         if (finished) {
           if (isDraw) {
-            msg = this.i18n.translate('ws.games.drawGeneric', sLang);
+            msg = this.i18n.translate('ws.games.drawGeneric', info.sLang);
           } else {
             msg = isWinner
-              ? this.i18n.translate('ws.games.win', sLang)
-              : this.i18n.translate('ws.games.lose', sLang);
+              ? this.i18n.translate('ws.games.win', info.sLang)
+              : this.i18n.translate('ws.games.lose', info.sLang);
           }
-        } else if (s.id === client.id) {
-          msg = this.i18n.translate('ws.games.moveAccepted', sLang);
+        } else if (info.socket.id === client.id) {
+          msg = this.i18n.translate('ws.games.moveAccepted', info.sLang);
         } else {
-          msg = this.i18n.translate('ws.games.opponentMoved', sLang);
+          msg = this.i18n.translate('ws.games.opponentMoved', info.sLang);
         }
 
-        (s as unknown as Socket).emit(EVENT, {
+        (info.socket as unknown as Socket).emit(EVENT, {
           success: true,
-          data: await enrichGamePayload(
-            this.redis,
-            'connect-four',
-            room_id,
-            {
-              ...sState,
-              lastMove,
-              gameEnded: finished,
-              gameStarted: !finished,
-              youWon: isWinner && !sIsSpectator,
-              outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
-              prize: isWinner ? displayPrize : 0,
-              reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
-              isDraw: finished && isDraw,
-              winnerUserId:
-                finished && !isDraw && winnerNum
-                  ? winnerNum === 1
-                    ? game.player1_id.toString()
-                    : game.player2_id.toString()
-                  : null,
-            },
-            { turnStart: game.turn_start_time, timerSeconds: limit },
-          ),
+          data: {
+            ...sState,
+            lastMove,
+            gameEnded: finished,
+            gameStarted: !finished,
+            youWon: isWinner && !info.sIsSpectator,
+            outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
+            prize: isWinner ? displayPrize : 0,
+            reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
+            isDraw: finished && isDraw,
+            winnerUserId:
+              finished && !isDraw && winnerNum
+                ? winnerNum === 1
+                  ? game.player1_id.toString()
+                  : game.player2_id.toString()
+                : null,
+            stateVersion,
+            ...(turnDeadlineAt ? { turnDeadlineAt } : {}),
+          },
           messages: [msg],
         });
       } catch (emitErr) {
         this.logger.error(
-          `event=connect_four_emit_failed room=${room_id} sid=${s.id} finished=${finished}`,
+          `event=connect_four_emit_failed room=${room_id} sid=${info.socket.id} finished=${finished}`,
           emitErr,
         );
       }
