@@ -4,6 +4,8 @@ import { Model } from 'mongoose';
 import { Game, GameDocument } from './schemas/game.schema';
 import { Room, RoomDocument, RoomStatus } from '../room/schemas/room.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { TtlCache } from '../../common/ttl-cache';
+import { logSlowEvent } from '../../common/perf-log.util';
 import { CONNECT_FOUR_SOCKET_CODE } from '../../common/constants/connect-four-game.constants';
 import {
   UNO_MATCH_TARGET_DEFAULT,
@@ -20,6 +22,9 @@ import type { CreateGameDto, UpdateGameDto } from './dtos/game-admin.dto';
 @Injectable()
 export class GameService implements OnModuleInit {
   private readonly logger = new Logger(GameService.name);
+  private readonly publicGamesCache = new TtlCache<any[]>();
+  private readonly publicGameByIdCache = new TtlCache<any>();
+  private readonly activeRoomCountsCache = new TtlCache<Map<string, number>>();
 
   constructor(
     @InjectModel(Game.name) private readonly gameModel: Model<GameDocument>,
@@ -126,20 +131,26 @@ export class GameService implements OnModuleInit {
   }
 
   async findAll(lang = 'en'): Promise<any[]> {
-    const [data, activeRoomCounts] = await Promise.all([
-      this.gameModel.find({ active: true }).select('-created_at').lean(),
-      this.aggregateActiveRoomCounts(),
-    ]);
+    const cacheKey = `games:${lang}`;
+    return this.publicGamesCache.getOrSet(cacheKey, 30_000, async () => {
+      const startedAt = process.hrtime.bigint();
+      const [data, activeRoomCounts] = await Promise.all([
+        this.gameModel.find({ active: true }).select('-created_at').lean(),
+        this.aggregateActiveRoomCounts(),
+      ]);
 
-    const countMap = activeRoomCounts;
+      const countMap = activeRoomCounts;
 
-    const games = this.localizeGames(data, lang);
-    return games.map((g: any) => ({
-      ...g,
-      houseEdge: g.house_edge,
-      unoMatchTarget: g.uno_match_target,
-      activeRooms: countMap.get(g._id.toString()) ?? 0,
-    }));
+      const games = this.localizeGames(data, lang);
+      const payload = games.map((g: any) => ({
+        ...g,
+        houseEdge: g.house_edge,
+        unoMatchTarget: g.uno_match_target,
+        activeRooms: countMap.get(g._id.toString()) ?? 0,
+      }));
+      logSlowEvent(this.logger, 'games_catalog_trace', startedAt, 25, { game_count: payload.length });
+      return payload;
+    });
   }
 
   /** Admin catalog: every game, full i18n name/description/rules (no Accept-Language flattening). */
@@ -154,10 +165,16 @@ export class GameService implements OnModuleInit {
   }
 
   async findById(id: string, lang = 'en'): Promise<any> {
-    const game = await this.gameModel.findById(id).select('-created_at').lean();
-    if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
-    const g = this.localizeGames([game], lang)[0];
-    return { ...g, houseEdge: g.house_edge, unoMatchTarget: g.uno_match_target };
+    const cacheKey = `game:${id}:${lang}`;
+    return this.publicGameByIdCache.getOrSet(cacheKey, 30_000, async () => {
+      const startedAt = process.hrtime.bigint();
+      const game = await this.gameModel.findById(id).select('-created_at').lean();
+      if (!game) throw new BusinessException('ERROR_GAME_NOT_FOUND', 404);
+      const g = this.localizeGames([game], lang)[0];
+      const payload = { ...g, houseEdge: g.house_edge, unoMatchTarget: g.uno_match_target };
+      logSlowEvent(this.logger, 'game_detail_trace', startedAt, 25, { gameId: id });
+      return payload;
+    });
   }
 
   async findByIdAdmin(id: string): Promise<Record<string, unknown>> {
@@ -193,13 +210,15 @@ export class GameService implements OnModuleInit {
   }
 
   private async aggregateActiveRoomCounts(): Promise<Map<string, number>> {
-    const activeRoomCounts = await this.roomModel.aggregate([
-      { $match: { status: { $ne: RoomStatus.FINISHED } } },
-      { $group: { _id: '$game_id', count: { $sum: 1 } } },
-    ]);
-    return new Map<string, number>(
-      activeRoomCounts.map((r) => [r._id.toString(), r.count]),
-    );
+    return this.activeRoomCountsCache.getOrSet('active-room-counts', 5_000, async () => {
+      const activeRoomCounts = await this.roomModel.aggregate([
+        { $match: { status: { $ne: RoomStatus.FINISHED } } },
+        { $group: { _id: '$game_id', count: { $sum: 1 } } },
+      ]);
+      return new Map<string, number>(
+        activeRoomCounts.map((r) => [r._id.toString(), r.count]),
+      );
+    });
   }
 
   private toCreatePayload(dto: CreateGameDto): Record<string, unknown> {

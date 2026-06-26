@@ -9,10 +9,12 @@ import { sendWithdrawalRequest } from '../../common/clients/binance.client';
 import { WalletService } from '../wallet/wallet.service';
 import { AppConfigService } from '../app-config/app-config.service';
 import { EmailService } from '../../common/email/email.service';
+import { TtlCache } from '../../common/ttl-cache';
 
 @Injectable()
 export class WithdrawalService {
   private readonly logger = new Logger(WithdrawalService.name);
+  private readonly historyCache = new TtlCache<any[]>();
 
   constructor(
     @InjectModel(Withdrawal.name) private readonly withdrawalModel: Model<WithdrawalDocument>,
@@ -27,6 +29,7 @@ export class WithdrawalService {
     userId: string,
     verification_code: string,
   ): Promise<{ balance: number }> {
+    this.historyCache.delete(`withdrawal-history:${userId}`);
     // Verify the pending withdrawal exists
     const pendingWithdrawal = await this.withdrawalModel.findOne({
       user_id: new Types.ObjectId(userId),
@@ -93,6 +96,7 @@ export class WithdrawalService {
       });
 
       await this.saveTxMessage(userId, amount, coin, wallet, 'Ok: transaction processing');
+      this.historyCache.delete(`withdrawal-history:${userId}`);
 
       return { balance: new Decimal(user.balance).toNumber() };
     } catch (err) {
@@ -113,6 +117,7 @@ export class WithdrawalService {
     verificationExpiryMins: number,
     lang = 'en',
   ): Promise<void> {
+    this.historyCache.delete(`withdrawal-history:${userId}`);
     const user = await this.userModel.findById(userId);
     if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
 
@@ -219,22 +224,24 @@ export class WithdrawalService {
   }
 
   async getHistory(userId: string): Promise<any[]> {
-    const list = await this.withdrawalModel
-      .find({ user_id: new Types.ObjectId(userId) })
-      .select('amount coin status wallet network tx_fee txId created_at confirmed_at')
-      .sort({ created_at: -1 })
-      .lean();
+    return this.historyCache.getOrSet(`withdrawal-history:${userId}`, 10_000, async () => {
+      const list = await this.withdrawalModel
+        .find({ user_id: new Types.ObjectId(userId) })
+        .select('amount coin status wallet network tx_fee txId created_at confirmed_at')
+        .sort({ created_at: -1 })
+        .lean();
 
-    return list.map((w: any) => ({
-      amount: w.amount,
-      coin: w.coin,
-      status: w.status,
-      wallet: w.wallet,
-      network: w.network,
-      tx_fee: w.tx_fee || 0,
-      txId: w.txId,
-      created_at: w.created_at,
-      confirmed_at: w.confirmed_at,
-    }));
+      return list.map((w: any) => ({
+        amount: w.amount,
+        coin: w.coin,
+        status: w.status,
+        wallet: w.wallet,
+        network: w.network,
+        tx_fee: w.tx_fee || 0,
+        txId: w.txId,
+        created_at: w.created_at,
+        confirmed_at: w.confirmed_at,
+      }));
+    });
   }
 }

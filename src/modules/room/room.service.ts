@@ -12,10 +12,17 @@ import { DominoGateway } from '../websockets/domino/domino.gateway';
 import { UnoGateway } from '../websockets/uno/uno.gateway';
 import { ConnectFourGateway } from '../websockets/connect-four/connect-four.gateway';
 import { agentDebugLog } from '../../common/ws/waiting-room-sync.util';
+import { TtlCache } from '../../common/ttl-cache';
+import { logSlowEvent } from '../../common/perf-log.util';
 
 @Injectable()
 export class RoomService {
   private readonly logger = new Logger(RoomService.name);
+  private readonly liveStatsCache = new TtlCache<any>();
+  private readonly roomsByGameCache = new TtlCache<any>();
+  private readonly roomByIdCache = new TtlCache<any>();
+  private readonly roomStatusCache = new TtlCache<any>();
+  private readonly activeRoomCache = new TtlCache<any>();
 
   constructor(
     @InjectModel(Room.name) private readonly roomModel: Model<RoomDocument>,
@@ -34,83 +41,104 @@ export class RoomService {
   // ── LIVE STATS ─────────────────────────────────────────────────────────────
 
   async getLiveStats(): Promise<any> {
-    // Count unique online players across all game namespaces
-    const allSockets = await Promise.all([
-      this.navalBattleGateway.server?.fetchSockets() || [],
-      this.halmaGateway.server?.fetchSockets() || [],
-      this.chessGateway.server?.fetchSockets() || [],
-      this.dominoGateway.server?.fetchSockets() || [],
-      this.unoGateway.server?.fetchSockets() || [],
-      this.connectFourGateway.server?.fetchSockets() || [],
-    ]);
-    const uniquePlayerIds = new Set<string>();
-    for (const sockets of allSockets) {
-      for (const s of sockets) {
-        const pid = (s as any).data?.player_id;
-        if (pid) uniquePlayerIds.add(pid);
+    return this.liveStatsCache.getOrSet('live-room-stats', 5_000, async () => {
+      const startedAt = process.hrtime.bigint();
+      // Count unique online players across all game namespaces
+      const allSockets = await Promise.all([
+        this.navalBattleGateway.server?.fetchSockets() || [],
+        this.halmaGateway.server?.fetchSockets() || [],
+        this.chessGateway.server?.fetchSockets() || [],
+        this.dominoGateway.server?.fetchSockets() || [],
+        this.unoGateway.server?.fetchSockets() || [],
+        this.connectFourGateway.server?.fetchSockets() || [],
+      ]);
+      const uniquePlayerIds = new Set<string>();
+      for (const sockets of allSockets) {
+        for (const s of sockets) {
+          const pid = (s as any).data?.player_id;
+          if (pid) uniquePlayerIds.add(pid);
+        }
       }
-    }
 
-    // Per-room stake (bet_amount) once per game — not multiplied by player count
-    const activeRooms = await this.roomModel.find({ status: RoomStatus.STARTED }).select('bet_amount').lean();
-    let totalBetAmount = 0;
-    for (const room of activeRooms) {
-      totalBetAmount += room.bet_amount || 0;
-    }
+      // Per-room stake (bet_amount) once per game — not multiplied by player count
+      const activeRooms = await this.roomModel
+        .find({ status: RoomStatus.STARTED })
+        .select('bet_amount')
+        .lean();
+      let totalBetAmount = 0;
+      for (const room of activeRooms) {
+        totalBetAmount += room.bet_amount || 0;
+      }
 
-    return {
-      success: true,
-      messages: [],
-      data: {
+      const payload = {
+        success: true,
+        messages: [],
+        data: {
+          playersOnline: uniquePlayerIds.size,
+          activeGames: activeRooms.length,
+          totalBetAmount,
+        },
+      };
+      logSlowEvent(this.logger, 'rooms_live_stats_trace', startedAt, 25, {
         playersOnline: uniquePlayerIds.size,
         activeGames: activeRooms.length,
-        totalBetAmount,
-      },
-    };
+      });
+      return payload;
+    });
   }
 
   // ── GET ROOMS ───────────────────────────────────────────────────────────────
 
   async getRooms(gameId: string, lang = 'en'): Promise<any> {
-    const rooms = await this.roomModel
-      .find({
-        game_id: new Types.ObjectId(gameId),
-        status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
-        $or: [{ source: { $exists: false } }, { source: 'casual' }],
-      })
-      .populate('game_id', '-created_at')
-      .populate('players.playerId', 'username')
-      .select('-finished_at -winner')
-      .lean();
-    return { success: true, messages: [], data: this.localizeRooms(rooms, lang) };
+    const cacheKey = `rooms:${gameId}:${lang}`;
+    return this.roomsByGameCache.getOrSet(cacheKey, 3_000, async () => {
+      const startedAt = process.hrtime.bigint();
+      const rooms = await this.roomModel
+        .find({
+          game_id: new Types.ObjectId(gameId),
+          status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
+          $or: [{ source: { $exists: false } }, { source: 'casual' }],
+        })
+        .populate('game_id', '-created_at')
+        .populate('players.playerId', 'username')
+        .select('-finished_at -winner')
+        .lean();
+      logSlowEvent(this.logger, 'room_list_trace', startedAt, 50, { room_count: rooms.length });
+      return { success: true, messages: [], data: this.localizeRooms(rooms, lang) };
+    });
   }
 
   async getRoom(id: string, lang = 'en'): Promise<any> {
-    const room = await this.roomModel
-      .findById(id)
-      .populate('game_id', '-created_at')
-      .populate('players.playerId', 'username')
-      .lean();
-    if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-    return { success: true, messages: [], data: this.localizeRooms([room], lang)[0] };
+    const cacheKey = `room:${id}:${lang}`;
+    return this.roomByIdCache.getOrSet(cacheKey, 3_000, async () => {
+      const room = await this.roomModel
+        .findById(id)
+        .populate('game_id', '-created_at')
+        .populate('players.playerId', 'username')
+        .lean();
+      if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
+      return { success: true, messages: [], data: this.localizeRooms([room], lang)[0] };
+    });
   }
 
   async getRoomStatus(id: string): Promise<any> {
-    const room = await this.roomModel.findById(id).populate('game_id', 'name').lean();
-    if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-    return {
-      success: true,
-      messages: [],
-      data: {
-        id: room._id,
-        status: room.status,
-        playerCount: room.players.length,
-        bet_amount: room.bet_amount,
-        currentPlayer: room.status === RoomStatus.STARTED ? room.players[0].playerId : null,
-        winner: room.winner || null,
-        winner_reason: room.winner_reason || (room.status === RoomStatus.STARTED ? 'playing' : null),
-      },
-    };
+    return this.roomStatusCache.getOrSet(`room-status:${id}`, 2_000, async () => {
+      const room = await this.roomModel.findById(id).populate('game_id', 'name').lean();
+      if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
+      return {
+        success: true,
+        messages: [],
+        data: {
+          id: room._id,
+          status: room.status,
+          playerCount: room.players.length,
+          bet_amount: room.bet_amount,
+          currentPlayer: room.status === RoomStatus.STARTED ? room.players[0].playerId : null,
+          winner: room.winner || null,
+          winner_reason: room.winner_reason || (room.status === RoomStatus.STARTED ? 'playing' : null),
+        },
+      };
+    });
   }
 
   // ── ACTIVE ROOM FOR USER ───────────────────────────────────────────────────
@@ -124,19 +152,25 @@ export class RoomService {
    * Shape: `{ success: true, data: <enrichedRoom | null> }`.
    */
   async getActiveRoomForUser(userId: string, lang = 'en'): Promise<any> {
-    const active = await this.roomModel
-      .findOne({
-        'players.playerId': new Types.ObjectId(userId),
-        status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
-      })
-      .populate('game_id', '-created_at')
-      .populate('players.playerId', 'username')
-      .lean();
-    if (!active) {
-      return { success: true, messages: [], data: null };
-    }
-    const [enriched] = this.localizeRooms([active], lang);
-    return { success: true, messages: [], data: enriched };
+    const cacheKey = `active-room:${userId}:${lang}`;
+    return this.activeRoomCache.getOrSet(cacheKey, 3_000, async () => {
+      const startedAt = process.hrtime.bigint();
+      const active = await this.roomModel
+        .findOne({
+          'players.playerId': new Types.ObjectId(userId),
+          status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
+        })
+        .populate('game_id', '-created_at')
+        .populate('players.playerId', 'username')
+        .lean();
+      if (!active) {
+        logSlowEvent(this.logger, 'room_active_trace', startedAt, 25, { found: false });
+        return { success: true, messages: [], data: null };
+      }
+      const [enriched] = this.localizeRooms([active], lang);
+      logSlowEvent(this.logger, 'room_active_trace', startedAt, 25, { found: true });
+      return { success: true, messages: [], data: enriched };
+    });
   }
 
   // ── CREATE ROOM ─────────────────────────────────────────────────────────────
@@ -219,6 +253,7 @@ export class RoomService {
     const [enriched] = this.localizeRooms([populated], lang);
 
     this.roomsGateway.broadcastRoomUpdate(gameId, 'roomCreated', enriched);
+    this.invalidateReadCaches();
     return room;
   }
 
@@ -265,6 +300,7 @@ export class RoomService {
     const [enriched] = this.localizeRooms([populated], lang);
     const gameId = (room.game_id as any)?._id?.toString() || (room.game_id as any)?.toString();
     this.roomsGateway.broadcastRoomUpdate(gameId, 'roomUpdated', enriched);
+    this.invalidateReadCaches();
 
     return room;
   }
@@ -288,6 +324,7 @@ export class RoomService {
 
     const populated = await this.roomModel.findById(roomId).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
     const [enriched] = this.localizeRooms([populated], lang);
+    this.invalidateReadCaches();
 
     return enriched as any;
   }
@@ -310,6 +347,7 @@ export class RoomService {
     const [enriched] = this.localizeRooms([populated], lang);
     const gameId = (room.game_id as any)?._id?.toString() || (room.game_id as any)?.toString();
     this.roomsGateway.broadcastRoomUpdate(gameId, 'roomUpdated', enriched);
+    this.invalidateReadCaches();
 
     return room;
   }
@@ -321,6 +359,7 @@ export class RoomService {
     if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
     const gameId = (room as any).game_id?.toString();
     if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
+    this.invalidateReadCaches();
   }
 
   // ── LEAVE ROOM ──────────────────────────────────────────────────────────────
@@ -337,7 +376,7 @@ export class RoomService {
     if (roomInfo.status === RoomStatus.FINISHED) return roomInfo;
 
     const isSpectator = roomInfo.spectators?.some((id: any) => id.toString() === userId);
-    if (isSpectator) {
+      if (isSpectator) {
       const updated = await this.roomModel.findOneAndUpdate(
         { _id: roomId },
         { $pull: { spectators: new Types.ObjectId(userId) } },
@@ -352,6 +391,7 @@ export class RoomService {
       await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', commonPayload, commonPayload);
       await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', commonPayload, commonPayload);
       await this.emitToOthers(this.connectFourGateway, roomId, userId, 'connect-four', commonPayload, commonPayload);
+      this.invalidateReadCaches();
 
       return updated;
     }
@@ -418,6 +458,7 @@ export class RoomService {
         await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', playerPayload, spectatorPayload);
         await this.emitToOthers(this.connectFourGateway, roomId, userId, 'connect-four', playerPayload, spectatorPayload);
       }
+      this.invalidateReadCaches();
       return updated;
     }
 
@@ -500,6 +541,7 @@ export class RoomService {
           await this.emitToOthers(this.dominoGateway, roomId, userId, 'domino', playerPayload, spectatorPayload);
           await this.emitToOthers(this.unoGateway, roomId, userId, 'uno', playerPayload, spectatorPayload);
           await this.emitToOthers(this.connectFourGateway, roomId, userId, 'connect-four', playerPayload, spectatorPayload);
+          this.invalidateReadCaches();
         }
       }
     }
@@ -629,6 +671,7 @@ export class RoomService {
           const gameId = (populatedStartedRoom.game_id as any)?._id?.toString() || populatedStartedRoom.game_id?.toString();
           if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomUpdated', enriched);
         }
+        this.invalidateReadCaches();
       }
     }
 
@@ -680,5 +723,13 @@ export class RoomService {
     this.dominoGateway.server.to(roomId).emit('domino', payload);
     this.unoGateway.server.to(roomId).emit('uno', payload);
     this.connectFourGateway.server.to(roomId).emit('connect-four', payload);
+  }
+
+  private invalidateReadCaches(): void {
+    this.liveStatsCache.clear();
+    this.roomsByGameCache.clear();
+    this.roomByIdCache.clear();
+    this.roomStatusCache.clear();
+    this.activeRoomCache.clear();
   }
 }

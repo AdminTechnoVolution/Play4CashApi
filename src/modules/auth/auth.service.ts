@@ -15,6 +15,7 @@ import { BusinessException } from '../../common/exceptions/business.exception';
 import { UserRepository } from '../user/user.repository';
 import { UserRole } from '../user/schemas/user.schema';
 import { jwtVerifyOptions, isRefreshTokenPayload } from '../../common/auth/jwt-token.util';
+import { buildLogLine, elapsedMs } from '../../common/perf-log.util';
 
 interface SessionFamilyValue {
   userId: string;
@@ -45,6 +46,8 @@ export class AuthService {
 
   // ─── Login (Google OAuth) ───────────────────────────────────────────────────
   async loginUser(googleToken: string): Promise<any> {
+    const startedAt = process.hrtime.bigint();
+    const googleVerifyStart = process.hrtime.bigint();
     let googlePayload: any;
     try {
       const ticket = await this.googleClient.verifyIdToken({
@@ -55,16 +58,24 @@ export class AuthService {
     } catch {
       throw new BusinessException('ERROR_LOGIN', 401);
     }
+    const googleVerifyMs = Number(process.hrtime.bigint() - googleVerifyStart) / 1_000_000;
 
     let { email, name } = googlePayload;
     email = email.toLowerCase();
 
+    const userLookupStart = process.hrtime.bigint();
     let user = await this.userRepo.findByEmail(email);
+    const userLookupMs = Number(process.hrtime.bigint() - userLookupStart) / 1_000_000;
 
-    if (!user) {
+    const userWasCreated = !user;
+    let userCreateMs = 0;
+    let usernameCollisionChecks = 0;
+    if (userWasCreated) {
+      const userCreateStart = process.hrtime.bigint();
       const base = (name || 'user').replace(/\s+/g, '_').toLowerCase().slice(0, 20) || 'user';
       let username = base;
       for (let i = 0; i < 25; i++) {
+        usernameCollisionChecks += 1;
         const taken = await this.userRepo.findByUsername(username);
         if (!taken) break;
         const suffix = String(Math.floor(Math.random() * 10000));
@@ -75,22 +86,52 @@ export class AuthService {
         username = `u${Date.now()}`.slice(-20);
       }
       user = await this.userRepo.create({ email, username, status: 'active' as any });
+      userCreateMs = Number(process.hrtime.bigint() - userCreateStart) / 1_000_000;
     }
 
-    if (user.status !== 'active') {
+    if (!user) {
       throw new BusinessException('ERROR_LOGIN', 401);
     }
 
-    const role = this.resolveRole(user.role, email);
+    const activeUser = user;
+
+    if (activeUser.status !== 'active') {
+      throw new BusinessException('ERROR_LOGIN', 401);
+    }
+
+    const role = this.resolveRole(activeUser.role, email);
     const familyId = randomUUID();
-    const userId = String(user._id);
+    const userId = String(activeUser._id);
 
-    const accessPayload: AccessPayload = { id: userId, email: user.email, username: user.username, name, role, familyId };
-    const { token: accessToken, jti: accessJti } = await this.issueAccessToken(accessPayload);
+    const accessPayload: AccessPayload = {
+      id: userId,
+      email: activeUser.email,
+      username: activeUser.username,
+      name,
+      role,
+      familyId,
+    };
+    const tokenIssueStart = process.hrtime.bigint();
+    const { token: accessToken } = await this.issueAccessToken(accessPayload);
     const { token: refreshToken, jti: refreshJti } = await this.issueRefreshToken(accessPayload);
+    const tokenIssueMs = Number(process.hrtime.bigint() - tokenIssueStart) / 1_000_000;
 
+    const persistStart = process.hrtime.bigint();
     await this.persistFamily(familyId, userId, refreshJti, refreshToken, accessToken);
+    const persistMs = Number(process.hrtime.bigint() - persistStart) / 1_000_000;
     this.logger.log(`[AuthService] Login OK userId=${userId} family=${familyId}`);
+    this.logger.log(
+      buildLogLine('login_trace', startedAt, {
+        google_verify_ms: googleVerifyMs.toFixed(1),
+        user_lookup_ms: userLookupMs.toFixed(1),
+        user_create_ms: userCreateMs.toFixed(1),
+        token_issue_ms: tokenIssueMs.toFixed(1),
+        persist_ms: persistMs.toFixed(1),
+        total_ms: elapsedMs(startedAt).toFixed(1),
+        username_collision_checks: usernameCollisionChecks,
+        user_created: userWasCreated,
+      }),
+    );
 
     return { success: true, messages: [], data: { token: accessToken, refreshToken } };
   }
@@ -142,8 +183,11 @@ export class AuthService {
     }
 
     // Rotate: remove old refresh from allowlist + family set
-    await this.redis.del(`${REDIS_KEY_REFRESH_TOKEN}${currentRefreshToken}`);
-    await this.redis.sRem(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, currentRefreshToken);
+    await this.redis
+      .multi()
+      .del(`${REDIS_KEY_REFRESH_TOKEN}${currentRefreshToken}`)
+      .sRem(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, currentRefreshToken)
+      .exec();
 
     // Re-resolve role from DB so demotions/promotions take effect on next refresh.
     const userDoc = await this.userRepo.findById(family.userId);
@@ -162,12 +206,14 @@ export class AuthService {
     const { token: newRefresh, jti: newRefreshJti } = await this.issueRefreshToken(next);
 
     family.currentJti = newRefreshJti;
-    const refreshTtl = this.config.get<number>('jwt.refreshTtlSecs')!;
-    await this.redis.setEx(familyKey, refreshTtl, JSON.stringify(family));
-    await this.redis.sAdd(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, newRefresh);
-    await this.redis.expire(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, refreshTtl);
-    await this.redis.sAdd(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, newAccess);
-    await this.redis.expire(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, refreshTtl);
+    await this.rotateFamily(
+      familyId,
+      familyKey,
+      family,
+      currentRefreshToken,
+      newAccess,
+      newRefresh,
+    );
 
     return { success: true, messages: [], data: { token: newAccess, refreshToken: newRefresh } };
   }
@@ -211,19 +257,15 @@ export class AuthService {
 
   private async issueAccessToken(base: AccessPayload): Promise<{ token: string; jti: string }> {
     const ttl = this.config.get<number>('jwt.accessTtlSecs')!;
-    return this.signToken({ ...base, typ: 'access' }, ttl, REDIS_KEY_ACCESS_TOKEN);
+    return this.signToken({ ...base, typ: 'access' }, ttl);
   }
 
   private async issueRefreshToken(base: AccessPayload): Promise<{ token: string; jti: string }> {
     const ttl = this.config.get<number>('jwt.refreshTtlSecs')!;
-    return this.signToken({ ...base, typ: 'refresh' }, ttl, REDIS_KEY_REFRESH_TOKEN);
+    return this.signToken({ ...base, typ: 'refresh' }, ttl);
   }
 
-  private async signToken(
-    payload: Record<string, unknown>,
-    ttlSecs: number,
-    redisPrefix: string,
-  ): Promise<{ token: string; jti: string }> {
+  private async signToken(payload: Record<string, unknown>, ttlSecs: number): Promise<{ token: string; jti: string }> {
     const secret = this.config.get<string>('jwt.secret')!;
     const issuer = this.config.get<string>('jwt.issuer')!;
     const audience = this.config.get<string>('jwt.audience')!;
@@ -235,7 +277,6 @@ export class AuthService {
       audience,
       subject: String(payload.id),
     });
-    await this.redis.setEx(`${redisPrefix}${token}`, ttlSecs, JSON.stringify(fullPayload));
     return { token, jti };
   }
 
@@ -248,11 +289,40 @@ export class AuthService {
   ): Promise<void> {
     const refreshTtl = this.config.get<number>('jwt.refreshTtlSecs')!;
     const family: SessionFamilyValue = { userId, currentJti: refreshJti };
-    await this.redis.setEx(`${REDIS_KEY_SESSION_FAMILY}${familyId}`, refreshTtl, JSON.stringify(family));
-    await this.redis.sAdd(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, refreshToken);
-    await this.redis.expire(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, refreshTtl);
-    await this.redis.sAdd(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, accessToken);
-    await this.redis.expire(`${REDIS_KEY_FAMILY_ACCESSES}${familyId}`, refreshTtl);
+    const refreshSet = `${REDIS_KEY_FAMILY_REFRESHES}${familyId}`;
+    const accessSet = `${REDIS_KEY_FAMILY_ACCESSES}${familyId}`;
+    await this.redis
+      .multi()
+      .setEx(`${REDIS_KEY_SESSION_FAMILY}${familyId}`, refreshTtl, JSON.stringify(family))
+      .sAdd(refreshSet, refreshToken)
+      .expire(refreshSet, refreshTtl)
+      .sAdd(accessSet, accessToken)
+      .expire(accessSet, refreshTtl)
+      .exec();
+  }
+
+  private async rotateFamily(
+    familyId: string,
+    familyKey: string,
+    family: SessionFamilyValue,
+    currentRefreshToken: string,
+    newAccess: string,
+    newRefresh: string,
+  ): Promise<void> {
+    const refreshTtl = this.config.get<number>('jwt.refreshTtlSecs')!;
+    const refreshSet = `${REDIS_KEY_FAMILY_REFRESHES}${familyId}`;
+    const accessSet = `${REDIS_KEY_FAMILY_ACCESSES}${familyId}`;
+
+    await this.redis
+      .multi()
+      .del(`${REDIS_KEY_REFRESH_TOKEN}${currentRefreshToken}`)
+      .sRem(refreshSet, currentRefreshToken)
+      .setEx(familyKey, refreshTtl, JSON.stringify(family))
+      .sAdd(refreshSet, newRefresh)
+      .expire(refreshSet, refreshTtl)
+      .sAdd(accessSet, newAccess)
+      .expire(accessSet, refreshTtl)
+      .exec();
   }
 
   private async revokeFamily(familyId: string): Promise<void> {
@@ -263,13 +333,13 @@ export class AuthService {
         this.redis.sMembers(refreshSet),
         this.redis.sMembers(accessSet),
       ]);
-      const ops: Promise<unknown>[] = [];
-      for (const t of refreshes || []) ops.push(this.redis.del(`${REDIS_KEY_REFRESH_TOKEN}${t}`));
-      for (const t of accesses || []) ops.push(this.redis.del(`${REDIS_KEY_ACCESS_TOKEN}${t}`));
-      ops.push(this.redis.del(refreshSet));
-      ops.push(this.redis.del(accessSet));
-      ops.push(this.redis.del(`${REDIS_KEY_SESSION_FAMILY}${familyId}`));
-      await Promise.all(ops);
+      const multi = this.redis.multi();
+      for (const t of refreshes || []) multi.del(`${REDIS_KEY_REFRESH_TOKEN}${t}`);
+      for (const t of accesses || []) multi.del(`${REDIS_KEY_ACCESS_TOKEN}${t}`);
+      multi.del(refreshSet);
+      multi.del(accessSet);
+      multi.del(`${REDIS_KEY_SESSION_FAMILY}${familyId}`);
+      await multi.exec();
     } catch (err) {
       this.logger.error(`Error revoking family ${familyId}: ${err}`);
     }

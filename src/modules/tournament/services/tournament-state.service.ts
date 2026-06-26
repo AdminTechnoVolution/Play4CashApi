@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Tournament, TournamentDocument } from '../schemas/tournament.schema';
@@ -25,6 +25,8 @@ import {
   TournamentParticipantStatus,
   TournamentStatus,
 } from '../constants/tournament.constants';
+import { TtlCache } from '../../../common/ttl-cache';
+import { logSlowEvent } from '../../../common/perf-log.util';
 
 export interface TournamentTimeProjection {
   serverNow: string;
@@ -38,6 +40,10 @@ export interface TournamentTimeProjection {
 
 @Injectable()
 export class TournamentStateService {
+  private readonly logger = new Logger(TournamentStateService.name);
+  private readonly visibleTournamentsCache = new TtlCache<TournamentDocument[]>();
+  private readonly tournamentsForUserCache = new TtlCache<any[]>();
+
   constructor(
     @InjectModel(Tournament.name) private readonly tournamentModel: Model<TournamentDocument>,
     @InjectModel(TournamentParticipant.name)
@@ -79,12 +85,16 @@ export class TournamentStateService {
   }
 
   async resolveMyActiveMatch(tournamentId: Types.ObjectId, userId: string) {
+    const startedAt = process.hrtime.bigint();
     const uid = new Types.ObjectId(userId);
     const reg = await this.participantModel
       .findOne({ tournament_id: tournamentId, user_id: uid })
       .select('status')
       .lean();
-    if (!reg) return null;
+    if (!reg) {
+      logSlowEvent(this.logger, 'tournament_active_match_trace', startedAt, 50, { found: false });
+      return null;
+    }
     const blocked = new Set<string>([
       TournamentParticipantStatus.ELIMINATED,
       TournamentParticipantStatus.FORFEITED,
@@ -92,7 +102,13 @@ export class TournamentStateService {
       TournamentParticipantStatus.RUNNER_UP,
       TournamentParticipantStatus.WINNER,
     ]);
-    if (blocked.has(reg.status)) return null;
+    if (blocked.has(reg.status)) {
+      logSlowEvent(this.logger, 'tournament_active_match_trace', startedAt, 50, {
+        found: false,
+        blocked: true,
+      });
+      return null;
+    }
 
     const match = await this.matchModel
       .findOne({
@@ -109,35 +125,42 @@ export class TournamentStateService {
       .sort({ round_index: -1, match_index: 1 })
       .lean();
 
-    if (!match) return null;
+    if (!match) {
+      logSlowEvent(this.logger, 'tournament_active_match_trace', startedAt, 50, { found: false });
+      return null;
+    }
 
     const opponentId =
       match.player_a_user_id?.toString() === userId
         ? match.player_b_user_id
         : match.player_a_user_id;
-    let opponentUsername: string | null = null;
-    if (opponentId) {
-      const opp = await this.participantModel
-        .findOne({ tournament_id: tournamentId, user_id: opponentId })
-        .select('username')
-        .lean();
-      opponentUsername = opp?.username ?? null;
-    }
-
     const roomId = match.room_id?.toString() ?? null;
     const status = match.status;
+    const [opponent, room] = await Promise.all([
+      opponentId
+        ? this.participantModel
+            .findOne({ tournament_id: tournamentId, user_id: opponentId })
+            .select('username')
+            .lean()
+        : Promise.resolve(null),
+      roomId ? this.roomModel.findById(roomId).select('status').lean() : Promise.resolve(null),
+    ]);
 
-    if (roomId) {
-      const room = await this.roomModel.findById(roomId).select('status').lean();
-      if (!room || room.status === 'finished') return null;
+    if (roomId && (!room || room.status === 'finished')) {
+      logSlowEvent(this.logger, 'tournament_active_match_trace', startedAt, 50, {
+        found: false,
+        room_finished: true,
+      });
+      return null;
     }
 
+    logSlowEvent(this.logger, 'tournament_active_match_trace', startedAt, 50, { found: true });
     return {
       matchId: match._id.toString(),
       status,
       roomId,
       roundName: match.round_name,
-      opponentUsername,
+      opponentUsername: opponent?.username ?? null,
       presenceCheckAt: match.presence_check_at?.toISOString() ?? null,
       canJoin: !!roomId && (status === TournamentMatchStatus.READY || status === TournamentMatchStatus.STARTED),
       needsLobby: status === TournamentMatchStatus.WAITING_PRESENCE,
@@ -145,6 +168,7 @@ export class TournamentStateService {
   }
 
   async toPublicDetail(t: TournamentDocument, userId?: string, langHeader?: string) {
+    const startedAt = process.hrtime.bigint();
     const lang = resolveRequestLang(langHeader);
     const time = this.buildTimeProjection(t);
     let myRegistration: {
@@ -152,10 +176,12 @@ export class TournamentStateService {
       seed?: number;
       groupNumber?: number;
     } | null = null;
+    let myActiveMatch: Awaited<ReturnType<TournamentStateService['resolveMyActiveMatch']>> = null;
     if (userId) {
-      const reg = await this.participantModel
-        .findOne({ tournament_id: t._id, user_id: new Types.ObjectId(userId) })
-        .lean();
+      const [reg, activeMatch] = await Promise.all([
+        this.participantModel.findOne({ tournament_id: t._id, user_id: new Types.ObjectId(userId) }).lean(),
+        this.resolveMyActiveMatch(t._id as Types.ObjectId, userId),
+      ]);
       if (reg) {
         myRegistration = {
           status: reg.status,
@@ -163,11 +189,12 @@ export class TournamentStateService {
           groupNumber: reg.group_number,
         };
       }
+      myActiveMatch = activeMatch;
     }
-    let myActiveMatch: Awaited<ReturnType<TournamentStateService['resolveMyActiveMatch']>> = null;
-    if (userId) {
-      myActiveMatch = await this.resolveMyActiveMatch(t._id as Types.ObjectId, userId);
-    }
+    logSlowEvent(this.logger, 'tournament_detail_trace', startedAt, 75, {
+      hasRegistration: !!myRegistration,
+      hasActiveMatch: !!myActiveMatch,
+    });
     return {
       id: t._id.toString(),
       title: pickLocalizedField(t.title, lang),
@@ -308,30 +335,36 @@ export class TournamentStateService {
   }
 
   async listForUser(userId: string, langHeader?: string) {
-    const parts = await this.participantModel
-      .find({
-        user_id: new Types.ObjectId(userId),
-        status: { $nin: [TournamentParticipantStatus.REFUNDED] },
-      })
-      .lean();
-    if (parts.length === 0) return [];
+    const startedAt = process.hrtime.bigint();
+    const cacheKey = `mine:${userId}:${resolveRequestLang(langHeader)}`;
+    const data = await this.tournamentsForUserCache.getOrSet(cacheKey, 5_000, async () => {
+      const parts = await this.participantModel
+        .find({
+          user_id: new Types.ObjectId(userId),
+          status: { $nin: [TournamentParticipantStatus.REFUNDED] },
+        })
+        .lean();
+      if (parts.length === 0) return [];
 
-    const ids = parts.map((p) => p.tournament_id);
-    const tournaments = await this.tournamentModel
-      .find({
-        _id: { $in: ids },
-        status: {
-          $nin: [
-            TournamentStatus.DRAFT,
-            TournamentStatus.CANCELLED,
-            TournamentStatus.FINISHED,
-          ],
-        },
-      })
-      .sort({ starts_at: 1 })
-      .exec();
+      const ids = parts.map((p) => p.tournament_id);
+      const tournaments = await this.tournamentModel
+        .find({
+          _id: { $in: ids },
+          status: {
+            $nin: [
+              TournamentStatus.DRAFT,
+              TournamentStatus.CANCELLED,
+              TournamentStatus.FINISHED,
+            ],
+          },
+        })
+        .sort({ starts_at: 1 })
+        .exec();
 
-    return Promise.all(tournaments.map((t) => this.toPublicDetail(t, userId, langHeader)));
+      return Promise.all(tournaments.map((t) => this.toPublicDetail(t, userId, langHeader)));
+    });
+    logSlowEvent(this.logger, 'tournament_mine_trace', startedAt, 50, { row_count: data.length });
+    return data;
   }
 
   async listHistoryForUser(userId: string, langHeader?: string) {
@@ -416,21 +449,26 @@ export class TournamentStateService {
   }
 
   async listVisible(): Promise<TournamentDocument[]> {
-    return this.tournamentModel
-      .find({
-        status: {
-          $in: [
-            TournamentStatus.OPEN,
-            TournamentStatus.FULL,
-            TournamentStatus.COUNTDOWN,
-            TournamentStatus.RUNNING,
-            TournamentStatus.BETWEEN_ROUNDS,
-            TournamentStatus.FINALS_PENDING,
-            TournamentStatus.FINALS_RUNNING,
-          ],
-        },
-      })
-      .sort({ starts_at: 1 })
-      .exec();
+    const startedAt = process.hrtime.bigint();
+    const data = await this.visibleTournamentsCache.getOrSet('visible', 5_000, async () =>
+      this.tournamentModel
+        .find({
+          status: {
+            $in: [
+              TournamentStatus.OPEN,
+              TournamentStatus.FULL,
+              TournamentStatus.COUNTDOWN,
+              TournamentStatus.RUNNING,
+              TournamentStatus.BETWEEN_ROUNDS,
+              TournamentStatus.FINALS_PENDING,
+              TournamentStatus.FINALS_RUNNING,
+            ],
+          },
+        })
+        .sort({ starts_at: 1 })
+        .exec(),
+    );
+    logSlowEvent(this.logger, 'tournament_visible_trace', startedAt, 25, { row_count: data.length });
+    return data;
   }
 }

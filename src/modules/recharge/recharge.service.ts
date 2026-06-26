@@ -5,10 +5,12 @@ import { Recharge, RechargeDocument } from './schemas/recharge.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { getDepositHistory } from '../../common/clients/binance.client';
 import Decimal from 'decimal.js';
+import { TtlCache } from '../../common/ttl-cache';
 
 @Injectable()
 export class RechargeService {
   private readonly logger = new Logger(RechargeService.name);
+  private readonly historyCache = new TtlCache<RechargeDocument[]>();
 
   constructor(
     @InjectModel(Recharge.name) private readonly rechargeModel: Model<RechargeDocument>,
@@ -23,6 +25,7 @@ export class RechargeService {
     amount: number,
     processingExpiryMins: number,
   ): Promise<{ balance: number }> {
+    this.historyCache.delete(`recharge-history:${userId}`);
     const time_processing_expires_at = new Date(Date.now() + processingExpiryMins * 60 * 1000);
 
     // Check for duplicate txId
@@ -78,16 +81,19 @@ export class RechargeService {
     });
 
     await this.saveTxMessage(userId, txId, amount, coin, 'Confirmed');
+    this.historyCache.delete(`recharge-history:${userId}`);
 
     return { balance: new Decimal(user.balance).toNumber() };
   }
 
   async getHistory(userId: string): Promise<RechargeDocument[]> {
-    return this.rechargeModel
-      .find({ user_id: new Types.ObjectId(userId) })
-      .select('amount coin status wallet network txId created_at confirmed_at')
-      .sort({ created_at: -1 })
-      .lean() as any;
+    return this.historyCache.getOrSet(`recharge-history:${userId}`, 10_000, async () =>
+      this.rechargeModel
+        .find({ user_id: new Types.ObjectId(userId) })
+        .select('amount coin status wallet network txId created_at confirmed_at')
+        .sort({ created_at: -1 })
+        .lean() as any,
+    );
   }
 
   private async saveTxMessage(
