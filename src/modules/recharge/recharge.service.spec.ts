@@ -48,7 +48,7 @@ describe('RechargeService.createRecharge', () => {
     ]);
 
     const service = new RechargeService(rechargeModel as any, userModel as any, txMessageModel as any);
-    const out = await service.createRecharge(userId, 'tx-123', 'usdt', 25, 30);
+    const out = await service.createRecharge(userId, 'tx-123', 'usdt', 30);
 
     expect(out).toEqual({ balance: 125 });
     expect(rechargeModel.create).toHaveBeenCalledWith(
@@ -99,7 +99,7 @@ describe('RechargeService.createRecharge', () => {
 
     const service = new RechargeService(rechargeModel as any, userModel as any, txMessageModel as any);
 
-    await expect(service.createRecharge(userId, 'tx-dup', 'usdt', 25, 30)).rejects.toMatchObject({
+    await expect(service.createRecharge(userId, 'tx-dup', 'usdt', 30)).rejects.toMatchObject({
       message: 'WARNING_TX_IN_PROCESS',
       statusCode: 400,
     });
@@ -125,7 +125,7 @@ describe('RechargeService.createRecharge', () => {
 
     const service = new RechargeService(rechargeModel as any, userModel as any, txMessageModel as any);
 
-    await expect(service.createRecharge(userId, 'tx-confirmed', 'usdt', 25, 30)).rejects.toMatchObject({
+    await expect(service.createRecharge(userId, 'tx-confirmed', 'usdt', 30)).rejects.toMatchObject({
       message: 'WARNING_TX_CONFIRMED',
       statusCode: 400,
     });
@@ -142,7 +142,7 @@ describe('RechargeService.createRecharge', () => {
 
     const service = new RechargeService(rechargeModel as any, userModel as any, txMessageModel as any);
 
-    await expect(service.createRecharge(userId, 'tx-missing', 'usdt', 25, 30)).rejects.toMatchObject({
+    await expect(service.createRecharge(userId, 'tx-missing', 'usdt', 30)).rejects.toMatchObject({
       message: 'WARNING_TX_NOT_FOUND',
       statusCode: 400,
     });

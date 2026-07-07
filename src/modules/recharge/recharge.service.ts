@@ -22,7 +22,6 @@ export class RechargeService {
     userId: string,
     txId: string,
     coin: string,
-    amount: number,
     processingExpiryMins: number,
   ): Promise<{ balance: number }> {
     this.historyCache.delete(`recharge-history:${userId}`);
@@ -33,13 +32,29 @@ export class RechargeService {
       this.throwDuplicateRecharge(existing);
     }
 
+    // Validate against Binance
+    let deposit: any;
+    try {
+      const deposits = await getDepositHistory({ coin: coin.toUpperCase() });
+      deposit = deposits.find((d: any) => d.txId === txId);
+      if (!deposit) throw new Error('TX not found in Binance');
+      if (deposit.coin?.toUpperCase() !== coin.toUpperCase()) throw new Error('Coin mismatch');
+      if (![1, 6].includes(deposit.status)) throw new Error(`Unexpected status: ${deposit.status}`);
+    } catch (err) {
+      this.logger.error(`Binance validation failed: ${err}`);
+      await this.saveTxMessage(userId, txId, deposit?.amount ?? 0, coin, this.toWalletFacingRechargeMessage(err));
+      throw new BusinessException('WARNING_TX_NOT_FOUND', 400);
+    }
+
+    const depositAmount = new Decimal(deposit.amount).toNumber();
+
     let recharge: RechargeDocument;
     try {
       recharge = await this.rechargeModel.create({
         user_id: new Types.ObjectId(userId),
         txId,
         coin: coin.toUpperCase(),
-        amount,
+        amount: depositAmount,
         time_processing_expires_at,
       });
     } catch (err) {
@@ -50,29 +65,13 @@ export class RechargeService {
       throw err;
     }
 
-    // Validate against Binance
-    let deposit: any;
-    try {
-      const deposits = await getDepositHistory({ coin: recharge.coin });
-      deposit = deposits.find((d: any) => d.txId === txId);
-      if (!deposit) throw new Error('TX not found in Binance');
-      if (!new Decimal(deposit.amount).equals(new Decimal(amount))) throw new Error('Amount mismatch');
-      if (deposit.coin?.toUpperCase() !== coin.toUpperCase()) throw new Error('Coin mismatch');
-      if (![1, 6].includes(deposit.status)) throw new Error(`Unexpected status: ${deposit.status}`);
-    } catch (err) {
-      this.logger.error(`Binance validation failed: ${err}`);
-      await this.rechargeModel.deleteOne({ _id: recharge._id });
-      await this.saveTxMessage(userId, txId, amount, coin, this.toWalletFacingRechargeMessage(err));
-      throw new BusinessException('WARNING_TX_NOT_FOUND', 400);
-    }
-
     // Atomically credit balance
     const user = await this.userModel.findByIdAndUpdate(
       userId,
       {
         $inc: {
-          balance: amount,
-          total_recharged: amount,
+          balance: depositAmount,
+          total_recharged: depositAmount,
         },
       },
       { returnDocument: 'after' },
@@ -90,7 +89,7 @@ export class RechargeService {
       },
     });
 
-    await this.saveTxMessage(userId, txId, amount, coin, 'Confirmed');
+    await this.saveTxMessage(userId, txId, depositAmount, coin, 'Confirmed');
     this.historyCache.delete(`recharge-history:${userId}`);
 
     return { balance: new Decimal(user.balance).toNumber() };
