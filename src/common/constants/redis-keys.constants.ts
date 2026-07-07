@@ -10,3 +10,5 @@ export const REDIS_KEY_FAMILY_ACCESSES = 'familyAccesses:';
 export const REDIS_KEY_APP_VERSION_DAILY = 'appVersionDaily:';
 /** Hash<dayKey> stale-client counters (client < PWA_MIN_VERSION). Field = version, value = count. */
 export const REDIS_KEY_APP_VERSION_STALE = 'appVersionStale:';
+/** Per-user withdrawal lock to serialize initiate/verify flows for the same player. */
+export const REDIS_KEY_WITHDRAWAL_USER_LOCK = 'withdrawalUserLock:';

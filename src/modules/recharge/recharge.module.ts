@@ -4,9 +4,11 @@ import { RechargeController } from './recharge.controller';
 import { RechargeService } from './recharge.service';
 import { Recharge, RechargeSchema } from './schemas/recharge.schema';
 import { User, UserSchema } from '../user/schemas/user.schema';
+import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
 
 @Module({
   imports: [
+    IdempotencyModule,
     MongooseModule.forFeature([
       { name: Recharge.name, schema: RechargeSchema },
       { name: User.name, schema: UserSchema },
