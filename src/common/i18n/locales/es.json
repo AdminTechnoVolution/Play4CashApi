@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Algo salió mal. Inténtalo más tarde",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Demasiadas solicitudes. Inténtalo más tarde.",
     "ERROR_BAD_REQUEST_RESPONSE": "Solicitud incorrecta. No se pudo procesar los datos enviados",
     "ERROR_LOGIN": "No se pudó iniciar sesión. Intenta nuevamente o restablece tu contraseña",
     "ERROR_VERIFICATIONCODE_RESPONSE": "No se pudo completar la verificación. Intenta nuevamente",
@@ -10,7 +11,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "El usuario ya tiene un retiro en proceso de verificación.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "No cuentas con saldo suficiente para realizar este retiro",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "No cuentas con el saldo suficiente para realizar esta apuesta",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "Las salas de UNO deben usar un número par de jugadores: 2, 4, 6, 8 o 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Ya estás en una sala activa. Termina o sal de la partida actual antes de unirte a otra.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "No cumple con el monto mínimo de retiro",
     "ERROR_WITHDRAWAL_CODE_INVALID": "El código de verificación es inválido o ha expirado",
@@ -194,5 +194,7 @@
     "ws.domino.opponentDrew": "{{username}} tomó una ficha.",
     "ws.domino.passed": "Pasaste tu turno.",
     "ws.domino.opponentPassed": "{{username}} pasó su turno.",
-    "ws.domino.boneyardEmpty": "¡El pozo está vacío! Debes pasar si no tienes movimientos."
+    "ws.domino.boneyardEmpty": "¡El pozo está vacío! Debes pasar si no tienes movimientos.",
+    "SUCCESS_CONTACT_SUBMITTED": "Tu mensaje se envió correctamente. Nuestro equipo lo revisará pronto.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Selecciona al menos un juego o elige \"Todos los juegos\"."
 }

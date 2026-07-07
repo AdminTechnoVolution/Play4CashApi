@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Algo deu errado. Tente novamente mais tarde",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Muitas solicitações. Tente novamente mais tarde.",
     "ERROR_BAD_REQUEST_RESPONSE": "Requisição inválida. Não foi possível processar os dados enviados",
     "ERROR_LOGIN": "Falha no login. Tente novamente ou redefina sua senha",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Não foi possível concluir a verificação. Tente novamente",
@@ -10,7 +11,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "O usuário já possui um saque aguardando verificação.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Você não tem saldo suficiente para realizar este saque",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "Você não tem saldo suficiente para fazer esta aposta",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "Salas de UNO devem usar número par de jogadores: 2, 4, 6, 8 ou 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Você já está em uma sala ativa. Termine ou saia da partida atual antes de entrar em outra.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Não atinge o valor mínimo de saque",
     "ERROR_WITHDRAWAL_CODE_INVALID": "O código de verificação é inválido ou expirou",
@@ -194,5 +194,7 @@
     "ws.domino.opponentDrew": "{{username}} pegou uma peça.",
     "ws.domino.passed": "Você passou a vez.",
     "ws.domino.opponentPassed": "{{username}} passou a vez.",
-    "ws.domino.boneyardEmpty": "O poço está vazio! Você deve passar se não tiver jogadas."
+    "ws.domino.boneyardEmpty": "O poço está vazio! Você deve passar se não tiver jogadas.",
+    "SUCCESS_CONTACT_SUBMITTED": "Sua mensagem foi enviada com sucesso. Nossa equipe irá analisá-la em breve.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Selecione pelo menos um jogo ou escolha \"Todos os jogos\"."
 }

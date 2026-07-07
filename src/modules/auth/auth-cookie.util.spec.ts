@@ -3,10 +3,14 @@ import type { Response } from 'express';
 import {
   readCookieFromHeader,
   refreshCookieName,
+  accessCookieName,
   buildRefreshCookieOptions,
+  buildAccessCookieOptions,
   buildClearRefreshCookieOptions,
   setRefreshCookie,
+  setAccessCookie,
   clearRefreshCookie,
+  clearAccessCookie,
 } from './auth-cookie.util';
 
 function configMock(values: Record<string, unknown>): ConfigService {
@@ -49,6 +53,12 @@ describe('auth-cookie.util', () => {
     });
   });
 
+  describe('accessCookieName', () => {
+    it('reads from config', () => {
+      expect(accessCookieName(configMock({ 'auth.accessCookieName': 'p4c_at' }))).toBe('p4c_at');
+    });
+  });
+
   describe('buildRefreshCookieOptions', () => {
     it('returns httpOnly options with TTL in ms', () => {
       const opts = buildRefreshCookieOptions(
@@ -56,6 +66,7 @@ describe('auth-cookie.util', () => {
           'jwt.refreshTtlSecs': 60,
           'auth.refreshCookieSameSite': 'lax',
           'auth.refreshCookieSecure': false,
+          'auth.cookieDomain': 'techno-volution.com',
         }),
       );
       expect(opts).toMatchObject({
@@ -64,6 +75,7 @@ describe('auth-cookie.util', () => {
         sameSite: 'lax',
         path: '/',
         maxAge: 60_000,
+        domain: 'techno-volution.com',
       });
     });
     it('forces secure=true when sameSite=none', () => {
@@ -72,10 +84,32 @@ describe('auth-cookie.util', () => {
           'jwt.refreshTtlSecs': 1,
           'auth.refreshCookieSameSite': 'none',
           'auth.refreshCookieSecure': false,
+          'auth.cookieDomain': 'techno-volution.com',
         }),
       );
       expect(opts.secure).toBe(true);
       expect(opts.sameSite).toBe('none');
+    });
+  });
+
+  describe('buildAccessCookieOptions', () => {
+    it('returns httpOnly options with access TTL in ms', () => {
+      const opts = buildAccessCookieOptions(
+        configMock({
+          'jwt.accessTtlSecs': 90,
+          'auth.refreshCookieSameSite': 'lax',
+          'auth.refreshCookieSecure': false,
+          'auth.cookieDomain': 'techno-volution.com',
+        }),
+      );
+      expect(opts).toMatchObject({
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 90_000,
+        domain: 'techno-volution.com',
+      });
     });
   });
 
@@ -85,6 +119,7 @@ describe('auth-cookie.util', () => {
         configMock({
           'auth.refreshCookieSameSite': 'strict',
           'auth.refreshCookieSecure': true,
+          'auth.cookieDomain': 'techno-volution.com',
         }),
       );
       expect(opts).toEqual({
@@ -92,6 +127,7 @@ describe('auth-cookie.util', () => {
         secure: true,
         sameSite: 'strict',
         path: '/',
+        domain: 'techno-volution.com',
       });
     });
   });
@@ -102,6 +138,7 @@ describe('auth-cookie.util', () => {
       'jwt.refreshTtlSecs': 30,
       'auth.refreshCookieSameSite': 'lax',
       'auth.refreshCookieSecure': false,
+      'auth.cookieDomain': 'techno-volution.com',
     });
 
     it('sets the named cookie with refresh options', () => {
@@ -113,6 +150,27 @@ describe('auth-cookie.util', () => {
       const res = resMock();
       clearRefreshCookie(res, cfg);
       expect(res.clearCookie).toHaveBeenCalledWith('p4c_rt', expect.objectContaining({ httpOnly: true }));
+    });
+  });
+
+  describe('setAccessCookie / clearAccessCookie', () => {
+    const cfg = configMock({
+      'auth.accessCookieName': 'p4c_at',
+      'jwt.accessTtlSecs': 30,
+      'auth.refreshCookieSameSite': 'lax',
+      'auth.refreshCookieSecure': false,
+      'auth.cookieDomain': 'techno-volution.com',
+    });
+
+    it('sets the named cookie with access options', () => {
+      const res = resMock();
+      setAccessCookie(res, cfg, 'tok');
+      expect(res.cookie).toHaveBeenCalledWith('p4c_at', 'tok', expect.objectContaining({ httpOnly: true }));
+    });
+    it('clears the named cookie with clear options', () => {
+      const res = resMock();
+      clearAccessCookie(res, cfg);
+      expect(res.clearCookie).toHaveBeenCalledWith('p4c_at', expect.objectContaining({ httpOnly: true }));
     });
   });
 });

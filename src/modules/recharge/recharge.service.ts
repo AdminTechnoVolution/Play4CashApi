@@ -5,11 +5,12 @@ import { Recharge, RechargeDocument } from './schemas/recharge.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { getDepositHistory } from '../../common/clients/binance.client';
 import Decimal from 'decimal.js';
+import { TtlCache } from '../../common/ttl-cache';
 
 @Injectable()
 export class RechargeService {
   private readonly logger = new Logger(RechargeService.name);
-  private readonly pendingWalletMessage = 'The transaction has not appeared in our wallet yet. Please try again later.';
+  private readonly historyCache = new TtlCache<RechargeDocument[]>();
 
   constructor(
     @InjectModel(Recharge.name) private readonly rechargeModel: Model<RechargeDocument>,
@@ -24,28 +25,25 @@ export class RechargeService {
     amount: number,
     processingExpiryMins: number,
   ): Promise<{ balance: number }> {
+    this.historyCache.delete(`recharge-history:${userId}`);
     const time_processing_expires_at = new Date(Date.now() + processingExpiryMins * 60 * 1000);
 
-    let recharge: any;
-    try {
-      // Let Mongo enforce the unique txId index atomically.
-      recharge = await this.rechargeModel.create({
-        user_id: new Types.ObjectId(userId),
-        txId,
-        coin: coin.toUpperCase(),
-        amount,
-        time_processing_expires_at,
-      });
-    } catch (err) {
-      if (this.isDuplicateTxIdError(err)) {
-        const existing = await this.rechargeModel.findOne({ txId }).lean();
-        throw new BusinessException(
-          existing?.status === 'confirmed' ? 'WARNING_TX_CONFIRMED' : 'WARNING_TX_IN_PROCESS',
-          400,
-        );
-      }
-      throw err;
+    // Check for duplicate txId
+    const existing = await this.rechargeModel.findOne({ txId });
+    if (existing) {
+      throw new BusinessException(
+        existing.status === 'confirmed' ? 'WARNING_TX_CONFIRMED' : 'WARNING_TX_IN_PROCESS',
+        400,
+      );
     }
+
+    const recharge = await this.rechargeModel.create({
+      user_id: new Types.ObjectId(userId),
+      txId,
+      coin: coin.toUpperCase(),
+      amount,
+      time_processing_expires_at,
+    });
 
     // Validate against Binance
     let deposit: any;
@@ -59,7 +57,7 @@ export class RechargeService {
     } catch (err) {
       this.logger.error(`Binance validation failed: ${err}`);
       await this.rechargeModel.deleteOne({ _id: recharge._id });
-      await this.saveTxMessage(userId, txId, amount, coin, this.pendingWalletMessage);
+      await this.saveTxMessage(userId, txId, amount, coin, String(err));
       throw new BusinessException('WARNING_TX_NOT_FOUND', 400);
     }
 
@@ -76,28 +74,26 @@ export class RechargeService {
     );
 
     await this.rechargeModel.findByIdAndUpdate(recharge._id, {
-      $set: {
-        wallet: deposit.address,
-        network: deposit.network,
-        status: 'confirmed',
-        confirmed_at: new Date(),
-      },
-      $unset: {
-        time_processing_expires_at: '',
-      },
+      wallet: deposit.address,
+      network: deposit.network,
+      status: 'confirmed',
+      time_processing_expires_at: undefined,
     });
 
     await this.saveTxMessage(userId, txId, amount, coin, 'Confirmed');
+    this.historyCache.delete(`recharge-history:${userId}`);
 
     return { balance: new Decimal(user.balance).toNumber() };
   }
 
   async getHistory(userId: string): Promise<RechargeDocument[]> {
-    return this.rechargeModel
-      .find({ user_id: new Types.ObjectId(userId) })
-      .select('amount coin status wallet network txId created_at confirmed_at')
-      .sort({ created_at: -1 })
-      .lean() as any;
+    return this.historyCache.getOrSet(`recharge-history:${userId}`, 10_000, async () =>
+      this.rechargeModel
+        .find({ user_id: new Types.ObjectId(userId) })
+        .select('amount coin status wallet network txId created_at confirmed_at')
+        .sort({ created_at: -1 })
+        .lean() as any,
+    );
   }
 
   private async saveTxMessage(
@@ -112,16 +108,5 @@ export class RechargeService {
     } catch (err) {
       this.logger.error(`Error saving tx message: ${err}`);
     }
-  }
-
-  private isDuplicateTxIdError(err: any): boolean {
-    if (!err) return false;
-    if (err.code !== 11000) return false;
-
-    const keyPattern = err.keyPattern || {};
-    const keyValue = err.keyValue || {};
-    if (keyPattern.txId || keyValue.txId !== undefined) return true;
-
-    return typeof err.message === 'string' && err.message.includes('txId');
   }
 }

@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Something went wrong. Please try again later",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Too many requests. Please try again later.",
     "ERROR_BAD_REQUEST_RESPONSE": "Bad request. Could not process the sent data",
     "ERROR_LOGIN": "Failed to log in. Please try again or reset your password",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Verification could not be completed. Please try again",
@@ -10,7 +11,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "The user already has a withdrawal pending verification.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "You do not have sufficient balance to make this withdrawal",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "You do not have sufficient balance to place this bet",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "UNO rooms must use an even player count: 2, 4, 6, 8, or 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "You are already in an active room. Finish or leave the current match before joining another.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Does not meet the minimum withdrawal amount",
     "ERROR_WITHDRAWAL_CODE_INVALID": "The verification code is invalid or has expired",
@@ -194,5 +194,7 @@
     "ws.domino.opponentDrew": "{{username}} drew a tile.",
     "ws.domino.passed": "You passed your turn.",
     "ws.domino.opponentPassed": "{{username}} passed their turn.",
-    "ws.domino.boneyardEmpty": "Boneyard is empty! You must pass if you have no moves."
+    "ws.domino.boneyardEmpty": "Boneyard is empty! You must pass if you have no moves.",
+    "SUCCESS_CONTACT_SUBMITTED": "Your message has been sent successfully. Our team will review it soon.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Please select at least one game or choose \"All games\"."
 }

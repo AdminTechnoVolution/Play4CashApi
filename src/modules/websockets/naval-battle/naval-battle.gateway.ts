@@ -9,6 +9,7 @@ import { TurnDeadlineService } from '../../../common/turn-deadline/turn-deadline
 import { ConfigService } from '@nestjs/config';
 import { Server, Socket } from 'socket.io';
 import { Model, Types } from 'mongoose';
+import { buildWebSocketCorsOptions } from '../../../common/cors/origin-policy';
 import { applyWsAuth } from '../../../common/guards/ws-auth.middleware';
 import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { BattleshipPlacement, BattleshipPlacementDocument } from '../../naval-battle/schemas/battleship-placement.schema';
@@ -21,7 +22,7 @@ import { TournamentMatchService } from '../../tournament/services/tournament-mat
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
 
-@WebSocketGateway({ namespace: '/naval-battle', cors: { origin: '*', credentials: true } })
+@WebSocketGateway({ namespace: '/naval-battle', cors: buildWebSocketCorsOptions() })
 export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(NavalBattleGateway.name);
@@ -214,6 +215,11 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     await this.grace.cancel('naval-battle', player_id);
 
     await this.syncPlayerState(client, room_id, player_id);
+  }
+
+  @SubscribeMessage('get_state')
+  async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
+    await this.syncPlayerState(client, payload?.room_id || client.data.room_id, client.data.player_id);
   }
 
   private async syncPlayerState(client: Socket, room_id: string, player_id: string) {

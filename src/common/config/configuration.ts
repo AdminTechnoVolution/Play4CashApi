@@ -14,8 +14,22 @@ export default () => ({
   auth: {
     /** HttpOnly cookie for refresh token (browser clients). Name must match PWA expectations if overridden. */
     refreshCookieName: process.env.AUTH_REFRESH_COOKIE_NAME || 'p4c_refresh',
-    /** Use `none` when the SPA is on a different site than the API (requires secure cookies). */
-    refreshCookieSameSite: (process.env.AUTH_REFRESH_COOKIE_SAMESITE || 'lax') as 'lax' | 'strict' | 'none',
+    /** HttpOnly cookie for access token (browser clients). */
+    accessCookieName: process.env.AUTH_ACCESS_COOKIE_NAME || 'p4c_access',
+    /**
+     * Optional cookie domain shared across subdomains (e.g. techno-volution.com).
+     * Leave empty for host-only cookies in local dev.
+     */
+    cookieDomain: (process.env.AUTH_COOKIE_DOMAIN || '').trim() || undefined,
+    /**
+     * Cross-site browser auth needs `none` so the cookie is sent on XHR/fetch.
+     * Production forces `none` unless an explicit `strict` override is desired for
+     * a same-site deployment. Local dev defaults to `lax`.
+     */
+    refreshCookieSameSite: resolveCookieSameSite(
+      process.env.AUTH_REFRESH_COOKIE_SAMESITE,
+      process.env.NODE_ENV === 'production',
+    ),
     refreshCookieSecure:
       process.env.AUTH_REFRESH_COOKIE_SECURE === 'true' ||
       process.env.NODE_ENV === 'production',
@@ -60,6 +74,10 @@ export default () => ({
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  throttle: {
+    ttlMs: parsePositiveInt(process.env.THROTTLE_TTL_MS, 60_000),
+    limit: parsePositiveInt(process.env.THROTTLE_LIMIT, 50),
+  },
   webPush: {
     publicKey: (process.env.VAPID_PUBLIC_KEY || '').trim(),
     privateKey: (process.env.VAPID_PRIVATE_KEY || '').trim(),
@@ -82,7 +100,25 @@ export default () => ({
   },
 });
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
 function clamp01(n: number): number {
   if (Number.isNaN(n)) return 0;
   return Math.min(1, Math.max(0, n));
+}
+
+function resolveCookieSameSite(
+  raw: string | undefined,
+  isProduction: boolean,
+): 'lax' | 'strict' | 'none' {
+  const normalized = (raw || '').trim().toLowerCase();
+  if (normalized === 'strict') return 'strict';
+  if (normalized === 'none') return 'none';
+  if (isProduction) return 'none';
+  return 'lax';
 }

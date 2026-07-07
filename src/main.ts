@@ -6,10 +6,12 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
+import { createRequestId, runWithRequestContext } from './common/request-context';
 import { createStripUntrustedGatewayUserMiddleware } from './common/middleware/strip-untrusted-gateway-user.middleware';
 import { createAppVersionHeadersMiddleware } from './common/middleware/app-version-headers.middleware';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 import { SOCKET_IO_PING_OPTIONS } from './common/constants/socket-io.constants';
+import { createOriginChecker } from './common/cors/origin-policy';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -31,11 +33,20 @@ async function bootstrap(): Promise<void> {
     }
     const redisIoAdapter = new RedisIoAdapter(app);
     await redisIoAdapter.connectToRedis(redisUri);
-    app.useWebSocketAdapter(redisIoAdapter);
+    app.useWebSocketAdapter(redisIoAdapter as any);
     console.log('[Socket.IO] Redis adapter enabled');
   }
 
   app.set('trust proxy', 1);
+
+  app.use((req: any, res: any, next: any) => {
+    const requestId = createRequestId(req.headers['x-request-id']);
+    req.headers['x-request-id'] = requestId;
+    if (typeof res.setHeader === 'function') {
+      res.setHeader('x-request-id', requestId);
+    }
+    runWithRequestContext(requestId, () => next());
+  });
 
   // ─── Security Headers ─────────────────────────────────────────────────────
   app.use(helmet());
@@ -50,21 +61,28 @@ async function bootstrap(): Promise<void> {
   app.use((req: any, _res: any, next: any) => {
     const method = req.method;
     const url = req.url;
+    const requestId = req.headers['x-request-id'] || 'n/a';
     const gatewayCtx = req.headers['x-gateway-user'] ? 'present' : 'absent';
     const bodySize = req.headers['content-length'] || '0';
     const contentType = req.headers['content-type'] || 'None';
     const startTime = Date.now();
 
-    console.log(`[Tracer] INCOMING: ${method} ${url} | Size=${bodySize} | Type=${contentType} | GatewayCtx=${gatewayCtx}`);
+    console.log(
+      `[Tracer] INCOMING: reqId=${requestId} ${method} ${url} | Size=${bodySize} | Type=${contentType} | GatewayCtx=${gatewayCtx}`,
+    );
 
     _res.on('finish', () => {
       const duration = Date.now() - startTime;
-      console.log(`[Tracer] COMPLETED: ${method} ${url} | Status=${_res.statusCode} | Duration=${duration}ms`);
+      console.log(
+        `[Tracer] COMPLETED: reqId=${requestId} ${method} ${url} | Status=${_res.statusCode} | Duration=${duration}ms`,
+      );
     });
 
     _res.on('close', () => {
       if (!_res.writableFinished) {
-        console.warn(`[Tracer] CLOSED PREMATURELY: ${method} ${url} | Duration=${Date.now() - startTime}ms`);
+        console.warn(
+          `[Tracer] CLOSED PREMATURELY: reqId=${requestId} ${method} ${url} | Duration=${Date.now() - startTime}ms`,
+        );
       }
     });
 
@@ -83,15 +101,13 @@ async function bootstrap(): Promise<void> {
 
   // ─── CORS ─────────────────────────────────────────────────────────────────
   const allowedOrigins = config.get<string[]>('cors.allowedOrigins') || [];
+  if (nodeEnv === 'production' && allowedOrigins.length === 0) {
+    throw new Error(
+      'API: ALLOWED_ORIGINS must list at least one origin when NODE_ENV=production (credentials are enabled).',
+    );
+  }
   app.enableCors({
-    origin: (origin: string | undefined, callback: Function) => {
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        // Return false (403) without throwing — avoids polluting the error logs
-        callback(null, false);
-      }
-    },
+    origin: createOriginChecker(allowedOrigins, { failClosedWhenEmpty: nodeEnv === 'production' }),
     credentials: true,
     // Expose so browser JS (PWA) can read the app version contract header.
     exposedHeaders: ['X-App-Min-Version'],
@@ -138,4 +154,3 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap();
-

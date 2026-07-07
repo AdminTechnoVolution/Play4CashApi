@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Une erreur s'est produite. Veuillez réessayer plus tard",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Trop de requêtes. Veuillez réessayer plus tard.",
     "ERROR_BAD_REQUEST_RESPONSE": "Mauvaise requête. Impossible de traiter les données envoyées",
     "ERROR_LOGIN": "Échec de la connexion. Veuillez réessayer ou réinitialiser votre mot de passe",
     "ERROR_VERIFICATIONCODE_RESPONSE": "La vérification n'a pas pu être effectuée. Veuillez réessayer",
@@ -10,7 +11,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "L'utilisateur a déjà un retrait en attente de vérification.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Vous n'avez pas assez de solde pour effectuer ce retrait",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "Vous n'avez pas assez de solde pour placer ce pari",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "Les salles UNO doivent avoir un nombre pair de joueurs : 2, 4, 6, 8 ou 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Vous êtes déjà dans une salle active. Terminez ou quittez la partie en cours avant d'en rejoindre une autre.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Le montant ne respecte pas le minimum de retrait",
     "ERROR_WITHDRAWAL_CODE_INVALID": "Le code de vérification est invalide ou a expiré",
@@ -194,5 +194,7 @@
     "ws.domino.opponentDrew": "{{username}} a tiré une tuile.",
     "ws.domino.passed": "Vous avez passé votre tour.",
     "ws.domino.opponentPassed": "{{username}} a passé son tour.",
-    "ws.domino.boneyardEmpty": "La pioche est vide ! Vous devez passer si vous n'avez pas de mouvements."
+    "ws.domino.boneyardEmpty": "La pioche est vide ! Vous devez passer si vous n'avez pas de mouvements.",
+    "SUCCESS_CONTACT_SUBMITTED": "Votre message a été envoyé avec succès. Notre équipe l'examinera bientôt.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Veuillez sélectionner au moins un jeu ou choisir « Tous les jeux »."
 }

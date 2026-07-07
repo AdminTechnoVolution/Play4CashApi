@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Qualcosa è andato storto. Riprova più tardi",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Troppe richieste. Riprova più tardi.",
     "ERROR_BAD_REQUEST_RESPONSE": "Richiesta errata. Impossibile elaborare i dati inviati",
     "ERROR_LOGIN": "Accesso fallito. Riprova o reimposta la password",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Impossibile completare la verifica. Riprova",
@@ -10,7 +11,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "L'utente ha già un prelievo in attesa di verifica.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Non hai un saldo sufficiente per effettuare questo prelievo",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "Non hai un saldo sufficiente per piazzare questa scommessa",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "Le stanze UNO devono avere un numero pari di giocatori: 2, 4, 6, 8 o 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Sei già in una stanza attiva. Termina o esci dalla partita in corso prima di entrare in un'altra.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Non soddisfa l'importo minimo di prelievo",
     "ERROR_WITHDRAWAL_CODE_INVALID": "Il codice di verifica non è valido o è scaduto",
@@ -194,5 +194,7 @@
     "ws.domino.opponentDrew": "{{username}} ha pescato una tessera.",
     "ws.domino.passed": "Hai passato il turno.",
     "ws.domino.opponentPassed": "{{username}} ha passato il turno.",
-    "ws.domino.boneyardEmpty": "Il cimitero è vuoto! Devi passare se non hai mosse."
+    "ws.domino.boneyardEmpty": "Il cimitero è vuoto! Devi passare se non hai mosse.",
+    "SUCCESS_CONTACT_SUBMITTED": "Il tuo messaggio è stato inviato con successo. Il nostro team lo esaminerà a breve.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Seleziona almeno un gioco o scegli \"Tutti i giochi\"."
 }

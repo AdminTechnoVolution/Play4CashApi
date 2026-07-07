@@ -2,12 +2,12 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import configuration from './common/config/configuration';
 import { RedisModule } from './common/redis/redis.module';
 import { AuthGuard } from './common/guards/auth.guard';
+import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AuthModule } from './modules/auth/auth.module';
@@ -29,6 +29,7 @@ import { TurnDeadlineModule } from './common/turn-deadline/turn-deadline.module'
 import { WebPushModule } from './common/web-push/web-push.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { TournamentModule } from './modules/tournament/tournament.module';
+import { ContactUsModule } from './modules/contact-us/contact-us.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -63,10 +64,6 @@ import { TournamentModule } from './modules/tournament/tournament.module';
     // ─── Scheduling (cron jobs) ───────────────────────────────────────────────
     ScheduleModule.forRoot(),
 
-    // ─── Rate Limiting (global) ───────────────────────────────────────────────
-    // Per-route overrides use @Throttle(). Auth-sensitive routes use stricter limits in controllers.
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
-
     // Feature Modules
     TxMessageModule,
     AuthModule,
@@ -87,9 +84,10 @@ import { TournamentModule } from './modules/tournament/tournament.module';
     WebPushModule,
     IdempotencyModule,
     TournamentModule,
+    ContactUsModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },

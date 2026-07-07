@@ -1,5 +1,6 @@
 {
     "ERROR_GENERIC_RESPONSE": "Etwas ist schief gelaufen. Bitte versuchen Sie es später noch einmal",
+    "ERROR_RATE_LIMIT_EXCEEDED": "Zu viele Anfragen. Bitte versuchen Sie es später noch einmal.",
     "ERROR_BAD_REQUEST_RESPONSE": "Ungültige Anfrage. Die gesendeten Daten konnten nicht verarbeitet werden",
     "ERROR_LOGIN": "Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut oder setzen Sie Ihr Passwort zurück",
     "ERROR_VERIFICATIONCODE_RESPONSE": "Die Verifizierung konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut",
@@ -10,7 +11,6 @@
     "ERROR_WITHDRAWAL_PENDING_VERIFY": "Der Benutzer hat bereits eine Auszahlung, die auf die Verifizierung wartet.",
     "ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE": "Sie haben nicht genügend Guthaben, um diese Auszahlung vorzunehmen",
     "ERROR_GAME_INSUFFICIENT_BALANCE": "Sie haben nicht genügend Guthaben, um diesen Einsatz zu platzieren",
-    "ERROR_UNO_INVALID_PLAYER_LIMIT": "UNO-Räume müssen eine gerade Spieleranzahl haben: 2, 4, 6, 8 oder 10.",
     "ERROR_USER_ALREADY_IN_ROOM": "Du bist bereits in einem aktiven Raum. Beende oder verlasse das aktuelle Spiel, bevor du einem anderen beitrittst.",
     "ERROR_WITHDRAWAL_AMOUNT_MINIMUM": "Entspricht nicht dem Mindestauszahlungsbetrag",
     "ERROR_WITHDRAWAL_CODE_INVALID": "Der Verifizierungscode ist ungültig oder abgelaufen",
@@ -194,5 +194,7 @@
     "ws.domino.opponentDrew": "{{username}} hat einen Stein gezogen.",
     "ws.domino.passed": "Du hast gepasst.",
     "ws.domino.opponentPassed": "{{username}} hat gepasst.",
-    "ws.domino.boneyardEmpty": "Der Talon ist leer! Du musst passen, wenn du keine Züge hast."
+    "ws.domino.boneyardEmpty": "Der Talon ist leer! Du musst passen, wenn du keine Züge hast.",
+    "SUCCESS_CONTACT_SUBMITTED": "Ihre Nachricht wurde erfolgreich gesendet. Unser Team wird sie in Kürze prüfen.",
+    "ERROR_CONTACT_GAMES_REQUIRED": "Bitte wählen Sie mindestens ein Spiel aus oder wählen Sie „Alle Spiele“."
 }

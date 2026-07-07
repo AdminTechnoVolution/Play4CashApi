@@ -32,9 +32,32 @@ export function createStripUntrustedGatewayUserMiddleware(config: ConfigService)
     const hasTrustConfig = !!secret || trustedIps.length > 0;
     if (!hasTrustConfig || !trusted) {
       delete headers['x-gateway-user'];
+      delete (req as Record<string, unknown>).gatewayTrusted;
+      delete (req as Record<string, unknown>).gatewayUser;
+      delete (req as Record<string, unknown>).user;
+    } else {
+      const gatewayUser = parseGatewayUser(headers['x-gateway-user']);
+      if (gatewayUser) {
+        (req as Record<string, unknown>).gatewayTrusted = true;
+        (req as Record<string, unknown>).gatewayUser = gatewayUser;
+        (req as Record<string, unknown>).user = gatewayUser;
+      }
     }
 
     delete headers[trustHeaderName];
     next();
   };
+}
+
+function parseGatewayUser(value: string | string[] | undefined): Record<string, unknown> | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
 }

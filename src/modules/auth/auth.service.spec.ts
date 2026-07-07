@@ -2,6 +2,7 @@ import * as jwt from 'jsonwebtoken';
 import { AuthService } from './auth.service';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import {
+  REDIS_KEY_ACCESS_TOKEN,
   REDIS_KEY_REFRESH_TOKEN,
   REDIS_KEY_SESSION_FAMILY,
   REDIS_KEY_FAMILY_REFRESHES,
@@ -15,6 +16,11 @@ import {
 function createRedisMock() {
   const strings = new Map<string, string>();
   const sets = new Map<string, Set<string>>();
+  const removeKey = (key: string) => {
+    const stringDeleted = strings.delete(key);
+    const setDeleted = sets.delete(key);
+    return stringDeleted || setDeleted ? 1 : 0;
+  };
   return {
     strings,
     sets,
@@ -23,11 +29,7 @@ function createRedisMock() {
       return 'OK';
     }),
     get: jest.fn(async (key: string) => strings.get(key) ?? null),
-    del: jest.fn(async (key: string) => {
-      const a = strings.delete(key);
-      const b = sets.delete(key);
-      return a || b ? 1 : 0;
-    }),
+    del: jest.fn(async (key: string) => removeKey(key)),
     exists: jest.fn(async (key: string) => (strings.has(key) || sets.has(key) ? 1 : 0)),
     sAdd: jest.fn(async (key: string, value: string) => {
       if (!sets.has(key)) sets.set(key, new Set());
@@ -40,6 +42,30 @@ function createRedisMock() {
     }),
     sMembers: jest.fn(async (key: string) => Array.from(sets.get(key) ?? [])),
     expire: jest.fn(async (_key: string, _ttl: number) => 1),
+    multi: jest.fn(() => {
+      const chain = {
+        del: jest.fn((key: string) => {
+          removeKey(key);
+          return chain;
+        }),
+        setEx: jest.fn((key: string, _ttl: number, value: string) => {
+          strings.set(key, value);
+          return chain;
+        }),
+        sAdd: jest.fn((key: string, value: string) => {
+          if (!sets.has(key)) sets.set(key, new Set());
+          sets.get(key)!.add(value);
+          return chain;
+        }),
+        sRem: jest.fn((key: string, value: string) => {
+          sets.get(key)?.delete(value);
+          return chain;
+        }),
+        expire: jest.fn((_key: string, _ttl: number) => chain),
+        exec: jest.fn(async () => []),
+      };
+      return chain;
+    }),
   };
 }
 
@@ -125,6 +151,8 @@ describe('AuthService.refreshToken', () => {
     expect(out.data.refreshToken).not.toBe(refresh);
 
     expect(redis.strings.has(`${REDIS_KEY_REFRESH_TOKEN}${refresh}`)).toBe(false);
+    expect(redis.strings.has(`${REDIS_KEY_REFRESH_TOKEN}${out.data.refreshToken}`)).toBe(true);
+    expect(redis.strings.has(`${REDIS_KEY_ACCESS_TOKEN}${out.data.token}`)).toBe(true);
     const family = JSON.parse(redis.strings.get(`${REDIS_KEY_SESSION_FAMILY}fam-1`)!);
     expect(family.currentJti).not.toBe('jti-1');
   });

@@ -6,6 +6,7 @@ import { Socket } from 'socket.io';
 import { REDIS_CLIENT } from '../redis/redis.module';
 import { Inject } from '@nestjs/common';
 import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
+import { accessCookieName, readCookieFromHeader } from '../../modules/auth/auth-cookie.util';
 
 @Injectable()
 export class WsAuthGuard implements CanActivate {
@@ -16,7 +17,12 @@ export class WsAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const client: Socket = context.switchToWs().getClient();
+    const cookieToken = readCookieFromHeader(
+      client.handshake.headers?.cookie as string | undefined,
+      accessCookieName(this.config),
+    );
     let token: string =
+      cookieToken ||
       client.handshake.auth?.token ||
       client.handshake.query?.token as string ||
       client.handshake.headers?.authorization || '';

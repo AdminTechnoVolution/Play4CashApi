@@ -12,6 +12,7 @@ import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { REDIS_CLIENT } from '../redis/redis.module';
 import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
 import { jwtVerifyOptions, isAccessTokenPayload } from '../auth/jwt-token.util';
+import { accessCookieName, readCookieFromHeader } from '../../modules/auth/auth-cookie.util';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -29,10 +30,15 @@ export class AuthGuard implements CanActivate {
     if (isPublic) return true;
 
     const request = context.switchToHttp().getRequest();
+    if (request.gatewayTrusted && request.user) {
+      return true;
+    }
+
     const authHeader: string = request.headers['authorization'] || '';
-    const token = authHeader.startsWith('Bearer ')
+    const cookieToken = readCookieFromHeader(request.headers.cookie, accessCookieName(this.config));
+    const token = cookieToken || (authHeader.startsWith('Bearer ')
       ? authHeader.slice(7)
-      : authHeader;
+      : authHeader);
 
     if (!token) throw new UnauthorizedException('ERROR_AUTH');
 

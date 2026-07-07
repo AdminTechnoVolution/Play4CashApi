@@ -9,92 +9,118 @@ import { winnerDisplayedPrize } from '../../common/utils/game-prize.util';
 import { WalletService } from '../wallet/wallet.service';
 import { EmailService } from '../../common/email/email.service';
 import { WalletChangePending, WalletChangePendingDocument } from './schemas/wallet-change-pending.schema';
+import { TtlCache } from '../../common/ttl-cache';
+import { logSlowEvent } from '../../common/perf-log.util';
+import { AppConfigService } from '../app-config/app-config.service';
 
 @Injectable()
 export class UserService {
   private readonly logger = new Logger(UserService.name);
+  private readonly publicStatsCache = new TtlCache<{ registeredUsers: number }>();
+  private readonly userHistoryCache = new TtlCache<any[]>();
 
   constructor(
     private readonly userRepo: UserRepository,
-    @InjectModel('AppConfig') private readonly appConfigModel: Model<any>,
     @InjectModel('Room') private readonly roomModel: Model<any>,
     @InjectModel(WalletChangePending.name)
     private readonly walletChangePendingModel: Model<WalletChangePendingDocument>,
     private readonly walletService: WalletService,
     private readonly emailService: EmailService,
+    private readonly appConfigService: AppConfigService,
     private readonly config: ConfigService,
   ) {}
 
   async getProfile(userId: string): Promise<any> {
-    const user = await this.userRepo.findByIdSelect(userId, '-created_at');
+    const startedAt = process.hrtime.bigint();
+    const userLookupStart = process.hrtime.bigint();
+    const user = await this.userRepo.findByIdSelect(
+      userId,
+      'email username wallet_address balance total_recharged total_witdrawal total_won status role',
+    );
     if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+    const userLookupMs = Number(process.hrtime.bigint() - userLookupStart) / 1_000_000;
 
+    const configLookupStart = process.hrtime.bigint();
     let withdrawal_daily_limit = 10000;
     try {
-      const config = await this.appConfigModel.findOne({ key: 'global' }).lean();
-      if (config) withdrawal_daily_limit = (config as any).withdrawal_daily_limit ?? 10000;
+      const config = await this.appConfigService.getConfig();
+      withdrawal_daily_limit = config.withdrawal_daily_limit ?? 10000;
     } catch {
       /* use default */
     }
+    const configLookupMs = Number(process.hrtime.bigint() - configLookupStart) / 1_000_000;
 
     const profile = user as any;
     profile.limits = { daily_withdrawal: withdrawal_daily_limit };
+    logSlowEvent(this.logger, 'user_profile_trace', startedAt, 50, {
+      user_lookup_ms: userLookupMs.toFixed(1),
+      config_lookup_ms: configLookupMs.toFixed(1),
+    });
     return profile;
   }
 
   async getHistory(userId: string, lang = 'en'): Promise<any[]> {
-    const rooms = await this.roomModel
-      .find({ status: 'finished', 'players.playerId': new Types.ObjectId(userId) })
-      .populate('game_id', 'name socket_code')
-      .populate('players.playerId', 'username')
-      .populate('winner', 'username')
-      .sort({ finished_at: -1 })
-      .lean();
+    const cacheKey = `user-history:${userId}:${lang}`;
+    return this.userHistoryCache.getOrSet(cacheKey, 10_000, async () => {
+      const startedAt = process.hrtime.bigint();
+      const rooms = await this.roomModel
+        .find({ status: 'finished', 'players.playerId': new Types.ObjectId(userId) })
+        .populate('game_id', 'name socket_code')
+        .populate('players.playerId', 'username')
+        .populate('winner', 'username')
+        .sort({ finished_at: -1 })
+        .lean();
 
-    return rooms.map((room: any) => {
-      const isWinner = room.winner && room.winner._id.toString() === userId;
-      const isDraw =
-        !room.winner &&
-        room.status === 'finished' &&
-        ['stalemate', 'insufficient_material', 'draw'].includes(room.winner_reason);
+      const data = rooms.map((room: any) => {
+        const isWinner = room.winner && room.winner._id.toString() === userId;
+        const isDraw =
+          !room.winner &&
+          room.status === 'finished' &&
+          ['stalemate', 'insufficient_material', 'draw'].includes(room.winner_reason);
 
-      let prize: number | null = null;
-      let resultKey = 'lose';
-      const playerCount = Array.isArray(room.players) ? room.players.length : 2;
-      if (isWinner) {
-        prize = winnerDisplayedPrize(room.bet_amount, room.house_edge, playerCount);
-        resultKey = 'win';
-      } else if (isDraw) {
-        prize = 0;
-        resultKey = 'draw';
-      }
+        let prize: number | null = null;
+        let resultKey = 'lose';
+        const playerCount = Array.isArray(room.players) ? room.players.length : 2;
+        if (isWinner) {
+          prize = winnerDisplayedPrize(room.bet_amount, room.house_edge, playerCount);
+          resultKey = 'win';
+        } else if (isDraw) {
+          prize = 0;
+          resultKey = 'draw';
+        }
 
-      const opponent = room.players.find((p: any) => p.playerId?._id?.toString() !== userId);
+        const opponent = room.players.find((p: any) => p.playerId?._id?.toString() !== userId);
 
-      let gameName = 'Unknown';
-      if (room.game_id?.name) {
-        gameName =
-          room.game_id.name[lang] ||
-          room.game_id.name['en'] ||
-          room.game_id.name['es'] ||
-          'Unknown';
-      }
+        let gameName = 'Unknown';
+        if (room.game_id?.name) {
+          gameName =
+            room.game_id.name[lang] ||
+            room.game_id.name['en'] ||
+            room.game_id.name['es'] ||
+            'Unknown';
+        }
 
-      const reason = room.winner_reason || (isWinner ? 'win' : isDraw ? 'draw' : 'forfeit');
+        const reason = room.winner_reason || (isWinner ? 'win' : isDraw ? 'draw' : 'forfeit');
 
-      return {
-        room_id: room._id,
-        room_code: room.code,
-        game_name: gameName,
-        game_code: room.game_id?.socket_code || 'unknown',
-        bet_amount: room.bet_amount,
-        result: resultKey,
-        prize,
-        winner_reason: reason,
-        opponent: opponent ? { username: opponent.playerId?.username } : null,
-        finished_at: room.finished_at,
-        date: room.finished_at,
-      };
+        return {
+          room_id: room._id,
+          room_code: room.code,
+          game_name: gameName,
+          game_code: room.game_id?.socket_code || 'unknown',
+          bet_amount: room.bet_amount,
+          result: resultKey,
+          prize,
+          winner_reason: reason,
+          opponent: opponent ? { username: opponent.playerId?.username } : null,
+          finished_at: room.finished_at,
+          date: room.finished_at,
+        };
+      });
+
+      logSlowEvent(this.logger, 'user_history_trace', startedAt, 75, {
+        room_count: rooms.length,
+      });
+      return data;
     });
   }
 
@@ -224,8 +250,14 @@ export class UserService {
 
   /** Uncached count for the public login page — rate-limited at the controller. */
   async getPublicUserStats(): Promise<{ registeredUsers: number }> {
-    const registeredUsers = await this.userRepo.countRegisteredUsers();
-    return { registeredUsers };
+    return this.publicStatsCache.getOrSet('public-user-stats', 30_000, async () => {
+      const startedAt = process.hrtime.bigint();
+      const registeredUsers = await this.userRepo.countRegisteredUsers();
+      logSlowEvent(this.logger, 'public_user_stats_trace', startedAt, 10, {
+        registeredUsers,
+      });
+      return { registeredUsers };
+    });
   }
 
   async savePushSubscription(
