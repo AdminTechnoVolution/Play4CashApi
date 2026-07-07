@@ -46,7 +46,7 @@ describe('RechargeController.create', () => {
 
     const out = await controller.create(
       user,
-      { txId: 'tx-1', coin: 'usdt', amount: 25 },
+      { txId: 'tx-1', coin: 'usdt' },
       lang,
       idempotencyKey,
     );
@@ -62,7 +62,7 @@ describe('RechargeController.create', () => {
       300,
       expect.any(Function),
     );
-    expect(rechargeService.createRecharge).toHaveBeenCalledWith(user.id, 'tx-1', 'usdt', 25, 45);
+    expect(rechargeService.createRecharge).toHaveBeenCalledWith(user.id, 'tx-1', 'usdt', 45);
     expect(i18n.translate).toHaveBeenCalledWith('SUCCESS_RECHARGE', lang);
   });
 
@@ -70,10 +70,10 @@ describe('RechargeController.create', () => {
     const { controller, idempotency, rechargeService } = makeDeps();
 
     await expect(
-      controller.create(user, { txId: 'tx-1', coin: 'usdt', amount: 25 }, lang, undefined),
+      controller.create(user, { txId: 'tx-1', coin: 'usdt' }, lang, undefined),
     ).rejects.toBeInstanceOf(BadRequestException);
     await expect(
-      controller.create(user, { txId: 'tx-1', coin: 'usdt', amount: 25 }, lang, 'retry'),
+      controller.create(user, { txId: 'tx-1', coin: 'usdt' }, lang, 'retry'),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(idempotency.getOrSet).not.toHaveBeenCalled();

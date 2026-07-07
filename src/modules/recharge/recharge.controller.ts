@@ -5,14 +5,13 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { I18nService } from '../../common/i18n/i18n.service';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { ConfigService } from '@nestjs/config';
-import { IsNumber, IsString } from 'class-validator';
+import { IsString } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 
 class CreateRechargeDto {
   @ApiProperty() @IsString() txId: string;
   @ApiProperty() @IsString() coin: string;
-  @ApiProperty() @IsNumber() amount: number;
 }
 
 @ApiTags('Recharges')
@@ -41,7 +40,7 @@ export class RechargeController {
     const expiryMins = this.config.get<number>('withdrawal.processingExpiryMinutes') || 30;
     const cacheKey = `idem:recharge:create:${user.id}:${idempKey}`;
     const result = await this.idempotency.getOrSet(cacheKey, IdempotencyService.DEFAULT_TTL_SEC, () =>
-      this.rechargeService.createRecharge(user.id, dto.txId, dto.coin, dto.amount, expiryMins),
+      this.rechargeService.createRecharge(user.id, dto.txId, dto.coin, expiryMins),
     );
     const message = this.i18n.translate('SUCCESS_RECHARGE', lang);
     return { success: true, messages: [message], data: result };
