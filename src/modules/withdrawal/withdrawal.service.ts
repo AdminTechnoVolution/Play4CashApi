@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import Decimal from 'decimal.js';
@@ -10,6 +10,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { AppConfigService } from '../app-config/app-config.service';
 import { EmailService } from '../../common/email/email.service';
 import { TtlCache } from '../../common/ttl-cache';
+import { REDIS_CLIENT } from '../../common/redis/redis.module';
 
 @Injectable()
 export class WithdrawalService {
@@ -20,6 +21,7 @@ export class WithdrawalService {
     @InjectModel(Withdrawal.name) private readonly withdrawalModel: Model<WithdrawalDocument>,
     @InjectModel('User') private readonly userModel: Model<any>,
     @InjectModel('TxMessage') private readonly txMessageModel: Model<any>,
+    @Inject(REDIS_CLIENT) private readonly redis: any,
     private readonly walletService: WalletService,
     private readonly appConfigService: AppConfigService,
     private readonly emailService: EmailService,
@@ -117,95 +119,121 @@ export class WithdrawalService {
     verificationExpiryMins: number,
     lang = 'en',
   ): Promise<void> {
-    this.historyCache.delete(`withdrawal-history:${userId}`);
-    const user = await this.userModel.findById(userId);
-    if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
-
-    if (!user.wallet_address || !user.wallet_address.coin || !user.wallet_address.wallet) {
-      throw new BusinessException('ERROR_USER_WALLET_NOTFOUND', 400);
-    }
-
-    const { coin, wallet: walletAddress, network } = user.wallet_address;
-
-    // 1. Validate Wallet Config
-    const walletConfig = await this.walletService.findByCoinAndNetwork(coin, network);
-    if (!walletConfig) throw new BusinessException('ERROR_WALLET_NOT_CONFIGURED', 400);
-    if (amount < walletConfig.minAmount) {
-      const msg = 'Error: transaction amount below minimum required';
-      await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
-      throw new BusinessException('ERROR_WITHDRAWAL_AMOUNT_MINIMUM', 400);
-    }
-
-    // 2. Validate Daily Limit
-    const config = await this.appConfigService.getConfig();
-    const limit = config.withdrawal_daily_limit;
-    if (limit > 0) {
-      const startOfDay = new Date();
-      startOfDay.setUTCHours(0, 0, 0, 0);
-
-      const todayWithdrawals = await this.withdrawalModel.aggregate([
-        {
-          $match: {
-            user_id: new Types.ObjectId(userId),
-            created_at: { $gte: startOfDay },
-            status: { $ne: 'failed' },
-          },
-        },
-        { $group: { _id: null, totalAmount: { $sum: '$amount' } } },
-      ]);
-
-      const totalToday = todayWithdrawals.length > 0 ? todayWithdrawals[0].totalAmount : 0;
-      if (totalToday + amount > limit) {
-        const msg = 'The daily withdrawal limit has been exceeded. Please try again tomorrow.';
-        await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
-        throw new BusinessException('ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED', 400);
-      }
-    }
-
-    // 3. Check for existing pending
-    const foundWithdrawal = await this.withdrawalModel.findOne({
-      user_id: new Types.ObjectId(userId),
-      status: 'pending_verify',
-    });
-    if (foundWithdrawal) {
-      const msg = 'Error: transaction pending verification';
-      await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
+    const lockKey = `withdrawal:initiate:${userId}`;
+    const lockToken = `${process.pid}:${Date.now()}:${Math.random()}`;
+    const acquired = await this.acquireInitiateLock(lockKey, lockToken);
+    if (!acquired) {
       throw new BusinessException('ERROR_WITHDRAWAL_PENDING_VERIFY', 400);
     }
 
-    // 3. Check balance
-    if (user.balance < amount) {
-      const msg = 'Error: insufficient funds for transaction';
-      await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
-      throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE', 400);
+    try {
+      this.historyCache.delete(`withdrawal-history:${userId}`);
+      const user = await this.userModel.findById(userId);
+      if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+
+      if (!user.wallet_address || !user.wallet_address.coin || !user.wallet_address.wallet) {
+        throw new BusinessException('ERROR_USER_WALLET_NOTFOUND', 400);
+      }
+
+      const { coin, wallet: walletAddress, network } = user.wallet_address;
+
+      // 1. Validate Wallet Config
+      const walletConfig = await this.walletService.findByCoinAndNetwork(coin, network);
+      if (!walletConfig) throw new BusinessException('ERROR_WALLET_NOT_CONFIGURED', 400);
+      if (amount < walletConfig.minAmount) {
+        const msg = 'Error: transaction amount below minimum required';
+        await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
+        throw new BusinessException('ERROR_WITHDRAWAL_AMOUNT_MINIMUM', 400);
+      }
+
+      // 2. Validate Daily Limit
+      const config = await this.appConfigService.getConfig();
+      const limit = config.withdrawal_daily_limit;
+      if (limit > 0) {
+        const startOfDay = new Date();
+        startOfDay.setUTCHours(0, 0, 0, 0);
+
+        const todayWithdrawals = await this.withdrawalModel.aggregate([
+          {
+            $match: {
+              user_id: new Types.ObjectId(userId),
+              created_at: { $gte: startOfDay },
+              status: { $ne: 'failed' },
+            },
+          },
+          { $group: { _id: null, totalAmount: { $sum: '$amount' } } },
+        ]);
+
+        const totalToday = todayWithdrawals.length > 0 ? todayWithdrawals[0].totalAmount : 0;
+        if (totalToday + amount > limit) {
+          const msg = 'The daily withdrawal limit has been exceeded. Please try again tomorrow.';
+          await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
+          throw new BusinessException('ERROR_WITHDRAWAL_DAILY_LIMIT_EXCEEDED', 400);
+        }
+      }
+
+      // 3. Check for existing pending
+      const foundWithdrawal = await this.withdrawalModel.findOne({
+        user_id: new Types.ObjectId(userId),
+        status: 'pending_verify',
+      });
+      if (foundWithdrawal) {
+        const msg = 'Error: transaction pending verification';
+        await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
+        throw new BusinessException('ERROR_WITHDRAWAL_PENDING_VERIFY', 400);
+      }
+
+      // 3. Check balance
+      if (user.balance < amount) {
+        const msg = 'Error: insufficient funds for transaction';
+        await this.saveTxMessage(userId, amount, coin, walletAddress, msg);
+        throw new BusinessException('ERROR_WITHDRAWAL_INSUFFICIENT_BALANCE', 400);
+      }
+
+      // 4. Create Withdrawal with hashed code
+      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const hashedCode = await bcrypt.hash(verificationCode, 10);
+      const verification_expires_at = new Date(Date.now() + verificationExpiryMins * 60 * 1000);
+
+      await this.withdrawalModel.create({
+        user_id: new Types.ObjectId(userId),
+        amount,
+        coin: coin.toUpperCase(),
+        wallet: walletAddress,
+        network,
+        tx_fee: walletConfig.networkWithdrawalFee || 0,
+        verification_code: hashedCode,
+        verification_expires_at,
+      });
+
+      // Send verificationCode via email
+      await this.emailService.sendWithdrawalVerification(
+        user.email,
+        user.username,
+        verificationCode,
+        verificationExpiryMins,
+        lang,
+      );
+
+      this.logger.log(`Withdrawal initiated for user ${userId}`);
+    } finally {
+      await this.releaseInitiateLock(lockKey, lockToken);
     }
+  }
 
-    // 4. Create Withdrawal with hashed code
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const hashedCode = await bcrypt.hash(verificationCode, 10);
-    const verification_expires_at = new Date(Date.now() + verificationExpiryMins * 60 * 1000);
+  private async acquireInitiateLock(lockKey: string, lockToken: string): Promise<boolean> {
+    const result = await this.redis.set(lockKey, lockToken, { NX: true, PX: 30_000 });
+    return result === 'OK';
+  }
 
-    await this.withdrawalModel.create({
-      user_id: new Types.ObjectId(userId),
-      amount,
-      coin: coin.toUpperCase(),
-      wallet: walletAddress,
-      network,
-      tx_fee: walletConfig.networkWithdrawalFee || 0,
-      verification_code: hashedCode,
-      verification_expires_at,
-    });
-
-    // Send verificationCode via email
-    await this.emailService.sendWithdrawalVerification(
-      user.email,
-      user.username,
-      verificationCode,
-      verificationExpiryMins,
-      lang,
+  private async releaseInitiateLock(lockKey: string, lockToken: string): Promise<void> {
+    await this.redis.eval(
+      'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
+      {
+        keys: [lockKey],
+        arguments: [lockToken],
+      },
     );
-
-    this.logger.log(`Withdrawal initiated for user ${userId}`);
   }
 
   private async saveTxMessage(user_id: string, amount: number, coin: string, wallet: string, message: string) {

@@ -28,22 +28,27 @@ export class RechargeService {
     this.historyCache.delete(`recharge-history:${userId}`);
     const time_processing_expires_at = new Date(Date.now() + processingExpiryMins * 60 * 1000);
 
-    // Check for duplicate txId
-    const existing = await this.rechargeModel.findOne({ txId });
+    const existing = await this.findExistingRechargeByTxId(txId);
     if (existing) {
-      throw new BusinessException(
-        existing.status === 'confirmed' ? 'WARNING_TX_CONFIRMED' : 'WARNING_TX_IN_PROCESS',
-        400,
-      );
+      this.throwDuplicateRecharge(existing);
     }
 
-    const recharge = await this.rechargeModel.create({
-      user_id: new Types.ObjectId(userId),
-      txId,
-      coin: coin.toUpperCase(),
-      amount,
-      time_processing_expires_at,
-    });
+    let recharge: RechargeDocument;
+    try {
+      recharge = await this.rechargeModel.create({
+        user_id: new Types.ObjectId(userId),
+        txId,
+        coin: coin.toUpperCase(),
+        amount,
+        time_processing_expires_at,
+      });
+    } catch (err) {
+      if (this.isDuplicateTxError(err)) {
+        const duplicate = await this.findExistingRechargeByTxId(txId);
+        this.throwDuplicateRecharge(duplicate);
+      }
+      throw err;
+    }
 
     // Validate against Binance
     let deposit: any;
@@ -57,7 +62,7 @@ export class RechargeService {
     } catch (err) {
       this.logger.error(`Binance validation failed: ${err}`);
       await this.rechargeModel.deleteOne({ _id: recharge._id });
-      await this.saveTxMessage(userId, txId, amount, coin, String(err));
+      await this.saveTxMessage(userId, txId, amount, coin, this.toWalletFacingRechargeMessage(err));
       throw new BusinessException('WARNING_TX_NOT_FOUND', 400);
     }
 
@@ -74,10 +79,15 @@ export class RechargeService {
     );
 
     await this.rechargeModel.findByIdAndUpdate(recharge._id, {
-      wallet: deposit.address,
-      network: deposit.network,
-      status: 'confirmed',
-      time_processing_expires_at: undefined,
+      $set: {
+        wallet: deposit.address,
+        network: deposit.network,
+        status: 'confirmed',
+        confirmed_at: new Date(),
+      },
+      $unset: {
+        time_processing_expires_at: '',
+      },
     });
 
     await this.saveTxMessage(userId, txId, amount, coin, 'Confirmed');
@@ -108,5 +118,34 @@ export class RechargeService {
     } catch (err) {
       this.logger.error(`Error saving tx message: ${err}`);
     }
+  }
+
+  private async findExistingRechargeByTxId(txId: string): Promise<any | null> {
+    const query = this.rechargeModel.findOne({ txId }) as any;
+    if (!query) return null;
+    if (typeof query.lean === 'function') {
+      return query.lean();
+    }
+    return query;
+  }
+
+  private throwDuplicateRecharge(existing: any): never {
+    throw new BusinessException(
+      existing?.status === 'confirmed' ? 'WARNING_TX_CONFIRMED' : 'WARNING_TX_IN_PROCESS',
+      400,
+    );
+  }
+
+  private isDuplicateTxError(err: unknown): boolean {
+    const e = err as { code?: number; keyPattern?: Record<string, unknown>; message?: string };
+    return e?.code === 11000 && (e.keyPattern?.txId === 1 || String(e.message || '').includes('txId'));
+  }
+
+  private toWalletFacingRechargeMessage(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err || '');
+    if (raw.includes('TX not found in Binance')) {
+      return 'The transaction has not appeared in our wallet yet. Please try again later.';
+    }
+    return raw;
   }
 }
