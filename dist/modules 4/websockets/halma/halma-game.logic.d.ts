@@ -1,0 +1,15 @@
+export type HalmaBoard = number[][];
+export declare const isDarkSquare: (r: number, c: number) => boolean;
+export declare const createHalmaBoard: () => HalmaBoard;
+export declare const P1_NORMAL = 1;
+export declare const P2_NORMAL = 2;
+export declare const P1_KING = 3;
+export declare const P2_KING = 4;
+export declare const goalRowsForPlayer: (pNum: number) => number[];
+export declare const isInGoalZone: (r: number, pNum: number) => boolean;
+export declare const isOwner: (piece: number, pNum: number) => boolean;
+export declare const isValidStep: (b: HalmaBoard, fr: number, fc: number, tr: number, tc: number, pNum: number) => boolean;
+export declare const isValidJump: (b: HalmaBoard, fr: number, fc: number, tr: number, tc: number) => boolean;
+export declare const getJumpDestinations: (b: HalmaBoard, r: number, c: number) => [number, number][];
+export declare const canJumpFurther: (b: HalmaBoard, r: number, c: number) => boolean;
+export declare const checkHalmaWin: (b: HalmaBoard, pNum: number) => boolean;

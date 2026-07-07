@@ -32,6 +32,10 @@ export class Withdrawal {
 export const WithdrawalSchema = SchemaFactory.createForClass(Withdrawal);
 
 WithdrawalSchema.index({ verification_expires_at: 1 }, { expireAfterSeconds: 0 });
+WithdrawalSchema.index(
+  { user_id: 1 },
+  { unique: true, partialFilterExpression: { status: 'pending_verify' } },
+);
 WithdrawalSchema.index({ wallet_type: 1 });
 WithdrawalSchema.index({ transfer_type: 1 });
 WithdrawalSchema.index({ wallet: 1 });

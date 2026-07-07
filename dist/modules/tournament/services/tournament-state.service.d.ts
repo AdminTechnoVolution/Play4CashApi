@@ -1,0 +1,242 @@
+import { Model, Types } from 'mongoose';
+import { TournamentDocument } from '../schemas/tournament.schema';
+import { TournamentParticipantDocument } from '../schemas/tournament-participant.schema';
+import { TournamentGroupDocument } from '../schemas/tournament-group.schema';
+import { TournamentMatchDocument } from '../schemas/tournament-match.schema';
+import { RoomDocument } from '../../room/schemas/room.schema';
+import { TournamentMatchStatus, TournamentParticipantStatus, TournamentStatus } from '../constants/tournament.constants';
+export interface TournamentTimeProjection {
+    serverNow: string;
+    startsAt: string;
+    remainingMs: number;
+    pauseRemainingMs: number | null;
+    currentPhase: string;
+    currentRoundIndex: number;
+    status: string;
+}
+export declare class TournamentStateService {
+    private readonly tournamentModel;
+    private readonly participantModel;
+    private readonly groupModel;
+    private readonly matchModel;
+    private readonly roomModel;
+    constructor(tournamentModel: Model<TournamentDocument>, participantModel: Model<TournamentParticipantDocument>, groupModel: Model<TournamentGroupDocument>, matchModel: Model<TournamentMatchDocument>, roomModel: Model<RoomDocument>);
+    buildTimeProjection(t: TournamentDocument): TournamentTimeProjection;
+    resolveMyActiveMatch(tournamentId: Types.ObjectId, userId: string): Promise<{
+        matchId: string;
+        status: TournamentMatchStatus;
+        roomId: string | null;
+        roundName: import("../constants/tournament.constants").TournamentMatchRoundName;
+        opponentUsername: string | null;
+        presenceCheckAt: string | null;
+        canJoin: boolean;
+        needsLobby: boolean;
+    } | null>;
+    toPublicDetail(t: TournamentDocument, userId?: string, langHeader?: string): Promise<{
+        serverNow: string;
+        startsAt: string;
+        remainingMs: number;
+        pauseRemainingMs: number | null;
+        currentPhase: string;
+        currentRoundIndex: number;
+        status: string;
+        id: string;
+        title: string;
+        description: string;
+        gameSocketCode: string;
+        gameId: string;
+        buyIn: number;
+        maxPlayers: number;
+        minPlayers: number;
+        registeredCount: number;
+        groupCount: number;
+        turnTimerSeconds: number;
+        betweenRoundsPauseSeconds: number;
+        houseFeePercent: number;
+        firstPlacePercent: number;
+        secondPlacePercent: number;
+        grossPrizePool: number;
+        firstPlaceAmount: number;
+        secondPlaceAmount: number;
+        winnerUserId: string | null;
+        runnerUpUserId: string | null;
+        myRegistration: {
+            status: string;
+            seed?: number;
+            groupNumber?: number;
+        } | null;
+        myActiveMatch: {
+            matchId: string;
+            status: TournamentMatchStatus;
+            roomId: string | null;
+            roundName: import("../constants/tournament.constants").TournamentMatchRoundName;
+            opponentUsername: string | null;
+            presenceCheckAt: string | null;
+            canJoin: boolean;
+            needsLobby: boolean;
+        } | null;
+    }>;
+    toAdminDetail(t: TournamentDocument, userId?: string): Promise<{
+        myRegistration: {
+            status: string;
+            seed?: number;
+            groupNumber?: number;
+        } | null;
+        serverNow: string;
+        remainingMs: number;
+        pauseRemainingMs: number | null;
+        id: string;
+        title: import("../../game/schemas/game.schema").LanguageField;
+        description: import("../../game/schemas/game.schema").LanguageField;
+        gameId: string;
+        gameSocketCode: string;
+        status: TournamentStatus;
+        buyIn: number;
+        maxPlayers: number;
+        minPlayers: number;
+        groupCount: number;
+        groupSize: number;
+        registeredCount: number;
+        startsAt: string;
+        registrationOpensAt: string | null;
+        registrationClosesAt: string | null;
+        turnTimerSeconds: number;
+        betweenRoundsPauseSeconds: number;
+        presenceWindowSeconds: number;
+        rematchDelaySeconds: number;
+        houseFeePercent: number;
+        firstPlacePercent: number;
+        secondPlacePercent: number;
+        grossPrizePool: number;
+        houseAmount: number;
+        firstPlaceAmount: number;
+        secondPlaceAmount: number;
+        winnerUserId: string | null;
+        runnerUpUserId: string | null;
+        bracketSeed: string | null;
+        currentPhase: import("../constants/tournament.constants").TournamentPhase;
+        currentRoundIndex: number;
+        betweenRoundsEndsAt: string | null;
+        presenceWindowEndsAt: string | null;
+        prizesSettled: boolean;
+        finishedAt: string | null;
+    }>;
+    getBracket(tournamentId: string): Promise<{
+        groups: {
+            groupNumber: number;
+            status: string;
+            winnerUserId: string | null;
+            participants: {
+                userId: string;
+                username: string;
+                seed?: number;
+                status: string;
+            }[];
+        }[];
+        groupMatches: {
+            id: string;
+            groupNumber: number | null;
+            phase: import("../constants/tournament.constants").TournamentPhase;
+            roundName: import("../constants/tournament.constants").TournamentMatchRoundName;
+            roundIndex: number;
+            matchIndex: number;
+            status: TournamentMatchStatus;
+            playerA: {
+                userId: string;
+                username: string;
+            } | null;
+            playerB: {
+                userId: string;
+                username: string;
+            } | null;
+            winnerUserId: string | null;
+            roomId: string | null;
+            isBye: boolean;
+        }[];
+        finalsMatches: {
+            id: string;
+            groupNumber: number | null;
+            phase: import("../constants/tournament.constants").TournamentPhase;
+            roundName: import("../constants/tournament.constants").TournamentMatchRoundName;
+            roundIndex: number;
+            matchIndex: number;
+            status: TournamentMatchStatus;
+            playerA: {
+                userId: string;
+                username: string;
+            } | null;
+            playerB: {
+                userId: string;
+                username: string;
+            } | null;
+            winnerUserId: string | null;
+            roomId: string | null;
+            isBye: boolean;
+        }[];
+    }>;
+    listForUser(userId: string, langHeader?: string): Promise<{
+        serverNow: string;
+        startsAt: string;
+        remainingMs: number;
+        pauseRemainingMs: number | null;
+        currentPhase: string;
+        currentRoundIndex: number;
+        status: string;
+        id: string;
+        title: string;
+        description: string;
+        gameSocketCode: string;
+        gameId: string;
+        buyIn: number;
+        maxPlayers: number;
+        minPlayers: number;
+        registeredCount: number;
+        groupCount: number;
+        turnTimerSeconds: number;
+        betweenRoundsPauseSeconds: number;
+        houseFeePercent: number;
+        firstPlacePercent: number;
+        secondPlacePercent: number;
+        grossPrizePool: number;
+        firstPlaceAmount: number;
+        secondPlaceAmount: number;
+        winnerUserId: string | null;
+        runnerUpUserId: string | null;
+        myRegistration: {
+            status: string;
+            seed?: number;
+            groupNumber?: number;
+        } | null;
+        myActiveMatch: {
+            matchId: string;
+            status: TournamentMatchStatus;
+            roomId: string | null;
+            roundName: import("../constants/tournament.constants").TournamentMatchRoundName;
+            opponentUsername: string | null;
+            presenceCheckAt: string | null;
+            canJoin: boolean;
+            needsLobby: boolean;
+        } | null;
+    }[]>;
+    listHistoryForUser(userId: string, langHeader?: string): Promise<{
+        id: string;
+        title: string;
+        gameSocketCode: string;
+        status: TournamentStatus;
+        buyIn: number;
+        maxPlayers: number;
+        registeredCount: number;
+        grossPrizePool: number;
+        houseFeePercent: number;
+        firstPlacePercent: number;
+        firstPlaceAmount: number;
+        secondPlaceAmount: number;
+        participantStatus: TournamentParticipantStatus;
+        finalRank: number | null;
+        prizeAmount: number;
+        finishedAt: string | null;
+        startedAt: string;
+    }[]>;
+    private resolvePlaceAmounts;
+    listVisible(): Promise<TournamentDocument[]>;
+}
