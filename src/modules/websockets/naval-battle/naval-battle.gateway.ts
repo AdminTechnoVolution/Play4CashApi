@@ -166,7 +166,8 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       if (room.turn_start_time) {
         remainingTurnSecs = Math.ceil((limit - (Date.now() - new Date(room.turn_start_time).getTime())) / 1000);
       }
-      await this.grace.start('naval-battle', player_id, room_id, Math.max(60, remainingTurnSecs));
+      const hasStartedPlay = room.players.some((player: any) => (player.moves?.length || 0) > 0);
+      await this.grace.start('naval-battle', player_id, room_id, hasStartedPlay ? 30 : 60);
     }
   }
 

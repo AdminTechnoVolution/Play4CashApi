@@ -226,7 +226,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       // Phase B: use the distributed grace service. The service clamps to
       // `MIN_GRACE_SECS` (30 s) — so a player who blips out at the very end of a turn
       // still gets the product-minimum window to reconnect, not the previous 5 s.
-      await this.grace.start('uno', player_id, room_id, Math.max(60, remainingTurnSecs));
+      const hasStartedPlay = room.players.some((player: any) => (player.moves?.length || 0) > 0);
+      await this.grace.start('uno', player_id, room_id, hasStartedPlay ? 30 : 60);
     }
   }
 
@@ -367,7 +368,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     if (
       expectedPlayers === 0 ||
       preRoom.players.length < expectedPlayers ||
-      preRoom.players.some((p: any) => !p?.playerId)
+      preRoom.players.some((p: any) => !p?.playerId || !p.ready)
     ) {
       this.logger.warn(
         `event=uno_start_aborted room=${room_id} reason=not_enough_distinct_players players=${preRoom.players.length} expected=${expectedPlayers}`,

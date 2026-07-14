@@ -166,7 +166,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
           remainingTurnSecs = Math.ceil((limit - (Date.now() - game.turn_start_time.getTime())) / 1000);
         }
       }
-      await this.grace.start('domino', player_id, room_id, Math.max(60, remainingTurnSecs));
+      const hasStartedPlay = room.players.some((player: any) => (player.moves?.length || 0) > 0);
+      await this.grace.start('domino', player_id, room_id, hasStartedPlay ? 30 : 60);
     }
   }
 
@@ -307,7 +308,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       },
     });
 
-    if (room.players.length >= maxPlayers && room.status === 'waiting') {
+    if (room.players.length >= maxPlayers && room.players.every((player: any) => player.ready) && room.status === 'waiting') {
       await this.tryStartDominoGame(room_id, lang);
     }
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartDominoGame(room_id, lang));
@@ -323,7 +324,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     if (!room || room.status !== 'waiting') return;
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-    if (room.players.length < maxPlayers) return;
+    if (room.players.length < maxPlayers || !room.players.every((player: any) => player.ready)) return;
 
     const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
     if (!started) return;
