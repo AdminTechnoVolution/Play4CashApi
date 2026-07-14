@@ -24,3 +24,12 @@ export function winnerDisplayedPrize(
   if (opponents < 1 || betAmount <= 0) return 0;
   return betAmount * opponents * (1 - houseEdgePercent / 100);
 }
+
+export function winnerBalanceUpdate(grossPayout: number): { $inc: { balance: number; total_won: number } } {
+  return {
+    $inc: {
+      balance: grossPayout,
+      total_won: grossPayout,
+    },
+  };
+}

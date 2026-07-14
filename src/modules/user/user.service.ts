@@ -79,6 +79,7 @@ export class UserService {
           ['stalemate', 'insufficient_material', 'draw'].includes(room.winner_reason);
 
         let prize: number | null = null;
+        let lostAmount: number | null = null;
         let resultKey = 'lose';
         const playerCount = Array.isArray(room.players) ? room.players.length : 2;
         if (isWinner) {
@@ -87,6 +88,8 @@ export class UserService {
         } else if (isDraw) {
           prize = 0;
           resultKey = 'draw';
+        } else {
+          lostAmount = room.bet_amount;
         }
 
         const opponent = room.players.find((p: any) => p.playerId?._id?.toString() !== userId);
@@ -110,6 +113,7 @@ export class UserService {
           bet_amount: room.bet_amount,
           result: resultKey,
           prize,
+          lost_amount: lostAmount,
           winner_reason: reason,
           opponent: opponent ? { username: opponent.playerId?.username } : null,
           finished_at: room.finished_at,

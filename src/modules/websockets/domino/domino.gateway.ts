@@ -16,7 +16,7 @@ import { RoomsGateway } from '../rooms/rooms.gateway';
 import { DominoGame, DominoGameDocument } from './schemas/domino-game.schema';
 import { deal, getStartingPlayerIndex, getNextActivePlayerIndex, hasValidMoves, validateMove, getDominoGameResult } from './domino-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
+import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
@@ -473,7 +473,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
             room.house_edge,
             room.players.length,
           );
-          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: grossPayout } });
+          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(grossPayout));
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -611,7 +611,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
             room.house_edge,
             room.players.length,
           );
-          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: grossPayout } });
+          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(grossPayout));
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -731,7 +731,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
             room.house_edge,
             room.players.length,
           );
-          await this.userModel.updateOne({ _id: result.winner }, { $inc: { balance: grossPayout } });
+          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(grossPayout));
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
