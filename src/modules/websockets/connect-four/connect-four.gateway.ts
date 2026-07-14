@@ -386,6 +386,12 @@ export class ConnectFourGateway
     }
 
     const playerNum = isMember ? this.resolvePlayerNumFromRoom(player_id, room) : 0;
+    if (isMember && room.status === 'waiting') {
+      await this.roomModel.updateOne(
+        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { $set: { 'players.$.ready': true } },
+      );
+    }
     await this.publishEdgeEvent({
       target: 'socket',
       socketId: command.socketId,
@@ -435,13 +441,7 @@ export class ConnectFourGateway
     );
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-    if (
-      room.players.length >= maxPlayers &&
-      room.status === 'waiting' &&
-      room.players[0]?.playerId &&
-      room.players[1]?.playerId &&
-      room.players.every((player: any) => player.ready)
-    ) {
+    if (room.players.length >= maxPlayers && room.status === 'waiting') {
       await this.tryStartConnectFourGameForEdge(room_id, command.lang);
     }
   }
@@ -1175,6 +1175,13 @@ export class ConnectFourGateway
     await client.join(room_id);
     client.data.room_id = room_id;
     client.data.isSpectator = !isMember;
+
+    if (isMember && room.status === 'waiting') {
+      await this.roomModel.updateOne(
+        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { $set: { 'players.$.ready': true } },
+      );
+    }
 
     this.logger.log(
       `event=connect_four_join room=${room_id} sid=${client.id} player=${player_id} status=${room.status}`,

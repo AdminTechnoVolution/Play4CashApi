@@ -229,6 +229,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     client.data.room_id = room_id;
     client.data.isSpectator = !isMember;
 
+    if (isMember && room.status === 'waiting') {
+      await this.roomModel.updateOne(
+        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { $set: { 'players.$.ready': true } },
+      );
+    }
+
     if (client.data.isSpectator) {
       this.logger.log(`[Chess] 👀 Spectator joined | room=${room_id} | player=${player_id}`);
       const game = await this.chessGameModel.findOne({ room_id });

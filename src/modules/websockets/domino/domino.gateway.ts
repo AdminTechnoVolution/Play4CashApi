@@ -235,6 +235,13 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       }
     }
 
+    if (room.status === 'waiting') {
+      await this.roomModel.updateOne(
+        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { $set: { 'players.$.ready': true } },
+      );
+    }
+
     const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
     client.data.playerNum = playerIndex + 1;
 
