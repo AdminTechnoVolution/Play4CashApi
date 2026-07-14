@@ -16,7 +16,7 @@ import { BattleshipPlacement, BattleshipPlacementDocument } from '../../naval-ba
 import { Room, RoomStatus, RoomPlayer } from '../../room/schemas/room.schema';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize } from '../../../common/utils/game-prize.util';
+import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -190,7 +190,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     );
 
     const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.findByIdAndUpdate(winner_id, { $inc: { balance: grossPayout } });
+    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(grossPayout));
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -472,7 +472,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       await this.tournamentMatchService?.tryCompleteFromFinishedRoom(room, player_id, 'normal');
       const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
       const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
-      await this.userModel.updateOne({ _id: player_id }, { $inc: { balance: grossPayout } });
+      await this.userModel.updateOne({ _id: player_id }, winnerBalanceUpdate(grossPayout));
       
       const p1Id = room.players[0]?.playerId?.toString();
       const player1 = await this.getCachedUsername(p1Id);
@@ -576,7 +576,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         );
         const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
         const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
-        await this.userModel.updateOne({ _id: winnerId }, { $inc: { balance: grossPayout } });
+      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
         
         const winnerUsername = await this.getCachedUsername(winnerId.toString());
         const sockets = await this.server.in(room_id).fetchSockets();
