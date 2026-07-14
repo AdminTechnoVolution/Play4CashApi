@@ -439,7 +439,8 @@ export class ConnectFourGateway
       room.players.length >= maxPlayers &&
       room.status === 'waiting' &&
       room.players[0]?.playerId &&
-      room.players[1]?.playerId
+      room.players[1]?.playerId &&
+      room.players.every((player: any) => player.ready)
     ) {
       await this.tryStartConnectFourGameForEdge(room_id, command.lang);
     }
@@ -448,7 +449,7 @@ export class ConnectFourGateway
   private async tryStartConnectFourGameForEdge(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room || room.status !== 'waiting') return;
-    if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId) {
+    if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId || !room.players.every((player: any) => player.ready)) {
       return;
     }
 
@@ -903,7 +904,8 @@ export class ConnectFourGateway
         const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
         remainingTurnSecs = Math.ceil((limit - (Date.now() - game.turn_start_time.getTime())) / 1000);
       }
-      await this.grace.start('connect-four', player_id, room_id, Math.max(60, remainingTurnSecs));
+      const hasStartedPlay = room.players.some((player: any) => (player.moves?.length || 0) > 0);
+      await this.grace.start('connect-four', player_id, room_id, hasStartedPlay ? 30 : 60);
     }
   }
 
@@ -1060,7 +1062,8 @@ export class ConnectFourGateway
           (limit - (Date.now() - game.turn_start_time.getTime())) / 1000,
         );
       }
-      await this.grace.start('connect-four', player_id, room_id, Math.max(60, remainingTurnSecs));
+      const hasStartedPlay = room.players.some((player: any) => (player.moves?.length || 0) > 0);
+      await this.grace.start('connect-four', player_id, room_id, hasStartedPlay ? 30 : 60);
     }
   }
 
@@ -1294,7 +1297,7 @@ export class ConnectFourGateway
   private async tryStartConnectFourGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room || room.status !== 'waiting') return;
-    if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId) {
+    if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId || !room.players.every((player: any) => player.ready)) {
       return;
     }
 
