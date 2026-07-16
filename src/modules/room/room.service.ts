@@ -132,6 +132,7 @@ export class RoomService {
           id: room._id,
           status: room.status,
           playerCount: room.players.length,
+          playerLimit: room.player_limit || (room.game_id as any)?.max_players || 2,
           bet_amount: room.bet_amount,
           currentPlayer: room.status === RoomStatus.STARTED ? room.players[0].playerId : null,
           winner: room.winner || null,

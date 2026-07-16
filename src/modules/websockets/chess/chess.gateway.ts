@@ -36,6 +36,7 @@ import {
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
+import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
 
 // Timer map stored in-memory per pod (acceptable for single-instance deployments)
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -357,8 +358,8 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       socketCount: socketsInRoom.length,
     }, 'H2');
 
-    const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
-    if (!started) return;
+    const lease = await acquireGameStartLease(this.roomModel, room_id);
+    if (!lease) return;
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: any[] = [];
@@ -373,8 +374,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       await this.chessGameModel
         .deleteOne({ room_id: new Types.ObjectId(room_id) })
         .catch((e) => this.logger.error(`[Chess] Game cleanup failed | room=${room_id}`, e));
-      await this.roomModel
-        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+      await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[Chess] Room status reset failed | room=${room_id}`, e));
       this.server
         .to(room_id)
@@ -418,6 +418,11 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     } catch (e) {
       this.logger.error(`[Chess] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+    const started = await publishGameStarted(this.roomModel, room_id, lease.token);
+    if (!started) {
+      await compensate('ws.games.matchmakingError', 'start_lease_lost');
       return;
     }
     const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;

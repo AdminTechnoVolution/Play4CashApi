@@ -187,6 +187,7 @@
     "ws.uno.youWereChallenged": "{{username}} ti ha beccato per non aver detto UNO! Pesca 2 carte.",
     "ws.uno.playerChallenged": "{{accuser}} ha beccato {{offender}} per non aver detto UNO.",
     "ws.domino.playerLeftWaiting": "{{username}} è uscito. In attesa di altri giocatori.",
+    "ws.domino.playerLeftWaitingGeneric": "Un giocatore è uscito. In attesa di altri giocatori.",
     "ws.domino.timeout": "Tempo scaduto! Sei stato eliminato.",
     "ws.domino.youWinElimination": "Hai vinto! Tutti gli altri giocatori sono stati eliminati.",
     "ws.domino.playerEliminated": "{{username}} è stato eliminato.",

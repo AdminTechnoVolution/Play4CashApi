@@ -187,6 +187,7 @@
     "ws.uno.youWereChallenged": "¡{{username}} te delató por no cantar ¡UNO! Robas 2 cartas.",
     "ws.uno.playerChallenged": "{{accuser}} delató a {{offender}} por no cantar ¡UNO!.",
     "ws.domino.playerLeftWaiting": "{{username}} abandonó. Esperando más jugadores.",
+    "ws.domino.playerLeftWaitingGeneric": "Un jugador salió. Esperando a más jugadores.",
     "ws.domino.timeout": "¡Se te acabó el tiempo! Has sido eliminado.",
     "ws.domino.youWinElimination": "¡Ganaste! Todos los demás jugadores fueron eliminados.",
     "ws.domino.playerEliminated": "{{username}} ha sido eliminado.",

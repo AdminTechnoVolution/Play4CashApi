@@ -39,6 +39,11 @@ export class Room {
     lowercase: true,
   })
   status: RoomStatus;
+  /** Internal idempotency lock while a gateway prepares durable game state. */
+  @Prop()
+  start_lock?: string;
+  @Prop()
+  start_locked_at?: Date;
   @Prop({ default: Date.now }) created_at: Date;
   @Prop() finished_at: Date;
   @Prop({ type: Types.ObjectId, ref: 'User' }) winner: Types.ObjectId;

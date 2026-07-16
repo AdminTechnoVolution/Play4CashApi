@@ -41,6 +41,7 @@ import {
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
+import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => {
@@ -383,12 +384,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       return;
     }
 
-    const started = await this.roomModel.findOneAndUpdate(
-      { _id: room_id, status: 'waiting' },
-      { $set: { status: 'started' } },
-      { returnDocument: 'after' },
-    );
-    if (!started) return;
+    const lease = await acquireGameStartLease(this.roomModel, room_id);
+    if (!lease) return;
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players uno_match_target');
     if (!room) return;
@@ -410,7 +407,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     }
     if (!allPaid) {
       for (const pid of paid) await this.userModel.updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } });
-      await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
+      await releaseGameStartLease(this.roomModel, room_id, lease.token);
       this.server.to(room_id).emit('uno', {
         success: false,
         messages: ['ws.games.insufficientBalance'],
@@ -433,8 +430,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       await this.unoModel
         .deleteOne({ room_id: new Types.ObjectId(room_id) })
         .catch((e) => this.logger.error(`[UNO] Game cleanup failed | room=${room_id}`, e));
-      await this.roomModel
-        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+      await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[UNO] Room status reset failed | room=${room_id}`, e));
       this.server.to(room_id).emit('uno', {
         success: false,
@@ -494,6 +490,12 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     if (!game) {
       // Defensive: `create()` returned without throwing but produced no doc (driver edge).
       await compensate('game_create_returned_null', 'ws.games.matchmakingError');
+      return;
+    }
+
+    const started = await publishGameStarted(this.roomModel, room_id, lease.token);
+    if (!started) {
+      await compensate('start_lease_lost', 'ws.games.matchmakingError');
       return;
     }
 

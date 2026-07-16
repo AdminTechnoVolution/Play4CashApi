@@ -22,6 +22,11 @@ import {
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
+import {
+  acquireGameStartLease,
+  publishGameStarted,
+  releaseGameStartLease,
+} from '../../../common/ws/game-start-coordinator';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -120,7 +125,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         // Phase D: lobby must learn that this empty waiting room was deleted.
         if (gameIdForLobby) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
       } else {
-        const username = await this.getCachedUsername(player_id);
+        const username = (await this.getCachedUsername(player_id)).trim();
         const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
         const lang = this.getLang(client);
         client.to(room_id).emit('domino', {
@@ -132,7 +137,11 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
             playersRemaining: updated.players.length,
             playersRequired: maxPlayers,
           },
-          messages: [this.i18n.translate('ws.domino.playerLeftWaiting', lang, { username })],
+          messages: [
+            username
+              ? this.i18n.translate('ws.domino.playerLeftWaiting', lang, { username })
+              : this.i18n.translate('ws.domino.playerLeftWaitingGeneric', lang),
+          ],
         });
         // Phase D: broadcast the new player count so the lobby join button updates.
         if (gameIdForLobby) {
@@ -333,8 +342,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
     if (room.players.length < maxPlayers || !room.players.every((player: any) => player.ready)) return;
 
-    const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
-    if (!started) return;
+    const lease = await acquireGameStartLease(this.roomModel, room_id);
+    if (!lease) return;
 
     const playerIds = room.players.map((p: any) => p.playerId);
     const paid: Types.ObjectId[] = [];
@@ -349,8 +358,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       await this.dominoModel
         .deleteOne({ room_id: new Types.ObjectId(room_id) })
         .catch((e) => this.logger.error(`[Domino] Game cleanup failed | room=${room_id}`, e));
-      await this.roomModel
-        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+      await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[Domino] Room status reset failed | room=${room_id}`, e));
       this.server
         .to(room_id)
@@ -389,6 +397,14 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     } catch (e) {
       this.logger.error(`[Domino] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+
+    // Publish `started` only after the private hands and turn are durable. A
+    // reconnect that observes started can now always obtain a complete snapshot.
+    const started = await publishGameStarted(this.roomModel, room_id, lease.token);
+    if (!started) {
+      await compensate('ws.games.matchmakingError', 'start_lease_lost');
       return;
     }
 
