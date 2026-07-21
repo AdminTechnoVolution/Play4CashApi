@@ -35,7 +35,7 @@ import {
   UnoColor,
 } from './uno-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
+import { calculateWinnerSettlement, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
@@ -1130,8 +1130,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     room.winner = new Types.ObjectId(winnerId);
     room.winner_reason = 'win';
     room.finished_at = new Date();
-    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+    const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
+    await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
     game.match_winner_id = winnerId;
     game.between_rounds = false;
     game.next_round_starts_at = null;
@@ -1144,7 +1144,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
     const currentTurnUsername = await this.getCachedUsername(winnerId);
     const sockets = await this.server.in(room_id).fetchSockets();
-    const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
+    const displayPrize = settlement.netWinnings;
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
@@ -1560,8 +1560,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         room.finished_at = new Date();
         if (winnerId) {
           room.winner = new Types.ObjectId(winnerId);
-          const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-          await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+          const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
+          await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
           // Surface match-end state to the schema so reconnecting clients see the right
           // payload (Phase 3 forfeit policy: any disconnect that leaves a sole survivor
           // ends the entire match, not just the round).

@@ -17,7 +17,7 @@ import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { ChessGame, ChessGameDocument } from './schemas/chess-game.schema';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
+import { calculateWinnerSettlement, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
 import {
   createInitialBoard,
@@ -182,8 +182,8 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       'forfeit',
     );
 
-    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(grossPayout));
+    const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
+    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(settlement));
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -530,12 +530,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       if (result.winner) {
         const winnerId = result.winner === 1 ? game.player1_id : game.player2_id;
         room.winner = winnerId;
-        const grossPayout = winnerGrossPayout(
+        const settlement = calculateWinnerSettlement(
           room.bet_amount,
           room.house_edge,
           room.players.length,
         );
-        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
       }
       await room.save();
       if (result.winner) {
@@ -643,17 +643,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           winnerId.toString(),
           'timeout',
         );
-        const grossPayout = winnerGrossPayout(
+        const settlement = calculateWinnerSettlement(
           room.bet_amount,
           room.house_edge,
           room.players.length,
         );
-        const displayPrize = winnerDisplayedPrize(
-          room.bet_amount,
-          room.house_edge,
-          room.players.length,
-        );
-        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+        const displayPrize = settlement.netWinnings;
+        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
         
         const sockets = await this.server.in(room_id).fetchSockets();
         const winnerUsername = await this.getCachedUsername(winnerId.toString());

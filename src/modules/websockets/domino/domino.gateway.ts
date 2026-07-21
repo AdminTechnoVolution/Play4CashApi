@@ -16,7 +16,7 @@ import { RoomsGateway } from '../rooms/rooms.gateway';
 import { DominoGame, DominoGameDocument } from './schemas/domino-game.schema';
 import { deal, getStartingPlayerIndex, getNextActivePlayerIndex, hasValidMoves, validateMove, getDominoGameResult } from './domino-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
+import { calculateWinnerSettlement, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
@@ -492,12 +492,12 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
         if (result.winner) {
           room.winner = new Types.ObjectId(result.winner);
-          const grossPayout = winnerGrossPayout(
+          const settlement = calculateWinnerSettlement(
             room.bet_amount,
             room.house_edge,
             room.players.length,
           );
-          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(grossPayout));
+          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(settlement));
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -630,12 +630,12 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         room.status = 'finished'; room.winner_reason = result.reason; room.finished_at = new Date();
         if (result.winner) {
           room.winner = new Types.ObjectId(result.winner);
-          const grossPayout = winnerGrossPayout(
+          const settlement = calculateWinnerSettlement(
             room.bet_amount,
             room.house_edge,
             room.players.length,
           );
-          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(grossPayout));
+          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(settlement));
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
@@ -750,12 +750,12 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         room.status = 'finished'; room.winner_reason = result.reason || reason; room.finished_at = new Date();
         if (result.winner) {
           room.winner = new Types.ObjectId(result.winner);
-          const grossPayout = winnerGrossPayout(
+          const settlement = calculateWinnerSettlement(
             room.bet_amount,
             room.house_edge,
             room.players.length,
           );
-          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(grossPayout));
+          await this.userModel.updateOne({ _id: result.winner }, winnerBalanceUpdate(settlement));
         }
         await room.save();
         const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();

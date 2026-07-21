@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Room, RoomDocument, RoomStatus } from './schemas/room.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
-import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../common/utils/game-prize.util';
+import { calculateWinnerSettlement, winnerBalanceUpdate } from '../../common/utils/game-prize.util';
 import { RoomsGateway } from '../websockets/rooms/rooms.gateway';
 import { NavalBattleGateway } from '../websockets/naval-battle/naval-battle.gateway';
 import { HalmaGateway } from '../websockets/halma/halma.gateway';
@@ -506,17 +506,13 @@ export class RoomService {
             return roomInfo;
           }
 
-          const grossPayout = winnerGrossPayout(
+          const settlement = calculateWinnerSettlement(
             roomInfo.bet_amount,
             roomInfo.house_edge,
             numPlayersAtStart,
           );
-          const displayPrize = winnerDisplayedPrize(
-            roomInfo.bet_amount,
-            roomInfo.house_edge,
-            numPlayersAtStart,
-          );
-          await this.userModel.updateOne({ _id: winner_id }, winnerBalanceUpdate(grossPayout));
+          const displayPrize = settlement.netWinnings;
+          await this.userModel.updateOne({ _id: winner_id }, winnerBalanceUpdate(settlement));
 
           const gameId = (roomInfo.game_id as any)?._id?.toString() || (roomInfo.game_id as any)?.toString();
           if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
