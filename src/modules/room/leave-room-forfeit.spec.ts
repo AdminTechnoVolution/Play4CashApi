@@ -7,6 +7,7 @@
  * STARTED 1v1 room must only credit the winner once.
  */
 import { Types } from 'mongoose';
+import { calculateWinnerSettlement, winnerBalanceUpdate } from '../../common/utils/game-prize.util';
 
 type RoomLike = {
   _id: Types.ObjectId;
@@ -36,8 +37,12 @@ function makeForfeit(roomModel: { findOneAndUpdate: jest.Mock }, userModel: { up
     );
     if (!finalized) return 'already_finalized';
 
-    const payout = room.bet_amount * room.players.length * (1 - room.house_edge);
-    await userModel.updateOne({ _id: winner_id }, { $inc: { balance: payout } });
+    const settlement = calculateWinnerSettlement(
+      room.bet_amount,
+      room.house_edge,
+      room.players.length,
+    );
+    await userModel.updateOne({ _id: winner_id }, winnerBalanceUpdate(settlement));
     return 'paid_out';
   };
 }
@@ -55,7 +60,7 @@ describe('leaveRoom STARTED → forfeit atomicity (Phase A)', () => {
       status: 'started',
       players: [{ playerId: loserId }, { playerId: winnerId }],
       bet_amount: 10,
-      house_edge: 0.1,
+      house_edge: 10,
     };
 
     // First call wins the lock; second call's findOneAndUpdate sees status=finished → null.
@@ -72,7 +77,7 @@ describe('leaveRoom STARTED → forfeit atomicity (Phase A)', () => {
     expect(userModel.updateOne).toHaveBeenCalledTimes(1);
     expect(userModel.updateOne).toHaveBeenCalledWith(
       { _id: winnerId },
-      { $inc: { balance: 10 * 2 * 0.9 } },
+      { $inc: { balance: 19, total_won: 9 } },
     );
   });
 

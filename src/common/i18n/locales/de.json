@@ -187,6 +187,7 @@
     "ws.uno.youWereChallenged": "{{username}} hat dich erwischt, weil du UNO nicht gesagt hast! Ziehe 2 Karten.",
     "ws.uno.playerChallenged": "{{accuser}} hat {{offender}} erwischt, weil UNO nicht gesagt wurde.",
     "ws.domino.playerLeftWaiting": "{{username}} hat verlassen. Warten auf weitere Spieler.",
+    "ws.domino.playerLeftWaitingGeneric": "Ein Spieler ist gegangen. Warten auf weitere Spieler.",
     "ws.domino.timeout": "Deine Zeit ist abgelaufen! Du wurdest eliminiert.",
     "ws.domino.youWinElimination": "Du hast gewonnen! Alle anderen Spieler wurden eliminiert.",
     "ws.domino.playerEliminated": "{{username}} wurde eliminiert.",

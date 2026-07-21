@@ -35,12 +35,13 @@ import {
   UnoColor,
 } from './uno-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
+import { calculateWinnerSettlement, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
+import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => {
@@ -383,12 +384,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       return;
     }
 
-    const started = await this.roomModel.findOneAndUpdate(
-      { _id: room_id, status: 'waiting' },
-      { $set: { status: 'started' } },
-      { returnDocument: 'after' },
-    );
-    if (!started) return;
+    const lease = await acquireGameStartLease(this.roomModel, room_id);
+    if (!lease) return;
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players uno_match_target');
     if (!room) return;
@@ -410,7 +407,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     }
     if (!allPaid) {
       for (const pid of paid) await this.userModel.updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } });
-      await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } });
+      await releaseGameStartLease(this.roomModel, room_id, lease.token);
       this.server.to(room_id).emit('uno', {
         success: false,
         messages: ['ws.games.insufficientBalance'],
@@ -433,8 +430,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       await this.unoModel
         .deleteOne({ room_id: new Types.ObjectId(room_id) })
         .catch((e) => this.logger.error(`[UNO] Game cleanup failed | room=${room_id}`, e));
-      await this.roomModel
-        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+      await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[UNO] Room status reset failed | room=${room_id}`, e));
       this.server.to(room_id).emit('uno', {
         success: false,
@@ -494,6 +490,12 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     if (!game) {
       // Defensive: `create()` returned without throwing but produced no doc (driver edge).
       await compensate('game_create_returned_null', 'ws.games.matchmakingError');
+      return;
+    }
+
+    const started = await publishGameStarted(this.roomModel, room_id, lease.token);
+    if (!started) {
+      await compensate('start_lease_lost', 'ws.games.matchmakingError');
       return;
     }
 
@@ -1128,8 +1130,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     room.winner = new Types.ObjectId(winnerId);
     room.winner_reason = 'win';
     room.finished_at = new Date();
-    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+    const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
+    await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
     game.match_winner_id = winnerId;
     game.between_rounds = false;
     game.next_round_starts_at = null;
@@ -1142,7 +1144,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
     const currentTurnUsername = await this.getCachedUsername(winnerId);
     const sockets = await this.server.in(room_id).fetchSockets();
-    const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
+    const displayPrize = settlement.netWinnings;
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;
@@ -1558,8 +1560,8 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         room.finished_at = new Date();
         if (winnerId) {
           room.winner = new Types.ObjectId(winnerId);
-          const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-          await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+          const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
+          await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
           // Surface match-end state to the schema so reconnecting clients see the right
           // payload (Phase 3 forfeit policy: any disconnect that leaves a sole survivor
           // ends the entire match, not just the round).

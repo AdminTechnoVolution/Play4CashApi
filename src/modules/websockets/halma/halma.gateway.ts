@@ -18,13 +18,14 @@ import { RoomsGateway } from '../rooms/rooms.gateway';
 import { HalmaGame, HalmaGameDocument } from './schemas/halma-game.schema';
 import { createHalmaBoard, isValidStep, isValidJump, canJumpFurther, HalmaBoard, P1_NORMAL, P2_NORMAL, P1_KING, P2_KING, isOwner } from './halma-game.logic';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
+import { calculateWinnerSettlement, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
 import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
+import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -145,8 +146,8 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       'forfeit',
     );
 
-    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(grossPayout));
+    const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
+    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(settlement));
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -303,8 +304,8 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       return;
     }
 
-    const started = await this.roomModel.findOneAndUpdate({ _id: room_id, status: 'waiting' }, { $set: { status: 'started' } }, { returnDocument: 'after' });
-    if (!started) return;
+    const lease = await acquireGameStartLease(this.roomModel, room_id);
+    if (!lease) return;
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: any[] = [];
@@ -319,8 +320,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       await this.halmaModel
         .deleteOne({ room_id: new Types.ObjectId(room_id) })
         .catch((e) => this.logger.error(`[Halma] Game cleanup failed | room=${room_id}`, e));
-      await this.roomModel
-        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+      await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[Halma] Room status reset failed | room=${room_id}`, e));
       this.server
         .to(room_id)
@@ -355,6 +355,12 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     } catch (e) {
       this.logger.error(`[Halma] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+
+    const started = await publishGameStarted(this.roomModel, room_id, lease.token);
+    if (!started) {
+      await compensate('ws.games.matchmakingError', 'start_lease_lost');
       return;
     }
 
@@ -605,12 +611,12 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
             winnerId.toString(),
             winReason,
           );
-          const grossPayout = winnerGrossPayout(
+          const settlement = calculateWinnerSettlement(
             room.bet_amount,
             room.house_edge,
             room.players.length,
           );
-          await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+          await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
         }
 
         const winnerUsername = !isDraw ? await this.getCachedUsername((automatedWinner === 1 ? game.player1_id : game.player2_id).toString()) : null;
@@ -693,17 +699,13 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           winnerId.toString(),
           'timeout',
         );
-        const grossPayout = winnerGrossPayout(
+        const settlement = calculateWinnerSettlement(
           room.bet_amount,
           room.house_edge,
           room.players.length,
         );
-        const displayPrize = winnerDisplayedPrize(
-          room.bet_amount,
-          room.house_edge,
-          room.players.length,
-        );
-        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+        const displayPrize = settlement.netWinnings;
+        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
         
         const sockets = await this.server.in(room_id).fetchSockets();
         const winnerUsername = await this.getCachedUsername(winnerId.toString());

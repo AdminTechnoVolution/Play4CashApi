@@ -20,7 +20,7 @@ import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { RoomsGateway } from '../rooms/rooms.gateway';
 import { ConnectFourGame, ConnectFourGameDocument } from './schemas/connect-four-game.schema';
 import { I18nService } from '../../../common/i18n/i18n.service';
-import { winnerGrossPayout, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
+import { calculateWinnerSettlement, winnerDisplayedPrize, winnerBalanceUpdate } from '../../../common/utils/game-prize.util';
 import { TournamentMatchService } from '../../tournament/services/tournament-match.service';
 import {
   coerceConnectFourBoard,
@@ -43,6 +43,7 @@ import {
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
+import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
 
 const EVENT = 'connect-four';
 const EDGE_COMMAND_STREAM = 'p4c:rt:connect-four:commands';
@@ -453,12 +454,8 @@ export class ConnectFourGateway
       return;
     }
 
-    const started = await this.roomModel.findOneAndUpdate(
-      { _id: room_id, status: 'waiting' },
-      { $set: { status: 'started', turn_start_time: new Date() } },
-      { returnDocument: 'after' },
-    );
-    if (!started) return;
+    const lease = await acquireGameStartLease(this.roomModel, room_id);
+    if (!lease) return;
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: Types.ObjectId[] = [];
@@ -470,7 +467,7 @@ export class ConnectFourGateway
           .catch((e) => this.logger.error(`[ConnectFour] Edge refund failed | player=${pid}`, e));
       }
       await this.gameModel.deleteOne({ room_id: new Types.ObjectId(room_id) }).catch(() => null);
-      await this.roomModel.findByIdAndUpdate(room_id, { $set: { status: 'waiting' } }).catch(() => null);
+      await releaseGameStartLease(this.roomModel, room_id, lease.token).catch(() => null);
       for (const pid of [p1id, p2id]) {
         await this.publishEdgeEnvelope(
           { target: 'player', playerId: pid.toString() },
@@ -512,6 +509,9 @@ export class ConnectFourGateway
       this.logger.error(`[ConnectFour] Edge game create failed | room=${room_id}`, e);
       return compensate('ws.games.matchmakingError', 'game_create_failed');
     }
+
+    const started = await publishGameStarted(this.roomModel, room_id, lease.token, { turn_start_time: new Date() });
+    if (!started) return compensate('ws.games.matchmakingError', 'start_lease_lost');
 
     const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
     const freshGame = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -1084,8 +1084,8 @@ export class ConnectFourGateway
     room.finished_at = new Date();
     await room.save();
 
-    const grossPayout = winnerGrossPayout(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(grossPayout));
+    const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
+    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(settlement));
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -1313,12 +1313,8 @@ export class ConnectFourGateway
       dbPlayers: room.players.length,
     }, 'H2');
 
-    const started = await this.roomModel.findOneAndUpdate(
-      { _id: room_id, status: 'waiting' },
-      { $set: { status: 'started', turn_start_time: new Date() } },
-      { returnDocument: 'after' },
-    );
-    if (!started) return;
+    const lease = await acquireGameStartLease(this.roomModel, room_id);
+    if (!lease) return;
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: Types.ObjectId[] = [];
@@ -1333,8 +1329,7 @@ export class ConnectFourGateway
       await this.gameModel
         .deleteOne({ room_id: new Types.ObjectId(room_id) })
         .catch((e) => this.logger.error(`[ConnectFour] Game cleanup failed | room=${room_id}`, e));
-      await this.roomModel
-        .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
+      await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[ConnectFour] Room status reset failed | room=${room_id}`, e));
       this.server.to(room_id).emit(EVENT, {
         success: false,
@@ -1379,6 +1374,12 @@ export class ConnectFourGateway
     } catch (e) {
       this.logger.error(`[ConnectFour] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');
+      return;
+    }
+
+    const started = await publishGameStarted(this.roomModel, room_id, lease.token, { turn_start_time: new Date() });
+    if (!started) {
+      await compensate('ws.games.matchmakingError', 'start_lease_lost');
       return;
     }
 
@@ -1549,12 +1550,12 @@ export class ConnectFourGateway
         { $inc: { balance: finishedRoom.bet_amount } },
       );
     } else if (!isTournament) {
-      const grossPayout = winnerGrossPayout(
+      const settlement = calculateWinnerSettlement(
         finishedRoom.bet_amount,
         finishedRoom.house_edge,
         finishedRoom.players.length,
       );
-      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
     }
 
     const gameId =
@@ -1864,17 +1865,13 @@ export class ConnectFourGateway
       room.finished_at = new Date();
       await room.save();
 
-      const grossPayout = winnerGrossPayout(
+      const settlement = calculateWinnerSettlement(
         room.bet_amount,
         room.house_edge,
         room.players.length,
       );
-      const displayPrize = winnerDisplayedPrize(
-        room.bet_amount,
-        room.house_edge,
-        room.players.length,
-      );
-      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(grossPayout));
+      const displayPrize = settlement.netWinnings;
+      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
 
       const sockets = await this.server.in(room_id).fetchSockets();
       const winnerUsername = await this.getCachedUsername(winnerId.toString());
