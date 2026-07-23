@@ -21,6 +21,7 @@ import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
+  waitForGameDocument,
 } from '../../../common/ws/waiting-room-sync.util';
 import {
   acquireGameStartLease,
@@ -252,13 +253,6 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       }
     }
 
-    if (room.status === 'waiting' || room.status === 'started') {
-      await this.roomModel.updateOne(
-        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
-        { $set: { 'players.$.ready': true } },
-      );
-    }
-
     const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
     client.data.playerNum = playerIndex + 1;
 
@@ -332,8 +326,25 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       },
     });
 
-    if (room.players.length >= maxPlayers && room.players.every((player: any) => player.ready) && (room.status === 'waiting' || room.status === 'started')) {
+    const readyRoom = await this.roomModel.findOneAndUpdate(
+      {
+        _id: room_id,
+        status: { $in: ['waiting', 'started'] },
+        'players.playerId': new Types.ObjectId(player_id),
+      },
+      { $set: { 'players.$.ready': true } },
+      { returnDocument: 'after' },
+    ).populate('game_id', 'turn_timer_seconds max_players');
+    const authoritativeRoom = readyRoom || room;
+
+    if (
+      authoritativeRoom.players.length >= maxPlayers &&
+      authoritativeRoom.players.every((player: any) => player.ready) &&
+      (authoritativeRoom.status === 'waiting' || authoritativeRoom.status === 'started')
+    ) {
       await this.tryStartDominoGame(room_id, lang);
+      const durableGame = await waitForGameDocument(this.dominoModel, room_id);
+      if (durableGame) return this.handleJoin(client, payload);
     }
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartDominoGame(room_id, lang));
   }
@@ -355,6 +366,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
     const playerIds = room.players.map((p: any) => p.playerId);
     const paid: Types.ObjectId[] = [];
+    let createdGameId: Types.ObjectId | null = null;
 
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=domino_start_failed room=${room_id} reason=${reason}`);
@@ -363,9 +375,11 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
           .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
           .catch((e) => this.logger.error(`[Domino] Refund failed | player=${pid}`, e));
       }
-      await this.dominoModel
-        .deleteOne({ room_id: new Types.ObjectId(room_id) })
-        .catch((e) => this.logger.error(`[Domino] Game cleanup failed | room=${room_id}`, e));
+      if (createdGameId) {
+        await this.dominoModel
+          .deleteOne({ _id: createdGameId })
+          .catch((e) => this.logger.error(`[Domino] Game cleanup failed | room=${room_id}`, e));
+      }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[Domino] Room status reset failed | room=${room_id}`, e));
       this.server
@@ -401,7 +415,8 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     const handsRecord: Record<string, any> = {};
     hands.forEach((v, k) => { handsRecord[k] = v; });
     try {
-      await this.dominoModel.create({ room_id, player_ids: playerIds, hands: handsRecord, boneyard, current_player_index: startIdx, turn_start_time: new Date() });
+      const created = await this.dominoModel.create({ room_id, player_ids: playerIds, hands: handsRecord, boneyard, current_player_index: startIdx, turn_start_time: new Date() });
+      createdGameId = created._id;
     } catch (e) {
       this.logger.error(`[Domino] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');
@@ -426,7 +441,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       const myHand = sIsSpectator ? [] : (hands.get(pid) || []);
       const isMyTurn = sIsSpectator ? false : startingPlayerId === pid;
       const sLang = this.getLang(s as unknown as Socket);
-      (s as unknown as Socket).emit('domino', { success: true, data: { hand: myHand, board: [], boneyardCount: boneyard.length, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: startingUsername, gameStarted: true, isSpectator: sIsSpectator }, messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isMyTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.gameStarted', sLang)] });
+      (s as unknown as Socket).emit('domino', { success: true, data: { hand: myHand, board: [], boneyardCount: boneyard.length, yourTurn: isMyTurn, turnTimerSeconds: timerSec, currentTurnUsername: startingUsername, gameStarted: true, waitingForOpponent: false, isSpectator: sIsSpectator }, messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isMyTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.gameStarted', sLang)] });
       if (isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
     }
     const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();

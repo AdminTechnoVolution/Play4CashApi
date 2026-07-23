@@ -75,6 +75,14 @@ describe('game start coordinator', () => {
       expect.objectContaining({
         _id: 'room-1',
         status: { $in: ['waiting', 'started'] },
+        $and: [
+          {
+            $or: [
+              { game_ready_at: { $exists: false } },
+              { game_ready_at: null },
+            ],
+          },
+        ],
       }),
       expect.anything(),
       expect.anything(),

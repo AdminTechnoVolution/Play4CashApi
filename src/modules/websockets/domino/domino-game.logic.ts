@@ -3,6 +3,11 @@
 export type Tile = [number, number];
 export interface OpenEnds { left?: number; right?: number; }
 
+const MIN_PLAYERS = 2;
+const MAX_PLAYERS = 10;
+const MAX_HAND_SIZE = 7;
+const DOUBLE_SIX_TILE_COUNT = 28;
+
 const generateTiles = (): Tile[] => {
   const t: Tile[] = [];
   for (let i = 0; i <= 6; i++) for (let j = i; j <= 6; j++) t.push([i, j]);
@@ -10,9 +15,15 @@ const generateTiles = (): Tile[] => {
 };
 
 export const deal = (playerIds: string[]): { hands: Map<string, Tile[]>; boneyard: Tile[] } => {
+  if (playerIds.length < MIN_PLAYERS || playerIds.length > MAX_PLAYERS) {
+    throw new RangeError(`Domino requires between ${MIN_PLAYERS} and ${MAX_PLAYERS} players`);
+  }
   const all = generateTiles().sort(() => Math.random() - 0.5);
   const hands = new Map<string, Tile[]>();
-  playerIds.forEach(id => hands.set(id, all.splice(0, 7)));
+  // Double-six only has 28 tiles. Keep hands equal and non-empty for every
+  // supported room size instead of exhausting the set after four players.
+  const handSize = Math.min(MAX_HAND_SIZE, Math.floor(DOUBLE_SIX_TILE_COUNT / playerIds.length));
+  playerIds.forEach(id => hands.set(id, all.splice(0, handSize)));
   return { hands, boneyard: all };
 };
 

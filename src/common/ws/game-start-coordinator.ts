@@ -17,6 +17,14 @@ export async function acquireGameStartLease<T = any>(
     {
       _id: roomId,
       status: { $in: ['waiting', 'started'] },
+      $and: [
+        {
+          $or: [
+            { game_ready_at: { $exists: false } },
+            { game_ready_at: null },
+          ],
+        },
+      ],
       $or: [{ start_lock: { $exists: false } }, { start_lock: null }],
     },
     { $set: { start_lock: token, start_locked_at: new Date() } },

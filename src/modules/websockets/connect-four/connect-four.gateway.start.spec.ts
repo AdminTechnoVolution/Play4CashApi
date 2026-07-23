@@ -17,15 +17,16 @@ function makeCompensate(deps: {
     paid: Types.ObjectId[],
     bet_amount: number,
     errKey: string,
+    createdGameId?: Types.ObjectId,
   ) {
     for (const pid of paid) {
       await deps.userModel
         .updateOne({ _id: pid }, { $inc: { balance: bet_amount } })
         .catch(() => {});
     }
-    await deps.gameModel
-      .deleteOne({ room_id: new Types.ObjectId(room_id) })
-      .catch(() => {});
+    if (createdGameId) {
+      await deps.gameModel.deleteOne({ _id: createdGameId }).catch(() => {});
+    }
     await deps.roomModel
       .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
       .catch(() => {});
@@ -77,11 +78,12 @@ describe('ConnectFour start contract', () => {
       const roomId = new Types.ObjectId().toString();
       const p1 = new Types.ObjectId();
       const p2 = new Types.ObjectId();
+      const createdGameId = new Types.ObjectId();
 
-      await compensate(roomId, [p1, p2], 50, 'ws.games.matchmakingError');
+      await compensate(roomId, [p1, p2], 50, 'ws.games.matchmakingError', createdGameId);
 
       expect(deps.userModel.updateOne).toHaveBeenCalledTimes(2);
-      expect(deps.gameModel.deleteOne).toHaveBeenCalledTimes(1);
+      expect(deps.gameModel.deleteOne).toHaveBeenCalledWith({ _id: createdGameId });
       expect(deps.roomModel.findByIdAndUpdate).toHaveBeenCalledWith(roomId, {
         $set: { status: 'waiting' },
       });
@@ -104,7 +106,7 @@ describe('ConnectFour start contract', () => {
       await compensate(roomId, [], 25, 'ws.games.insufficientBalance');
 
       expect(deps.userModel.updateOne).not.toHaveBeenCalled();
-      expect(deps.gameModel.deleteOne).toHaveBeenCalled();
+      expect(deps.gameModel.deleteOne).not.toHaveBeenCalled();
       expect(deps.roomModel.findByIdAndUpdate).toHaveBeenCalled();
     });
   });

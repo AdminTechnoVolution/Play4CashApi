@@ -70,6 +70,9 @@ export interface UnoDealResult {
  * drawPile[0] is the next card to draw (shift).
  */
 export function dealUnoInitialState(playerIds: string[]): UnoDealResult {
+  if (playerIds.length < 2 || playerIds.length > 10) {
+    throw new RangeError('UNO requires between 2 and 10 players');
+  }
   const shuffled = shuffleUnoDeck(buildUnoDeck());
   const hands: Record<string, string[]> = Object.fromEntries(playerIds.map((id) => [id, []]));
 

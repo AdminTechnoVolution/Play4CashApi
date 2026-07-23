@@ -459,6 +459,7 @@ export class ConnectFourGateway
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: Types.ObjectId[] = [];
+    let createdGameId: Types.ObjectId | null = null;
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=connect_four_edge_start_failed room=${room_id} reason=${reason}`);
       for (const pid of paid) {
@@ -466,7 +467,9 @@ export class ConnectFourGateway
           .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
           .catch((e) => this.logger.error(`[ConnectFour] Edge refund failed | player=${pid}`, e));
       }
-      await this.gameModel.deleteOne({ room_id: new Types.ObjectId(room_id) }).catch(() => null);
+      if (createdGameId) {
+        await this.gameModel.deleteOne({ _id: createdGameId }).catch(() => null);
+      }
       await releaseGameStartLease(this.roomModel, room_id, lease.token).catch(() => null);
       for (const pid of [p1id, p2id]) {
         await this.publishEdgeEnvelope(
@@ -495,7 +498,7 @@ export class ConnectFourGateway
     paid.push(p2id);
 
     try {
-      await this.gameModel.create({
+      const created = await this.gameModel.create({
         room_id: new Types.ObjectId(room_id),
         player1_id: p1id,
         player2_id: p2id,
@@ -505,6 +508,7 @@ export class ConnectFourGateway
         turn_start_time: new Date(),
         move_revision: 0,
       });
+      createdGameId = created._id;
     } catch (e) {
       this.logger.error(`[ConnectFour] Edge game create failed | room=${room_id}`, e);
       return compensate('ws.games.matchmakingError', 'game_create_failed');
@@ -1326,6 +1330,7 @@ export class ConnectFourGateway
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: Types.ObjectId[] = [];
+    let createdGameId: Types.ObjectId | null = null;
 
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=connect_four_start_failed room=${room_id} reason=${reason}`);
@@ -1334,9 +1339,11 @@ export class ConnectFourGateway
           .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
           .catch((e) => this.logger.error(`[ConnectFour] Refund failed | player=${pid}`, e));
       }
-      await this.gameModel
-        .deleteOne({ room_id: new Types.ObjectId(room_id) })
-        .catch((e) => this.logger.error(`[ConnectFour] Game cleanup failed | room=${room_id}`, e));
+      if (createdGameId) {
+        await this.gameModel
+          .deleteOne({ _id: createdGameId })
+          .catch((e) => this.logger.error(`[ConnectFour] Game cleanup failed | room=${room_id}`, e));
+      }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[ConnectFour] Room status reset failed | room=${room_id}`, e));
       this.server.to(room_id).emit(EVENT, {
@@ -1369,7 +1376,7 @@ export class ConnectFourGateway
 
     const board = createEmptyBoard();
     try {
-      await this.gameModel.create({
+      const created = await this.gameModel.create({
         room_id: new Types.ObjectId(room_id),
         player1_id: p1id,
         player2_id: p2id,
@@ -1379,6 +1386,7 @@ export class ConnectFourGateway
         turn_start_time: new Date(),
         move_revision: 0,
       });
+      createdGameId = created._id;
     } catch (e) {
       this.logger.error(`[ConnectFour] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');
