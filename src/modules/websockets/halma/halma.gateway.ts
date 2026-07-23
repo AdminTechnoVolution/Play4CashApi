@@ -92,8 +92,16 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       return;
     }
 
-    if (room.status === 'waiting') {
-      const updated = await this.roomModel.findOneAndUpdate({ _id: roomObjId, 'players.playerId': playerObjId }, { $pull: { players: { playerId: playerObjId } } }, { returnDocument: 'after' });
+    if (room.status === 'waiting' || (room.status === 'started' && !room.game_ready_at)) {
+      const updated = await this.roomModel.findOneAndUpdate(
+        { _id: roomObjId, 'players.playerId': playerObjId },
+        {
+          $pull: { players: { playerId: playerObjId } },
+          $set: { status: 'waiting', updated_at: new Date() },
+          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
+        },
+        { returnDocument: 'after' },
+      );
       const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
       if (updated?.players.length === 0) {
         await this.roomModel.findOneAndDelete({ _id: roomObjId, players: { $size: 0 } });
@@ -192,9 +200,9 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     client.data.room_id = room_id;
     client.data.isSpectator = !isMember;
 
-    if (isMember && room.status === 'waiting') {
+    if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
-        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
         { $set: { 'players.$.ready': true } },
       );
     }
@@ -284,7 +292,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     });
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-    if (room.players.length >= maxPlayers && room.players.every((player: any) => player.ready) && room.status === 'waiting') {
+    if (room.players.length >= maxPlayers && room.players.every((player: any) => player.ready) && (room.status === 'waiting' || room.status === 'started')) {
       await this.tryStartHalmaGame(room_id, lang);
     }
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartHalmaGame(room_id, lang));
@@ -297,7 +305,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
   private async tryStartHalmaGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room || room.status !== 'waiting') return;
+    if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
     if (room.players.length < maxPlayers || !room.players[0]?.playerId || !room.players[1]?.playerId || !room.players.every((player: any) => player.ready)) {

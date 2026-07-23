@@ -80,6 +80,15 @@ export class RoomController {
     return this.roomService.getRoomStatus(id);
   }
 
+  @Get(':id/state')
+  @ApiOperation({ summary: 'Get authoritative room state for the authenticated user' })
+  getRoomState(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+  ) {
+    return this.roomService.getRoomState(id, user.id);
+  }
+
   @Post()
   @ApiOperation({ summary: 'Create a new room (supports Idempotency-Key for safe retries)' })
   async createRoom(

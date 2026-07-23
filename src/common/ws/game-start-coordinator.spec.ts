@@ -29,9 +29,16 @@ describe('game start coordinator', () => {
     await publishGameStarted(model, 'room-1', 'lease-1', { turn_start_time: expect.anything() });
 
     expect(model.findOneAndUpdate).toHaveBeenCalledWith(
-      { _id: 'room-1', status: 'waiting', start_lock: 'lease-1' },
+      {
+        _id: 'room-1',
+        status: { $in: ['waiting', 'started'] },
+        start_lock: 'lease-1',
+      },
       expect.objectContaining({
-        $set: expect.objectContaining({ status: 'started' }),
+        $set: expect.objectContaining({
+          status: 'started',
+          game_ready_at: expect.any(Date),
+        }),
         $unset: { start_lock: 1, start_locked_at: 1 },
       }),
       { returnDocument: 'after' },
@@ -44,8 +51,33 @@ describe('game start coordinator', () => {
     await releaseGameStartLease(model, 'room-1', 'lease-1');
 
     expect(model.updateOne).toHaveBeenCalledWith(
-      { _id: 'room-1', status: 'waiting', start_lock: 'lease-1' },
+      {
+        _id: 'room-1',
+        status: { $in: ['waiting', 'started'] },
+        start_lock: 'lease-1',
+      },
       { $unset: { start_lock: 1, start_locked_at: 1 } },
+    );
+  });
+
+  it('can initialize game state after the HTTP join already published started', async () => {
+    const model = {
+      findOneAndUpdate: jest.fn().mockResolvedValue({
+        _id: 'room-1',
+        status: 'started',
+        start_lock: 'lease-1',
+      }),
+    } as any;
+
+    await acquireGameStartLease(model, 'room-1');
+
+    expect(model.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: 'room-1',
+        status: { $in: ['waiting', 'started'] },
+      }),
+      expect.anything(),
+      expect.anything(),
     );
   });
 });

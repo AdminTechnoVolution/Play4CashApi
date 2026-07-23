@@ -387,9 +387,9 @@ export class ConnectFourGateway
     }
 
     const playerNum = isMember ? this.resolvePlayerNumFromRoom(player_id, room) : 0;
-    if (isMember && room.status === 'waiting') {
+    if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
-        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
         { $set: { 'players.$.ready': true } },
       );
     }
@@ -442,14 +442,14 @@ export class ConnectFourGateway
     );
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-    if (room.players.length >= maxPlayers && room.status === 'waiting') {
+    if (room.players.length >= maxPlayers && (room.status === 'waiting' || room.status === 'started')) {
       await this.tryStartConnectFourGameForEdge(room_id, command.lang);
     }
   }
 
   private async tryStartConnectFourGameForEdge(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room || room.status !== 'waiting') return;
+    if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
     if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId || !room.players.every((player: any) => player.ready)) {
       return;
     }
@@ -875,10 +875,14 @@ export class ConnectFourGateway
       return;
     }
 
-    if (room.status === 'waiting') {
+    if (room.status === 'waiting' || (room.status === 'started' && !room.game_ready_at)) {
       const updated = await this.roomModel.findOneAndUpdate(
         { _id: roomObjId, 'players.playerId': playerObjId },
-        { $pull: { players: { playerId: playerObjId } } },
+        {
+          $pull: { players: { playerId: playerObjId } },
+          $set: { status: 'waiting', updated_at: new Date() },
+          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
+        },
         { returnDocument: 'after' },
       );
       if (!updated) return;
@@ -1018,10 +1022,14 @@ export class ConnectFourGateway
       return;
     }
 
-    if (room.status === 'waiting') {
+    if (room.status === 'waiting' || (room.status === 'started' && !room.game_ready_at)) {
       const updated = await this.roomModel.findOneAndUpdate(
         { _id: roomObjId, 'players.playerId': playerObjId },
-        { $pull: { players: { playerId: playerObjId } } },
+        {
+          $pull: { players: { playerId: playerObjId } },
+          $set: { status: 'waiting', updated_at: new Date() },
+          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
+        },
         { returnDocument: 'after' },
       );
       if (!updated) return;
@@ -1176,9 +1184,9 @@ export class ConnectFourGateway
     client.data.room_id = room_id;
     client.data.isSpectator = !isMember;
 
-    if (isMember && room.status === 'waiting') {
+    if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
-        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
         { $set: { 'players.$.ready': true } },
       );
     }
@@ -1275,7 +1283,7 @@ export class ConnectFourGateway
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
     if (
       room.players.length >= maxPlayers &&
-      room.status === 'waiting' &&
+      (room.status === 'waiting' || room.status === 'started') &&
       room.players[0]?.playerId &&
       room.players[1]?.playerId
     ) {
@@ -1303,7 +1311,7 @@ export class ConnectFourGateway
   /** Idempotent start when both player sockets are connected and the room is still waiting. */
   private async tryStartConnectFourGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room || room.status !== 'waiting') return;
+    if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
     if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId || !room.players.every((player: any) => player.ready)) {
       return;
     }

@@ -117,10 +117,14 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       return;
     }
 
-    if (room.status === 'waiting') {
+    if (room.status === 'waiting' || (room.status === 'started' && !room.game_ready_at)) {
       const updated = await this.roomModel.findOneAndUpdate(
         { _id: roomObjId, 'players.playerId': playerObjId },
-        { $pull: { players: { playerId: playerObjId } } },
+        {
+          $pull: { players: { playerId: playerObjId } },
+          $set: { status: 'waiting', updated_at: new Date() },
+          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
+        },
         { returnDocument: 'after' },
       );
       if (!updated) return;
@@ -230,9 +234,9 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     client.data.room_id = room_id;
     client.data.isSpectator = !isMember;
 
-    if (isMember && room.status === 'waiting') {
+    if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
-        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
         { $set: { 'players.$.ready': true } },
       );
     }
@@ -332,7 +336,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       },
     });
 
-    if (room.players.length >= 2 && room.players.every((player: any) => player.ready) && room.status === 'waiting') {
+    if (room.players.length >= 2 && room.players.every((player: any) => player.ready) && (room.status === 'waiting' || room.status === 'started')) {
       await this.tryStartChessGame(room_id, lang);
     }
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartChessGame(room_id, lang));
@@ -346,7 +350,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   /** Idempotent start when DB has two players; socket count must not gate start. */
   private async tryStartChessGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room || room.status !== 'waiting') return;
+    if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
     if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId || !room.players.every((player: any) => player.ready)) {
       return;
     }
