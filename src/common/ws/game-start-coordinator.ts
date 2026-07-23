@@ -4,8 +4,9 @@ import { Model } from 'mongoose';
 export type GameStartLease<T> = { token: string; room: T };
 
 /**
- * Keeps a room publicly `waiting` while a gateway prepares balances and game
- * state. Only the lease owner may publish `started` or roll the attempt back.
+ * Serializes game-state initialization. A room may already be publicly `started`
+ * because its roster became full in the HTTP join transaction; the lease still
+ * guarantees that only one gateway instance creates game state and charges bets.
  */
 export async function acquireGameStartLease<T = any>(
   roomModel: Model<any>,
@@ -15,7 +16,7 @@ export async function acquireGameStartLease<T = any>(
   const room = await roomModel.findOneAndUpdate(
     {
       _id: roomId,
-      status: 'waiting',
+      status: { $in: ['waiting', 'started'] },
       $or: [{ start_lock: { $exists: false } }, { start_lock: null }],
     },
     { $set: { start_lock: token, start_locked_at: new Date() } },
@@ -31,9 +32,9 @@ export async function publishGameStarted(
   extra: Record<string, unknown> = {},
 ): Promise<any | null> {
   return roomModel.findOneAndUpdate(
-    { _id: roomId, status: 'waiting', start_lock: token },
+    { _id: roomId, status: { $in: ['waiting', 'started'] }, start_lock: token },
     {
-      $set: { status: 'started', ...extra },
+      $set: { status: 'started', game_ready_at: new Date(), ...extra },
       $unset: { start_lock: 1, start_locked_at: 1 },
     },
     { returnDocument: 'after' },
@@ -46,7 +47,7 @@ export async function releaseGameStartLease(
   token: string,
 ): Promise<void> {
   await roomModel.updateOne(
-    { _id: roomId, status: 'waiting', start_lock: token },
+    { _id: roomId, status: { $in: ['waiting', 'started'] }, start_lock: token },
     { $unset: { start_lock: 1, start_locked_at: 1 } },
   );
 }

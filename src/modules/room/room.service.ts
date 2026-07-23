@@ -14,6 +14,8 @@ import { ConnectFourGateway } from '../websockets/connect-four/connect-four.gate
 import { agentDebugLog } from '../../common/ws/waiting-room-sync.util';
 import { TtlCache } from '../../common/ttl-cache';
 import { logSlowEvent } from '../../common/perf-log.util';
+import { randomBytes } from 'crypto';
+import { buildAuthoritativeRoomState } from './room-state.mapper';
 
 @Injectable()
 export class RoomService {
@@ -142,6 +144,21 @@ export class RoomService {
     });
   }
 
+  async getRoomState(id: string, userId: string): Promise<any> {
+    this.logger.log(`event=room_state_requested room=${id} user=${userId}`);
+    const room = await this.roomModel
+      .findById(id)
+      .populate('game_id', 'socket_code min_players max_players')
+      .populate('players.playerId', 'username')
+      .lean();
+    if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
+    return {
+      success: true,
+      messages: [],
+      data: buildAuthoritativeRoomState(room, userId),
+    };
+  }
+
   // ── ACTIVE ROOM FOR USER ───────────────────────────────────────────────────
 
   /**
@@ -223,7 +240,6 @@ export class RoomService {
     const user = await this.userModel.findById(userId);
     if (!user || user.balance < betAmount) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
 
-    const { randomBytes } = await import('crypto');
     const code = randomBytes(8).toString('hex');
 
     let room: any;
@@ -236,7 +252,9 @@ export class RoomService {
         house_edge: game.house_edge,
         public: isPublic,
         player_limit: effectivePlayerLimit,
+        status: RoomStatus.WAITING,
         players: [{ playerId: new Types.ObjectId(userId), ready: false }],
+        updated_at: new Date(),
       });
     } catch (err) {
       // Phase C: partial unique index on `players.playerId` (active rooms only)
@@ -261,12 +279,24 @@ export class RoomService {
   // ── JOIN ROOM ───────────────────────────────────────────────────────────────
 
   async joinRoom(userId: string, roomId: string, lang = 'en'): Promise<RoomDocument> {
-    const roomInfo = await this.roomModel.findById(roomId).populate('game_id');
+    this.logger.log(`event=room_join_requested room=${roomId} user=${userId}`);
+    const roomInfo = await this.roomModel
+      .findById(roomId)
+      .populate('game_id')
+      .populate('players.playerId', 'username');
     if (!roomInfo) throw new BusinessException('ERROR_NOT_FOUND', 404);
+    const alreadyMember = roomInfo.players.some(
+      (p: any) => p.playerId.toString() === userId,
+    );
+    if (alreadyMember) {
+      return buildAuthoritativeRoomState(
+        roomInfo.toObject ? roomInfo.toObject() : roomInfo,
+        userId,
+      ) as any;
+    }
     if (roomInfo.status !== RoomStatus.WAITING) throw new BusinessException('ERROR_ROOM_NOT_WAITING', 400);
 
     const maxPlayers = roomInfo.player_limit || (roomInfo.game_id as any)?.max_players;
-    if (roomInfo.players.some((p: any) => p.playerId.toString() === userId)) throw new BusinessException('ERROR_ROOM_ALREADY_IN', 400);
 
     const user = await this.userModel.findById(userId);
     if (!user || user.balance < roomInfo.bet_amount) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
@@ -280,7 +310,37 @@ export class RoomService {
           [`players.${maxPlayers - 1}`]: { $exists: false },
           'players.playerId': { $ne: new Types.ObjectId(userId) },
         },
-        { $push: { players: { playerId: new Types.ObjectId(userId), ready: false } } },
+        [
+          {
+            $set: {
+              players: {
+                $concatArrays: [
+                  '$players',
+                  [{ playerId: new Types.ObjectId(userId), ready: false, moves: [] }],
+                ],
+              },
+              updated_at: '$$NOW',
+            },
+          },
+          {
+            $set: {
+              status: {
+                $cond: [
+                  { $eq: [{ $size: '$players' }, maxPlayers] },
+                  RoomStatus.STARTED,
+                  '$status',
+                ],
+              },
+              started_at: {
+                $cond: [
+                  { $eq: [{ $size: '$players' }, maxPlayers] },
+                  { $ifNull: ['$started_at', '$$NOW'] },
+                  '$started_at',
+                ],
+              },
+            },
+          },
+        ],
         { new: true },
       ).populate('game_id');
     } catch (err) {
@@ -300,10 +360,23 @@ export class RoomService {
     const populated = await this.roomModel.findById(room._id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();
     const [enriched] = this.localizeRooms([populated], lang);
     const gameId = (room.game_id as any)?._id?.toString() || (room.game_id as any)?.toString();
+    this.logger.log(
+      `event=room_player_added room=${roomId} user=${userId} currentPlayers=${room.players.length} requiredPlayers=${maxPlayers}`,
+    );
+    if (room.status === RoomStatus.STARTED) {
+      this.logger.log(
+        `event=room_required_players_reached room=${roomId} currentPlayers=${room.players.length} requiredPlayers=${maxPlayers}`,
+      );
+      this.logger.log(`event=room_started room=${roomId}`);
+    }
     this.roomsGateway.broadcastRoomUpdate(gameId, 'roomUpdated', enriched);
+    if (room.status === RoomStatus.STARTED) {
+      this.roomsGateway.broadcastRoomUpdate(gameId, 'roomStarted', enriched);
+      this.logger.log(`event=room_started_event_emitted room=${roomId} game=${gameId}`);
+    }
     this.invalidateReadCaches();
 
-    return room;
+    return buildAuthoritativeRoomState(populated, userId) as any;
   }
 
   // ── SPECTATE ROOM ───────────────────────────────────────────────────────────
@@ -335,7 +408,7 @@ export class RoomService {
   async setReady(userId: string, roomId: string, ready: boolean, lang = 'en'): Promise<RoomDocument> {
     const room = await this.roomModel.findById(roomId).populate('game_id', 'max_players');
     if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-    if (room.status !== RoomStatus.WAITING) return room;
+    if (room.status !== RoomStatus.WAITING && room.status !== RoomStatus.STARTED) return room;
 
     const player = room.players.find((p: any) => p.playerId.toString() === userId);
     if (!player) throw new BusinessException('ERROR_AUTH', 403);
@@ -397,10 +470,24 @@ export class RoomService {
       return updated;
     }
 
-    if (roomInfo.status === RoomStatus.WAITING) {
+    // A full roster is published as `started` atomically by joinRoom, before the
+    // game gateway finishes creating durable state and charging stakes. Leaving
+    // during that short phase is a lobby departure, never a paid forfeit.
+    const isPregameDeparture =
+      roomInfo.status === RoomStatus.WAITING ||
+      (roomInfo.status === RoomStatus.STARTED && !roomInfo.game_ready_at);
+    if (isPregameDeparture) {
       const updated = await this.roomModel.findOneAndUpdate(
-        { _id: roomId, status: RoomStatus.WAITING, 'players.playerId': new Types.ObjectId(userId) },
-        { $pull: { players: { playerId: new Types.ObjectId(userId) } } },
+        {
+          _id: roomId,
+          status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
+          'players.playerId': new Types.ObjectId(userId),
+        },
+        {
+          $pull: { players: { playerId: new Types.ObjectId(userId) } },
+          $set: { status: RoomStatus.WAITING, updated_at: new Date() },
+          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
+        },
         { new: true },
       );
       if (!updated) throw new BusinessException('ERROR_AUTH', 403);
@@ -586,7 +673,9 @@ export class RoomService {
     // 2. Room & Status
     const room = await this.roomModel.findById(roomId).populate('game_id');
     if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-    if (room.status !== RoomStatus.WAITING) throw new BusinessException('Room not in waiting status', 400);
+    if (room.status !== RoomStatus.WAITING && room.status !== RoomStatus.STARTED) {
+      throw new BusinessException('Room not accepting placements', 400);
+    }
 
     const player = room.players.find((p: any) => p.playerId.toString() === userId);
     if (!player) throw new BusinessException('ERROR_AUTH', 403);
@@ -632,8 +721,15 @@ export class RoomService {
 
     if (allReady) {
       const startedRoom = await this.roomModel.findOneAndUpdate(
-        { _id: roomId, status: RoomStatus.WAITING },
-        { $set: { status: RoomStatus.STARTED } },
+        { _id: roomId, status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] } },
+        {
+          $set: {
+            status: RoomStatus.STARTED,
+            started_at: room.started_at || new Date(),
+            game_ready_at: new Date(),
+            updated_at: new Date(),
+          },
+        },
         { new: true },
       );
       if (startedRoom) {

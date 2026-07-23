@@ -120,8 +120,16 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!room || room.status === 'finished') return;
     const lang = this.getLang(client);
 
-    if (room.status === 'waiting') {
-      const updated = await this.roomModel.findOneAndUpdate({ _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) }, { $pull: { players: { playerId: new Types.ObjectId(player_id) } } }, { returnDocument: 'after' });
+    if (room.status === 'waiting' || (room.status === 'started' && !room.game_ready_at)) {
+      const updated = await this.roomModel.findOneAndUpdate(
+        { _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) },
+        {
+          $pull: { players: { playerId: new Types.ObjectId(player_id) } },
+          $set: { status: 'waiting', updated_at: new Date() },
+          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
+        },
+        { returnDocument: 'after' },
+      );
       
       const roomOid = new Types.ObjectId(room_id);
       const allPlacements = await this.placementModel.find({ room_id: roomOid });
@@ -304,7 +312,9 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       const sockets = await this.server.in(room_id).fetchSockets();
       const opponentSocket = sockets.find(s => (s as any).data.player_id === opponent_id && !(s as any).data.isSpectator);
       const isOpponentTurn = opponentSocket && turnTimers.has(opponentSocket.id);
-      const isMyTurn = !isOpponentTurn && room.status === RoomStatus.STARTED;
+      const placementsReady = Boolean(opponentPlacement);
+      const isMyTurn =
+        placementsReady && !isOpponentTurn && room.status === RoomStatus.STARTED;
 
       if (isMyTurn) {
         const remaining = Number(timeLeft) || 30;
@@ -317,8 +327,8 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         shotsFired: myPlacement.shotsFired,
         shotsReceived: opponentPlacement?.shotsFired || [],
         status: myPlacement.status,
-        waitingForOpponent: room.status === RoomStatus.WAITING,
-        gameStarted: room.status === RoomStatus.STARTED,
+        waitingForOpponent: !placementsReady,
+        gameStarted: placementsReady && room.status === RoomStatus.STARTED,
         yourTurn: isMyTurn,
         turnTimerSeconds: 30,
         isSpectator: false,

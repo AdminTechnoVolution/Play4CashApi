@@ -45,6 +45,10 @@ export class Room {
   @Prop()
   start_locked_at?: Date;
   @Prop({ default: Date.now }) created_at: Date;
+  @Prop({ default: Date.now }) updated_at: Date;
+  @Prop() started_at?: Date;
+  /** Set only after the game gateway has created durable game state and charged stakes. */
+  @Prop() game_ready_at?: Date;
   @Prop() finished_at: Date;
   @Prop({ type: Types.ObjectId, ref: 'User' }) winner: Types.ObjectId;
   @Prop() winner_reason: string;

@@ -159,10 +159,14 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       return;
     }
 
-    if (room.status === 'waiting') {
+    if (room.status === 'waiting' || (room.status === 'started' && !room.game_ready_at)) {
       const updated = await this.roomModel.findOneAndUpdate(
         { _id: roomObjId, 'players.playerId': playerObjId },
-        { $pull: { players: { playerId: playerObjId } } },
+        {
+          $pull: { players: { playerId: playerObjId } },
+          $set: { status: 'waiting', updated_at: new Date() },
+          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
+        },
         { returnDocument: 'after' },
       );
       if (!updated) return;
@@ -293,9 +297,9 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       });
     }
 
-    if (room.status === 'waiting') {
+    if (room.status === 'waiting' || room.status === 'started') {
       await this.roomModel.updateOne(
-        { _id: room_id, status: 'waiting', 'players.playerId': new Types.ObjectId(player_id) },
+        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
         { $set: { 'players.$.ready': true } },
       );
     }
@@ -352,7 +356,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       },
     });
 
-    if (room.players.length >= maxPlayers && room.status === 'waiting') {
+    if (room.players.length >= maxPlayers && (room.status === 'waiting' || room.status === 'started')) {
       await this.tryStartUnoGame(room_id, lang);
     }
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartUnoGame(room_id, lang));
