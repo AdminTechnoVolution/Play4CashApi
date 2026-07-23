@@ -1144,7 +1144,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
     const currentTurnUsername = await this.getCachedUsername(winnerId);
     const sockets = await this.server.in(room_id).fetchSockets();
-    const displayPrize = settlement.netWinnings;
+    const displayPrize = settlement.netPrize;
 
     for (const s of sockets) {
       const pid = (s as any).data.player_id;

@@ -1,11 +1,11 @@
 import Decimal from 'decimal.js';
 
 export interface WinnerSettlement {
-  /** Own stake returned in full plus net winnings from opponents. */
+  /** Net amount credited to the winner after the house fee. */
   balanceCredit: number;
-  /** Opponents' stakes after the house fee; this is the prize shown to the winner. */
-  netWinnings: number;
-  /** Fee charged only against opponents' stakes. */
+  /** Net total pot shown as the winner's prize. */
+  netPrize: number;
+  /** Fee charged against the complete pot. */
   houseFee: number;
 }
 
@@ -19,8 +19,8 @@ function money(value: Decimal): number {
 
 /**
  * Settles a winner after every player already paid `betAmount` at match start.
- * The winner's own stake is returned without a fee; house edge applies only to
- * the stakes won from opponents.
+ * House edge applies to the complete pot. The winner's own stake is not returned
+ * separately because it is already part of that pot.
  */
 export function calculateWinnerSettlement(
   betAmount: number,
@@ -34,27 +34,25 @@ export function calculateWinnerSettlement(
     playerCount < 1 ||
     betAmount <= 0
   ) {
-    return { balanceCredit: 0, netWinnings: 0, houseFee: 0 };
+    return { balanceCredit: 0, netPrize: 0, houseFee: 0 };
   }
 
   const stake = new Decimal(betAmount).toDecimalPlaces(
     MONEY_DECIMAL_PLACES,
     Decimal.ROUND_HALF_UP,
   );
-  const opponents = Math.max(0, Math.floor(playerCount) - 1);
-  const opponentStakes = stake.mul(opponents);
+  const totalPot = stake.mul(Math.floor(playerCount));
   const edge = new Decimal(houseEdgePercent).clamp(0, 100).div(100);
-  const netWinnings = money(opponentStakes.mul(new Decimal(1).minus(edge)));
-  const houseFee = money(opponentStakes.minus(netWinnings));
-  const balanceCredit = money(stake.plus(netWinnings));
+  const netPrize = money(totalPot.mul(new Decimal(1).minus(edge)));
+  const houseFee = money(totalPot.minus(netPrize));
+  const balanceCredit = netPrize;
 
-  return { balanceCredit, netWinnings, houseFee };
+  return { balanceCredit, netPrize, houseFee };
 }
 
 /**
- * Amount shown as `prize` to the winner (UI / historial): stake from opponents
- * after house edge, not including the return of their own bet.
- * 1v1 with bet 10 → 10 × (1 − edge/100).
+ * Amount shown as `prize` to the winner (UI / history): complete pot after
+ * house edge. 1v1 with bet 10 → 20 × (1 − edge/100).
  */
 export function winnerDisplayedPrize(
   betAmount: number,
@@ -62,7 +60,7 @@ export function winnerDisplayedPrize(
   playerCount: number,
 ): number {
   return calculateWinnerSettlement(betAmount, houseEdgePercent, playerCount)
-    .netWinnings;
+    .netPrize;
 }
 
 export function winnerBalanceUpdate(settlement: WinnerSettlement): {
@@ -71,7 +69,7 @@ export function winnerBalanceUpdate(settlement: WinnerSettlement): {
   return {
     $inc: {
       balance: settlement.balanceCredit,
-      total_won: settlement.netWinnings,
+      total_won: settlement.netPrize,
     },
   };
 }

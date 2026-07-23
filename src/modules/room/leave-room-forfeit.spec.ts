@@ -77,7 +77,7 @@ describe('leaveRoom STARTED → forfeit atomicity (Phase A)', () => {
     expect(userModel.updateOne).toHaveBeenCalledTimes(1);
     expect(userModel.updateOne).toHaveBeenCalledWith(
       { _id: winnerId },
-      { $inc: { balance: 19, total_won: 9 } },
+      { $inc: { balance: 18, total_won: 18 } },
     );
   });
 
