@@ -92,7 +92,10 @@ export class UserService {
           lostAmount = room.bet_amount;
         }
 
-        const opponent = room.players.find((p: any) => p.playerId?._id?.toString() !== userId);
+        const opponents = room.players
+          .filter((p: any) => p.playerId?._id?.toString() !== userId)
+          .map((p: any) => ({ username: p.playerId?.username }))
+          .filter((opponent: { username?: string }) => Boolean(opponent.username));
 
         let gameName = 'Unknown';
         if (room.game_id?.name) {
@@ -115,7 +118,10 @@ export class UserService {
           prize,
           lost_amount: lostAmount,
           winner_reason: reason,
-          opponent: opponent ? { username: opponent.playerId?.username } : null,
+          // Keep the singular field for older clients while exposing every
+          // participant from multiplayer matches through `opponents`.
+          opponent: opponents[0] ?? null,
+          opponents,
           finished_at: room.finished_at,
           date: room.finished_at,
         };
