@@ -40,6 +40,7 @@ import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
   scheduleWaitingRoomReconcile,
+  waitForGameDocument,
 } from '../../../common/ws/waiting-room-sync.util';
 import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
 
@@ -297,13 +298,6 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       });
     }
 
-    if (room.status === 'waiting' || room.status === 'started') {
-      await this.roomModel.updateOne(
-        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
-        { $set: { 'players.$.ready': true } },
-      );
-    }
-
     const playerIndex = room.players.findIndex((p: any) => p.playerId.toString() === player_id);
     client.data.playerNum = playerIndex + 1;
 
@@ -356,8 +350,25 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       },
     });
 
-    if (room.players.length >= maxPlayers && (room.status === 'waiting' || room.status === 'started')) {
+    const readyRoom = await this.roomModel.findOneAndUpdate(
+      {
+        _id: room_id,
+        status: { $in: ['waiting', 'started'] },
+        'players.playerId': new Types.ObjectId(player_id),
+      },
+      { $set: { 'players.$.ready': true } },
+      { returnDocument: 'after' },
+    ).populate('game_id', 'turn_timer_seconds max_players uno_match_target');
+    const authoritativeRoom = readyRoom || room;
+
+    if (
+      authoritativeRoom.players.length >= maxPlayers &&
+      authoritativeRoom.players.every((player: any) => player.ready) &&
+      (authoritativeRoom.status === 'waiting' || authoritativeRoom.status === 'started')
+    ) {
       await this.tryStartUnoGame(room_id, lang);
+      const durableGame = await waitForGameDocument(this.unoModel, room_id);
+      if (durableGame) return this.handleJoin(client, payload);
     }
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartUnoGame(room_id, lang));
   }
@@ -396,6 +407,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
     const playerIds = room.players.map((p: any) => p.playerId);
     const paid: Types.ObjectId[] = [];
+    let createdGameId: Types.ObjectId | null = null;
     let allPaid = true;
     for (const pid of playerIds) {
       const deducted = await this.userModel.findOneAndUpdate(
@@ -431,9 +443,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
           .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
           .catch((e) => this.logger.error(`[UNO] Refund failed | player=${pid}`, e));
       }
-      await this.unoModel
-        .deleteOne({ room_id: new Types.ObjectId(room_id) })
-        .catch((e) => this.logger.error(`[UNO] Game cleanup failed | room=${room_id}`, e));
+      if (createdGameId) {
+        await this.unoModel
+          .deleteOne({ _id: createdGameId })
+          .catch((e) => this.logger.error(`[UNO] Game cleanup failed | room=${room_id}`, e));
+      }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[UNO] Room status reset failed | room=${room_id}`, e));
       this.server.to(room_id).emit('uno', {
@@ -485,6 +499,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         players_ready_for_next: [],
         round_history: [],
       });
+      createdGameId = game._id;
     } catch (e) {
       this.logger.error(`[UNO] Game create failed | room=${room_id}`, e);
       await compensate('game_create_failed', 'ws.games.matchmakingError');

@@ -19,6 +19,7 @@ import { User, UserSchema } from '../user/schemas/user.schema';
 import { Room, RoomSchema } from '../room/schemas/room.schema';
 import { TournamentModule } from '../tournament/tournament.module';
 import { Greeting, GreetingSchema } from '../greeting/schemas/greeting.schema';
+import { MissingGameRecoveryService } from '../../common/ws/missing-game-recovery.service';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { Greeting, GreetingSchema } from '../greeting/schemas/greeting.schema';
     ChatGateway,
     UnoGateway,
     ConnectFourGateway,
+    MissingGameRecoveryService,
   ],
   exports: [
     RoomsGateway,

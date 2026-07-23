@@ -317,6 +317,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: any[] = [];
+    let createdGameId: Types.ObjectId | null = null;
 
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=halma_start_failed room=${room_id} reason=${reason}`);
@@ -325,9 +326,11 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
           .catch((e) => this.logger.error(`[Halma] Refund failed | player=${pid}`, e));
       }
-      await this.halmaModel
-        .deleteOne({ room_id: new Types.ObjectId(room_id) })
-        .catch((e) => this.logger.error(`[Halma] Game cleanup failed | room=${room_id}`, e));
+      if (createdGameId) {
+        await this.halmaModel
+          .deleteOne({ _id: createdGameId })
+          .catch((e) => this.logger.error(`[Halma] Game cleanup failed | room=${room_id}`, e));
+      }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[Halma] Room status reset failed | room=${room_id}`, e));
       this.server
@@ -359,7 +362,8 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const board = createHalmaBoard();
     try {
-      await this.halmaModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, turn_start_time: new Date() });
+      const created = await this.halmaModel.create({ room_id, player1_id: p1id, player2_id: p2id, board, current_player: 1, turn_start_time: new Date() });
+      createdGameId = created._id;
     } catch (e) {
       this.logger.error(`[Halma] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');

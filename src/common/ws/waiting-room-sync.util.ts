@@ -75,6 +75,23 @@ export function scheduleWaitingRoomReconcile(
   );
 }
 
+/** Wait briefly for the lease owner to publish durable private game state. */
+export async function waitForGameDocument(
+  gameModel: { findOne(filter: Record<string, unknown>): PromiseLike<any> },
+  roomId: string,
+  attempts = 20,
+  delayMs = 50,
+): Promise<any | null> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const game = await gameModel.findOne({ room_id: roomId });
+    if (game) return game;
+    if (attempt + 1 < attempts) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return null;
+}
+
 export async function emitDbOpponentJoinedIfPresent(options: {
   room: { status: string; players: Array<{ playerId: { toString(): string } }> };
   joiningPlayerId: string;

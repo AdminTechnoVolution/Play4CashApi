@@ -49,6 +49,10 @@ export class User {
   @Prop({ default: 0 })
   total_won: number;
 
+  /** Idempotency keys for exceptional balance repairs; never exposed to clients. */
+  @Prop({ type: [String], default: [], select: false })
+  balance_adjustment_keys: string[];
+
   @Prop({ default: Date.now })
   created_at: Date;
 

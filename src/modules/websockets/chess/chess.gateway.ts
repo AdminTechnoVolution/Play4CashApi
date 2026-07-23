@@ -367,6 +367,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
     const paid: any[] = [];
+    let createdGameId: Types.ObjectId | null = null;
 
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=chess_start_failed room=${room_id} reason=${reason}`);
@@ -375,9 +376,11 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
           .catch((e) => this.logger.error(`[Chess] Refund failed | player=${pid}`, e));
       }
-      await this.chessGameModel
-        .deleteOne({ room_id: new Types.ObjectId(room_id) })
-        .catch((e) => this.logger.error(`[Chess] Game cleanup failed | room=${room_id}`, e));
+      if (createdGameId) {
+        await this.chessGameModel
+          .deleteOne({ _id: createdGameId })
+          .catch((e) => this.logger.error(`[Chess] Game cleanup failed | room=${room_id}`, e));
+      }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[Chess] Room status reset failed | room=${room_id}`, e));
       this.server
@@ -409,7 +412,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const board = createInitialBoard();
     try {
-      await this.chessGameModel.create({
+      const created = await this.chessGameModel.create({
         room_id,
         player1_id: p1id,
         player2_id: p2id,
@@ -419,6 +422,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         en_passant_target: null,
         turn_start_time: new Date(),
       });
+      createdGameId = created._id;
     } catch (e) {
       this.logger.error(`[Chess] Game create failed | room=${room_id}`, e);
       await compensate('ws.games.matchmakingError', 'game_create_failed');

@@ -25,15 +25,16 @@ function makeCompensate(deps: {
     paid: Types.ObjectId[],
     bet_amount: number,
     errKey: string,
+    createdGameId?: Types.ObjectId,
   ) {
     for (const pid of paid) {
       await deps.userModel
         .updateOne({ _id: pid }, { $inc: { balance: bet_amount } })
         .catch(() => {});
     }
-    await deps.unoModel
-      .deleteOne({ room_id: new Types.ObjectId(room_id) })
-      .catch(() => {});
+    if (createdGameId) {
+      await deps.unoModel.deleteOne({ _id: createdGameId }).catch(() => {});
+    }
     await deps.roomModel
       .findByIdAndUpdate(room_id, { $set: { status: 'waiting' } })
       .catch(() => {});
@@ -54,8 +55,9 @@ describe('tryStartUnoGame compensation (Phase A)', () => {
     const roomId = new Types.ObjectId().toString();
     const p1 = new Types.ObjectId();
     const p2 = new Types.ObjectId();
+    const createdGameId = new Types.ObjectId();
 
-    await compensate(roomId, [p1, p2], 25, 'ws.games.matchmakingError');
+    await compensate(roomId, [p1, p2], 25, 'ws.games.matchmakingError', createdGameId);
 
     expect(deps.userModel.updateOne).toHaveBeenCalledTimes(2);
     expect(deps.userModel.updateOne).toHaveBeenNthCalledWith(
@@ -68,7 +70,7 @@ describe('tryStartUnoGame compensation (Phase A)', () => {
       { _id: p2 },
       { $inc: { balance: 25 } },
     );
-    expect(deps.unoModel.deleteOne).toHaveBeenCalledTimes(1);
+    expect(deps.unoModel.deleteOne).toHaveBeenCalledWith({ _id: createdGameId });
     expect(deps.roomModel.findByIdAndUpdate).toHaveBeenCalledWith(
       roomId,
       { $set: { status: 'waiting' } },
@@ -93,7 +95,7 @@ describe('tryStartUnoGame compensation (Phase A)', () => {
     await compensate(roomId, [], 25, 'ws.games.insufficientBalance');
 
     expect(deps.userModel.updateOne).not.toHaveBeenCalled();
-    expect(deps.unoModel.deleteOne).toHaveBeenCalled();
+    expect(deps.unoModel.deleteOne).not.toHaveBeenCalled();
     expect(deps.roomModel.findByIdAndUpdate).toHaveBeenCalled();
   });
 
@@ -114,8 +116,9 @@ describe('tryStartUnoGame compensation (Phase A)', () => {
     const roomId = new Types.ObjectId().toString();
     const p1 = new Types.ObjectId();
     const p2 = new Types.ObjectId();
+    const createdGameId = new Types.ObjectId();
 
-    await compensate(roomId, [p1, p2], 10, 'ws.games.matchmakingError');
+    await compensate(roomId, [p1, p2], 10, 'ws.games.matchmakingError', createdGameId);
 
     // Both refund attempts were issued, the second succeeded, and the cleanup paths
     // (deleteOne + status reset + emit) still ran.
