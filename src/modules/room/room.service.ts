@@ -511,7 +511,7 @@ export class RoomService {
             roomInfo.house_edge,
             numPlayersAtStart,
           );
-          const displayPrize = settlement.netWinnings;
+          const displayPrize = settlement.netPrize;
           await this.userModel.updateOne({ _id: winner_id }, winnerBalanceUpdate(settlement));
 
           const gameId = (roomInfo.game_id as any)?._id?.toString() || (roomInfo.game_id as any)?.toString();

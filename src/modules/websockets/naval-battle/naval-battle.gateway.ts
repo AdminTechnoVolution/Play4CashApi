@@ -472,7 +472,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       await room.save();
       await this.tournamentMatchService?.tryCompleteFromFinishedRoom(room, player_id, 'normal');
       const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
-      const displayPrize = settlement.netWinnings;
+      const displayPrize = settlement.netPrize;
       await this.userModel.updateOne({ _id: player_id }, winnerBalanceUpdate(settlement));
       
       const p1Id = room.players[0]?.playerId?.toString();
@@ -576,7 +576,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
           'timeout',
         );
         const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
-        const displayPrize = settlement.netWinnings;
+        const displayPrize = settlement.netPrize;
         await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
         
         const winnerUsername = await this.getCachedUsername(winnerId.toString());

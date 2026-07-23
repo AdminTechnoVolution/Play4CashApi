@@ -704,7 +704,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           room.house_edge,
           room.players.length,
         );
-        const displayPrize = settlement.netWinnings;
+        const displayPrize = settlement.netPrize;
         await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
         
         const sockets = await this.server.in(room_id).fetchSockets();
