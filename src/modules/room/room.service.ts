@@ -341,7 +341,7 @@ export class RoomService {
             },
           },
         ],
-        { new: true },
+        { new: true, updatePipeline: true },
       ).populate('game_id');
     } catch (err) {
       // Phase C: partial unique index can fire here if the user already has
