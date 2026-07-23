@@ -48,7 +48,10 @@ function makeJoinHarness(requiredPlayers = 2) {
 
   const roomModel: any = {
     findById: jest.fn(() => new FakeQuery(room)),
-    findOneAndUpdate: jest.fn((filter: any, update: any[]) => {
+    findOneAndUpdate: jest.fn((filter: any, update: any[], options: any) => {
+      if (options?.updatePipeline !== true) {
+        throw new Error('Aggregation updates require updatePipeline: true');
+      }
       const requestedId = update?.[0]?.$set?.players?.$concatArrays?.[1]?.[0]?.playerId;
       const duplicate = room.players.some(
         (player: any) => player.playerId.toString() === requestedId?.toString(),
@@ -129,7 +132,7 @@ describe('RoomService authoritative room start synchronization', () => {
   });
 
   it('atomically starts a full room and returns both players to the joiner', async () => {
-    const { service, room, roomsGateway, joinerId } = makeJoinHarness(2);
+    const { service, room, roomModel, roomsGateway, joinerId } = makeJoinHarness(2);
 
     const state: any = await service.joinRoom(joinerId.toString(), room._id.toString());
 
@@ -143,6 +146,11 @@ describe('RoomService authoritative room start synchronization', () => {
       gameSocketCode: 'chess',
     }));
     expect(state.players.map((player: any) => player.username)).toEqual(['Creator', 'Joiner']);
+    expect(roomModel.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Array),
+      expect.objectContaining({ new: true, updatePipeline: true }),
+    );
     expect(roomsGateway.broadcastRoomUpdate).toHaveBeenCalledWith(
       room.game_id._id.toString(),
       'roomStarted',
