@@ -34,6 +34,7 @@ import {
   agentDebugLog,
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
+  initialTurnDeadlineSeconds,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
 import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
@@ -450,7 +451,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst && !sIsSpectator, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false, isSpectator: sIsSpectator,
         castlingAvailable: this.getCastlingAvailable(board, initialState, sPNum as 1 | 2) },
         messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isFirst ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.waitingOpponent', sLang)] });
-      if (isFirst) this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+      if (isFirst) {
+        this.startTimer(
+          s as unknown as Socket,
+          room_id,
+          initialTurnDeadlineSeconds(timerSeconds),
+        );
+      }
     }
     const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
     const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();

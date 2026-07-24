@@ -23,6 +23,7 @@ import { TournamentMatchService } from '../../tournament/services/tournament-mat
 import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
+  initialTurnDeadlineSeconds,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
 import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
@@ -387,7 +388,9 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         data: { board, yourTurn: isTurn && !sIsSpectator, isPlayerOne: pNum === 1, gameStarted: true, turnTimerSeconds: 30, isSpectator: sIsSpectator },
         messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isTurn ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.waitingOpponent', sLang)],
       });
-      if (isTurn) this.startTimer(s as unknown as Socket, room_id, 30);
+      if (isTurn) {
+        this.startTimer(s as unknown as Socket, room_id, initialTurnDeadlineSeconds(30));
+      }
     }
     const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
     const populated = await this.roomModel.findById(room_id).populate('game_id', '-created_at').populate('players.playerId', 'username').lean();

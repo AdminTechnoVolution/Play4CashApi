@@ -41,6 +41,7 @@ import {
   agentDebugLog,
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
+  initialTurnDeadlineSeconds,
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
 import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
@@ -520,7 +521,14 @@ export class ConnectFourGateway
     const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
     const freshGame = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
     const populatedRoom = await this.roomModel.findById(room_id).populate('game_id');
-    if (p1id) void this.turnDeadlines.schedule('connect-four', room_id, p1id.toString(), timerSeconds);
+    if (p1id) {
+      void this.turnDeadlines.schedule(
+        'connect-four',
+        room_id,
+        p1id.toString(),
+        initialTurnDeadlineSeconds(timerSeconds),
+      );
+    }
 
     for (const playerNum of [1, 2] as const) {
       const playerId = playerNum === 1 ? p1id.toString() : p2id.toString();
@@ -1440,7 +1448,11 @@ export class ConnectFourGateway
               ],
         });
         if (isFirst && !sIsSpectator) {
-          this.startTimer(s as unknown as Socket, room_id, timerSeconds);
+          this.startTimer(
+            s as unknown as Socket,
+            room_id,
+            initialTurnDeadlineSeconds(timerSeconds),
+          );
         }
       } catch (emitErr) {
         this.logger.error(
