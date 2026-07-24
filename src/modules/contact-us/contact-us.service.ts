@@ -67,6 +67,26 @@ export class ContactUsService {
     return { success: true, messages: [], data: messages };
   }
 
+  async listMine(userId: string) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BusinessException('ERROR_AUTH', 401);
+    }
+    const messages = await this.contactMessageModel
+      .find({ user_id: new Types.ObjectId(userId) })
+      .select('type message all_games game_labels status public_response admin_notes createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .lean();
+    return {
+      success: true,
+      messages: [],
+      data: messages.map((message: any) => ({
+        ...message,
+        public_response: message.public_response || message.admin_notes || '',
+        admin_notes: undefined,
+      })),
+    };
+  }
+
   async getById(id: string) {
     if (!Types.ObjectId.isValid(id)) {
       throw new BusinessException('ERROR_NOT_FOUND', 404);
@@ -84,6 +104,7 @@ export class ContactUsService {
     const patch: Partial<ContactMessage> = {};
     if (dto.status !== undefined) patch.status = dto.status;
     if (dto.admin_notes !== undefined) patch.admin_notes = dto.admin_notes;
+    if (dto.public_response !== undefined) patch.public_response = dto.public_response;
 
     if (Object.keys(patch).length === 0) {
       return this.getById(id);

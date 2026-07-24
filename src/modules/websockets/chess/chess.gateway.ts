@@ -38,6 +38,7 @@ import {
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
 import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
+import { recordGameAuditAction } from '../../../common/game-audit-evidence.util';
 
 // Timer map stored in-memory per pod (acceptable for single-instance deployments)
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -238,7 +239,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
         { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
-        { $set: { 'players.$.ready': true } },
+        { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
       );
     }
 
@@ -517,6 +518,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     game.turn_start_time = new Date();
     game.markModified('board');
     await game.save();
+    await recordGameAuditAction(this.roomModel, room_id, client.data.player_id, 'move', { from, to });
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });

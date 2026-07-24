@@ -51,6 +51,10 @@ export class ContactMessage {
 
   @Prop({ trim: true, default: '' })
   admin_notes: string;
+
+  @Prop({ trim: true, default: '' })
+  public_response: string;
 }
 
 export const ContactMessageSchema = SchemaFactory.createForClass(ContactMessage);
+ContactMessageSchema.index({ user_id: 1, createdAt: -1 });

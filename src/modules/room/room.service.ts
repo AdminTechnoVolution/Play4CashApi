@@ -253,7 +253,8 @@ export class RoomService {
         public: isPublic,
         player_limit: effectivePlayerLimit,
         status: RoomStatus.WAITING,
-        players: [{ playerId: new Types.ObjectId(userId), ready: false }],
+        players: [{ playerId: new Types.ObjectId(userId), ready: false, joined_at: new Date(), action_count: 0 }],
+        audit_evidence_version: 1,
         updated_at: new Date(),
       });
     } catch (err) {
@@ -316,7 +317,7 @@ export class RoomService {
               players: {
                 $concatArrays: [
                   '$players',
-                  [{ playerId: new Types.ObjectId(userId), ready: false, moves: [] }],
+                  [{ playerId: new Types.ObjectId(userId), ready: false, moves: [], joined_at: '$$NOW', action_count: 0 }],
                 ],
               },
               updated_at: '$$NOW',
@@ -698,7 +699,11 @@ export class RoomService {
     // 4. Update Ready Status
     const updatedRoom = await this.roomModel.findOneAndUpdate(
       { _id: new Types.ObjectId(roomId), 'players.playerId': new Types.ObjectId(userId) },
-      { $set: { 'players.$.ready': true }, $push: { 'players.$.moves': { data: { type: 'placement' } } } as any },
+      {
+        $set: { 'players.$.ready': true, 'players.$.ready_at': new Date() },
+        $inc: { 'players.$.action_count': 1 },
+        $push: { 'players.$.moves': { data: { type: 'placement', at: new Date() } } } as any,
+      },
       { new: true },
     ).populate('game_id', '-created_at').populate('players.playerId', 'username');
 

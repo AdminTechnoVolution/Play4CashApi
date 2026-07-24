@@ -13,4 +13,10 @@ export class UpdateContactDto {
   @IsString()
   @MaxLength(2000)
   admin_notes?: string;
+
+  @ApiPropertyOptional({ description: 'Response visible to the user who submitted the ticket' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  public_response?: string;
 }

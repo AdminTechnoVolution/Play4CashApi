@@ -13,6 +13,14 @@ export class RoomPlayer {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true }) playerId: Types.ObjectId;
   @Prop({ default: false }) ready: boolean;
   @Prop({ type: [Move], default: [] }) moves: Move[];
+  @Prop() joined_at?: Date;
+  @Prop() ready_at?: Date;
+  @Prop() game_socket_joined_at?: Date;
+  @Prop() initial_state_sent_at?: Date;
+  @Prop() initial_state_ack_at?: Date;
+  @Prop({ default: 0 }) action_count?: number;
+  @Prop() first_action_at?: Date;
+  @Prop() last_action_at?: Date;
 }
 
 export enum RoomStatus {
@@ -53,6 +61,7 @@ export class Room {
   @Prop({ type: Types.ObjectId, ref: 'User' }) winner: Types.ObjectId;
   @Prop() winner_reason: string;
   @Prop() turn_start_time: Date;
+  @Prop() audit_evidence_version?: number;
   @Prop({ type: String, enum: ['casual', 'tournament'], default: 'casual' })
   source: string;
   @Prop({ type: Types.ObjectId, ref: 'Tournament' })

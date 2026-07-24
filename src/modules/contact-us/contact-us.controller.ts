@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ContactUsService } from './contact-us.service';
 import { SubmitContactDto } from './dtos/submit-contact.dto';
@@ -15,6 +15,12 @@ export class ContactUsController {
     private readonly contactUsService: ContactUsService,
     private readonly i18n: I18nService,
   ) {}
+
+  @Get('mine')
+  @ApiOperation({ summary: 'List contact requests submitted by the authenticated user' })
+  listMine(@CurrentUser() user: JwtPayload) {
+    return this.contactUsService.listMine(user.id);
+  }
 
   @RateLimit({ limit: 5, ttlMs: 60_000 })
   @Post()

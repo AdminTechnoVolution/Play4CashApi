@@ -53,6 +53,10 @@ export class User {
   @Prop({ type: [String], default: [], select: false })
   balance_adjustment_keys: string[];
 
+  /** Manual game-audit debt; informational only and never auto-collected. */
+  @Prop({ default: 0, min: 0 })
+  audit_balance_debt: number;
+
   @Prop({ default: Date.now })
   created_at: Date;
 

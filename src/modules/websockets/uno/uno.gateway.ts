@@ -44,6 +44,7 @@ import {
   waitForGameDocument,
 } from '../../../common/ws/waiting-room-sync.util';
 import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
+import { recordGameAuditAction } from '../../../common/game-audit-evidence.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => {
@@ -357,7 +358,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         status: { $in: ['waiting', 'started'] },
         'players.playerId': new Types.ObjectId(player_id),
       },
-      { $set: { 'players.$.ready': true } },
+      { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
       { returnDocument: 'after' },
     ).populate('game_id', 'turn_timer_seconds max_players uno_match_target');
     const authoritativeRoom = readyRoom || room;
@@ -635,6 +636,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
       this.applyEngineToGame(game, nextState);
       await game.save();
+      await recordGameAuditAction(this.roomModel, room_id, player_id, 'play_card');
 
       if (winnerId) {
         await this.finalizeUnoRoundWinner(room_id, room, game, winnerId);
@@ -832,6 +834,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
       this.applyEngineToGame(game, nextState);
       await game.save();
+      await recordGameAuditAction(this.roomModel, room_id, player_id, 'take_draw_stack');
       await this.broadcastUnoGameState(room_id, room, game);
     });
   }
@@ -872,6 +875,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
       this.applyEngineToGame(game, nextState);
       await game.save();
+      await recordGameAuditAction(this.roomModel, room_id, player_id, 'draw_one');
       await this.broadcastUnoGameState(room_id, room, game);
     });
   }
@@ -912,6 +916,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
       this.applyEngineToGame(game, nextState);
       await game.save();
+      await recordGameAuditAction(this.roomModel, room_id, player_id, 'pass');
       await this.broadcastUnoGameState(room_id, room, game);
     });
   }

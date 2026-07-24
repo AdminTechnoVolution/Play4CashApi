@@ -5,6 +5,7 @@
  * join ordering rule: try start before emitting waiting lobby state.
  */
 import { Types } from 'mongoose';
+import { ConnectFourGateway } from './connect-four.gateway';
 
 function makeCompensate(deps: {
   userModel: { updateOne: jest.Mock };
@@ -66,6 +67,17 @@ function shouldTryStartAfterWaitingEmit(
 }
 
 describe('ConnectFour start contract', () => {
+  it('routes get_state through join so a full WAITING room is reconciled', async () => {
+    const gateway = Object.create(ConnectFourGateway.prototype) as ConnectFourGateway;
+    const client = { data: { room_id: 'room-full' } } as any;
+    const handleJoin = jest.fn().mockResolvedValue(undefined);
+    (gateway as any).handleJoin = handleJoin;
+
+    await gateway.handleGetState(client, { room_id: 'room-full' });
+
+    expect(handleJoin).toHaveBeenCalledWith(client, { room_id: 'room-full' });
+  });
+
   describe('tryStartConnectFourGame compensation', () => {
     it('refunds both players and reverts room when game create fails', async () => {
       const deps = {

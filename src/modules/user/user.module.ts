@@ -8,6 +8,7 @@ import { WalletChangePending, WalletChangePendingSchema } from './schemas/wallet
 import { Room, RoomSchema } from '../room/schemas/room.schema';
 import { WalletModule } from '../wallet/wallet.module';
 import { AppConfigModule } from '../app-config/app-config.module';
+import { GameAuditReversal, GameAuditReversalSchema } from '../game-audit/schemas/game-audit.schema';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { AppConfigModule } from '../app-config/app-config.module';
       { name: User.name, schema: UserSchema },
       { name: WalletChangePending.name, schema: WalletChangePendingSchema },
       { name: Room.name, schema: RoomSchema },
+      { name: GameAuditReversal.name, schema: GameAuditReversalSchema },
     ]),
     WalletModule,
     AppConfigModule,

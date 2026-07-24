@@ -1,5 +1,5 @@
 export default () => ({
-  port: parseInt(process.env.PORT || '3000', 10),
+  port: parseInt(process.env.PORT || '3004', 10),
   mongoUri: process.env.MONGO_URI,
   redisUri: process.env.REDIS_URI,
   /** When true, Socket.IO uses @socket.io/redis-adapter for multi-pod WS broadcast. */
