@@ -45,6 +45,7 @@ import {
   scheduleWaitingRoomReconcile,
 } from '../../../common/ws/waiting-room-sync.util';
 import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from '../../../common/ws/game-start-coordinator';
+import { recordGameAuditAction } from '../../../common/game-audit-evidence.util';
 
 const EVENT = 'connect-four';
 const EDGE_COMMAND_STREAM = 'p4c:rt:connect-four:commands';
@@ -391,7 +392,7 @@ export class ConnectFourGateway
     if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
         { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
-        { $set: { 'players.$.ready': true } },
+        { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
       );
     }
     await this.publishEdgeEvent({
@@ -1199,7 +1200,7 @@ export class ConnectFourGateway
     if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
         { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
-        { $set: { 'players.$.ready': true } },
+        { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
       );
     }
 
@@ -1476,43 +1477,11 @@ export class ConnectFourGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id: string },
   ) {
-    const lang = this.getLang(client);
-    const player_id = client.data.player_id;
     const room_id = payload?.room_id || client.data.room_id;
-    if (!room_id) {
-      return this.emit(client, false, {}, [this.i18n.translate('ws.invalidMessageFormat', lang)]);
-    }
-
-    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) {
-      return this.emit(client, false, {}, [this.i18n.translate('ws.games.gameNotFound', lang)]);
-    }
-    if (room.status === 'finished') {
-      return this.emit(client, true, buildFinishedRoomSyncData(room, player_id), []);
-    }
-
-    const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
-    const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
-    if (!isMember && !isSpectator) {
-      return this.emit(client, false, {}, [this.i18n.translate('ws.games.notInRoom', lang)]);
-    }
-
-    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    const playerNum = this.resolvePlayerNum(client, room) || client.data.playerNum || 0;
-    if (playerNum) client.data.playerNum = playerNum;
-    const state = await this.buildPublicState(
-      room,
-      game,
-      isSpectator ? null : playerNum,
-      !!isSpectator,
-    );
-    client.data.room_id = room_id;
-    client.data.isSpectator = !isMember;
-    this.emit(client, true, {
-      ...state,
-      waitingForOpponent: room.status !== 'started',
-      gameStarted: room.status === 'started',
-    }, []);
+    // `get_state` is also the recovery command for a full room stuck in WAITING.
+    // Reuse join so it atomically marks this participant ready, reconciles durable
+    // game creation, and sends the same private state as a fresh connection.
+    return this.handleJoin(client, { room_id });
   }
 
   private async finalizeConnectFourMatch(
@@ -1683,6 +1652,7 @@ export class ConnectFourGateway
 
     try {
       await game.save();
+      await recordGameAuditAction(this.roomModel, room_id, client.data.player_id, 'drop_disc', { col, row: result.row });
       this.logger.log(
         `[${new Date().toISOString()}] API game.save done room=${room_id} revision=${game.move_revision}`,
       );

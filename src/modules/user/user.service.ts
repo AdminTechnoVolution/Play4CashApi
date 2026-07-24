@@ -12,6 +12,7 @@ import { WalletChangePending, WalletChangePendingDocument } from './schemas/wall
 import { TtlCache } from '../../common/ttl-cache';
 import { logSlowEvent } from '../../common/perf-log.util';
 import { AppConfigService } from '../app-config/app-config.service';
+import { GameAuditReversal } from '../game-audit/schemas/game-audit.schema';
 
 @Injectable()
 export class UserService {
@@ -24,11 +25,21 @@ export class UserService {
     @InjectModel('Room') private readonly roomModel: Model<any>,
     @InjectModel(WalletChangePending.name)
     private readonly walletChangePendingModel: Model<WalletChangePendingDocument>,
+    @InjectModel(GameAuditReversal.name)
+    private readonly gameAuditReversalModel: Model<any>,
     private readonly walletService: WalletService,
     private readonly emailService: EmailService,
     private readonly appConfigService: AppConfigService,
     private readonly config: ConfigService,
   ) {}
+
+  invalidateHistory(userIds: string[]): void {
+    for (const userId of userIds) {
+      for (const lang of ['es', 'en', 'fr', 'de', 'it', 'pt']) {
+        this.userHistoryCache.delete(`user-history:${userId}:${lang}`);
+      }
+    }
+  }
 
   async getProfile(userId: string): Promise<any> {
     const startedAt = process.hrtime.bigint();
@@ -70,6 +81,17 @@ export class UserService {
         .populate('winner', 'username')
         .sort({ finished_at: -1 })
         .lean();
+      const reversals = rooms.length
+        ? await this.gameAuditReversalModel
+            .find({ room_id: { $in: rooms.map((room: any) => room._id) } })
+            .sort({ createdAt: 1 })
+            .lean()
+        : [];
+      const reversalsByRoom = new Map<string, any[]>();
+      for (const reversal of reversals) {
+        const key = reversal.room_id.toString();
+        reversalsByRoom.set(key, [...(reversalsByRoom.get(key) || []), reversal]);
+      }
 
       const data = rooms.map((room: any) => {
         const isWinner = room.winner && room.winner._id.toString() === userId;
@@ -107,6 +129,25 @@ export class UserService {
         }
 
         const reason = room.winner_reason || (isWinner ? 'win' : isDraw ? 'draw' : 'forfeit');
+        const auditRows = reversalsByRoom.get(room._id.toString()) || [];
+        const myRefund = auditRows.find((row: any) => row.refunded_player_id.toString() === userId);
+        const auditAdjustment = myRefund
+          ? {
+              kind: 'balance_refunded',
+              amount: myRefund.amount,
+              reason: myRefund.reason,
+              created_at: myRefund.createdAt,
+              affected_usernames: auditRows.map((row: any) => row.refunded_username),
+            }
+          : isWinner && auditRows.length
+            ? {
+                kind: 'balance_removed',
+                amount: auditRows.reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0),
+                reason: auditRows.map((row: any) => row.reason).filter(Boolean).join('\n'),
+                created_at: auditRows[auditRows.length - 1].createdAt,
+                affected_usernames: auditRows.map((row: any) => row.refunded_username),
+              }
+            : null;
 
         return {
           room_id: room._id,
@@ -124,6 +165,7 @@ export class UserService {
           opponents,
           finished_at: room.finished_at,
           date: room.finished_at,
+          audit_adjustment: auditAdjustment,
         };
       });
 

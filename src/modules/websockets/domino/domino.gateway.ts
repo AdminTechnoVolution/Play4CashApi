@@ -29,6 +29,7 @@ import {
   publishGameStarted,
   releaseGameStartLease,
 } from '../../../common/ws/game-start-coordinator';
+import { recordGameAuditAction } from '../../../common/game-audit-evidence.util';
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
@@ -351,7 +352,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         status: { $in: ['waiting', 'started'] },
         'players.playerId': new Types.ObjectId(player_id),
       },
-      { $set: { 'players.$.ready': true } },
+      { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
       { returnDocument: 'after' },
     ).populate('game_id', 'turn_timer_seconds max_players');
     const authoritativeRoom = readyRoom || room;
@@ -517,7 +518,11 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       // Record move in room
       await this.roomModel.updateOne(
         { _id: new Types.ObjectId(room_id), 'players.playerId': new Types.ObjectId(player_id) },
-        { $push: { 'players.$.moves': { data: { tile, side, type: 'move' } } } }
+        {
+          $inc: { 'players.$.action_count': 1 },
+          $set: { 'players.$.last_action_at': new Date() },
+          $push: { 'players.$.moves': { data: { tile, side, type: 'move', at: new Date() } } },
+        }
       );
 
       // Immutable state updates
@@ -630,6 +635,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       game.markModified('hands');
       game.markModified('boneyard');
       await game.save();
+      await recordGameAuditAction(this.roomModel, room_id, player_id, 'draw');
 
       this.logger.log(`[Domino] 🁣 Draw SUCCESS | player=${player_id} | drawn=${JSON.stringify(drawn)} | boneyardLeft=${game.boneyard.length} | handSize=${newHand.length}`);
 
@@ -698,6 +704,7 @@ export class DominoGateway implements OnGatewayInit, OnGatewayConnection, OnGate
 
       game.markModified('consecutive_passes');
       await game.save();
+      await recordGameAuditAction(this.roomModel, room_id, player_id, 'pass');
 
       this.logger.log(`[Domino] ⏩ Pass SUCCESS | player=${player_id} | consecutivePasses=${game.consecutive_passes}`);
 

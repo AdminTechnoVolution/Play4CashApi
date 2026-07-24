@@ -16,11 +16,19 @@ function makeService(rooms: any[]): UserService {
   const roomModel = {
     find: jest.fn().mockReturnValue(makeRoomQuery(rooms)),
   };
+  const gameAuditReversalModel = {
+    find: jest.fn().mockReturnValue({
+      sort: jest.fn().mockReturnValue({
+        lean: jest.fn().mockResolvedValue([]),
+      }),
+    }),
+  };
 
   return new UserService(
     {} as any,
     roomModel as any,
     {} as any,
+    gameAuditReversalModel as any,
     {} as any,
     {} as any,
     {} as any,

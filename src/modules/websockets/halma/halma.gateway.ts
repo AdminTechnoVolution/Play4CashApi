@@ -204,7 +204,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (isMember && (room.status === 'waiting' || room.status === 'started')) {
       await this.roomModel.updateOne(
         { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
-        { $set: { 'players.$.ready': true } },
+        { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
       );
     }
 

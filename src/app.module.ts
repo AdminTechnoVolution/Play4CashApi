@@ -30,6 +30,7 @@ import { WebPushModule } from './common/web-push/web-push.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { TournamentModule } from './modules/tournament/tournament.module';
 import { ContactUsModule } from './modules/contact-us/contact-us.module';
+import { GameAuditModule } from './modules/game-audit/game-audit.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -85,6 +86,7 @@ import { ContactUsModule } from './modules/contact-us/contact-us.module';
     IdempotencyModule,
     TournamentModule,
     ContactUsModule,
+    GameAuditModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },
