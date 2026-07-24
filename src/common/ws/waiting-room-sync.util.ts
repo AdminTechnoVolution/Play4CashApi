@@ -9,6 +9,17 @@ import * as fs from 'fs';
 const DEBUG_LOG = '/Users/darricordoba/Documents/GitHub/Play4CashPWA/.cursor/debug-83380c.log';
 const DEBUG_SESSION_ID = '83380c';
 
+/**
+ * Bounded server-side protection for a player who misses the initial private
+ * game payload. The PWA retries at 10s, so 20s leaves a second recovery window
+ * without allowing a room to remain stalled indefinitely.
+ */
+export const INITIAL_STATE_RECOVERY_GRACE_SECONDS = 20;
+
+export function initialTurnDeadlineSeconds(turnSeconds: number): number {
+  return turnSeconds + INITIAL_STATE_RECOVERY_GRACE_SECONDS;
+}
+
 /** Foldable debug telemetry for socket race / forfeit-miss investigations. */
 export function agentDebugLog(
   location: string,

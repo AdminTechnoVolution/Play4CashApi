@@ -63,6 +63,7 @@ describe('UnoGateway multiplayer start', () => {
       emit: jest.fn(),
       id: playerId.toString(),
     }));
+    const turnDeadlines = { schedule: jest.fn() };
     const gateway = new UnoGateway(
       unoModel as any,
       roomModel as any,
@@ -72,7 +73,7 @@ describe('UnoGateway multiplayer start', () => {
       {} as any,
       {} as any,
       {} as any,
-      { schedule: jest.fn() } as any,
+      turnDeadlines as any,
     );
     gateway.server = {
       in: jest.fn(() => ({ fetchSockets: jest.fn().mockResolvedValue(sockets) })),
@@ -83,6 +84,12 @@ describe('UnoGateway multiplayer start', () => {
 
     expect(userModel.findOneAndUpdate).toHaveBeenCalledTimes(playerCount);
     expect(unoModel.create).toHaveBeenCalledTimes(1);
+    expect(turnDeadlines.schedule).toHaveBeenCalledWith(
+      'uno',
+      roomId.toString(),
+      expect.any(String),
+      65,
+    );
     expect(unoModel.create).toHaveBeenCalledWith(
       expect.objectContaining({ player_ids: playerIds }),
     );

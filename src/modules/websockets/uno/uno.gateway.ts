@@ -39,6 +39,7 @@ import { calculateWinnerSettlement, winnerDisplayedPrize, winnerBalanceUpdate } 
 import {
   buildFinishedRoomSyncData,
   emitDbOpponentJoinedIfPresent,
+  initialTurnDeadlineSeconds,
   scheduleWaitingRoomReconcile,
   waitForGameDocument,
 } from '../../../common/ws/waiting-room-sync.util';
@@ -540,7 +541,13 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
               : 'ws.games.gameStarted',
         ],
       });
-      if (isMyTurn) this.startTimer(s as unknown as Socket, room_id, timerSec);
+      if (isMyTurn) {
+        this.startTimer(
+          s as unknown as Socket,
+          room_id,
+          initialTurnDeadlineSeconds(timerSec),
+        );
+      }
     }
 
     const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();

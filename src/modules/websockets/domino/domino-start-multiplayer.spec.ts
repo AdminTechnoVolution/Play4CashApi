@@ -64,6 +64,7 @@ describe('DominoGateway multiplayer start', () => {
       in: jest.fn(() => ({ fetchSockets: jest.fn().mockResolvedValue(sockets) })),
       to: jest.fn(() => ({ emit: jest.fn() })),
     };
+    const turnDeadlines = { schedule: jest.fn() };
     const gateway = new DominoGateway(
       dominoModel as any,
       roomModel as any,
@@ -73,7 +74,7 @@ describe('DominoGateway multiplayer start', () => {
       {} as any,
       { translate: jest.fn((key: string) => key) } as any,
       {} as any,
-      { schedule: jest.fn() } as any,
+      turnDeadlines as any,
     );
     gateway.server = server as any;
 
@@ -81,6 +82,12 @@ describe('DominoGateway multiplayer start', () => {
 
     expect(userModel.findOneAndUpdate).toHaveBeenCalledTimes(playerCount);
     expect(dominoModel.create).toHaveBeenCalledTimes(1);
+    expect(turnDeadlines.schedule).toHaveBeenCalledWith(
+      'domino',
+      roomId.toString(),
+      expect.any(String),
+      50,
+    );
     const createdState = dominoModel.create.mock.calls[0][0];
     expect(createdState).toEqual(expect.objectContaining({
       room_id: roomId.toString(),
@@ -95,6 +102,10 @@ describe('DominoGateway multiplayer start', () => {
           success: true,
           data: expect.objectContaining({
             hand: expect.any(Array),
+            playerOrder: playerIds.map(String),
+            usernames: Object.fromEntries(
+              playerIds.map((id, index) => [id.toString(), `P${index + 1}`]),
+            ),
             gameStarted: true,
             waitingForOpponent: false,
           }),
