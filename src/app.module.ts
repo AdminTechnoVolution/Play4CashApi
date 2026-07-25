@@ -32,6 +32,8 @@ import { TournamentModule } from './modules/tournament/tournament.module';
 import { ContactUsModule } from './modules/contact-us/contact-us.module';
 import { GameAuditModule } from './modules/game-audit/game-audit.module';
 import { HouseTreasuryModule } from './modules/house-treasury/house-treasury.module';
+import { AdminHealthModule } from './modules/admin-health/admin-health.module';
+import { AdminSandboxModule } from './modules/admin-sandbox/admin-sandbox.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -89,6 +91,8 @@ import { HouseTreasuryModule } from './modules/house-treasury/house-treasury.mod
     ContactUsModule,
     GameAuditModule,
     HouseTreasuryModule,
+    AdminHealthModule,
+    AdminSandboxModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },

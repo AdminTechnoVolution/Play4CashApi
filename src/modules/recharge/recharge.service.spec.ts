@@ -17,6 +17,7 @@ function makeModelMock() {
     findOne: jest.fn(),
     deleteOne: jest.fn(),
     findByIdAndUpdate: jest.fn(),
+    aggregate: jest.fn(),
   };
 }
 
@@ -153,5 +154,82 @@ describe('RechargeService.createRecharge', () => {
         message: 'The transaction has not appeared in our wallet yet. Please try again later.',
       }),
     );
+  });
+});
+
+describe('RechargeService.getDepositTraffic', () => {
+  it('aggregates only confirmed USDT deposits using the effective confirmation date', async () => {
+    const rechargeModel = makeModelMock();
+    rechargeModel.aggregate.mockResolvedValue([
+      { _id: new Date('2026-07-24T00:00:00.000Z'), amount: 1234.567, count: 2 },
+    ]);
+    const service = new RechargeService(
+      rechargeModel as any,
+      makeModelMock() as any,
+      makeModelMock() as any,
+    );
+
+    const result = await service.getDepositTraffic('7d');
+    const pipeline = rechargeModel.aggregate.mock.calls[0][0];
+
+    expect(pipeline[0].$match).toEqual(expect.objectContaining({
+      status: 'confirmed',
+      coin: 'USDT',
+    }));
+    expect(pipeline[0].$match.$expr.$gte[0]).toEqual({
+      $ifNull: ['$confirmed_at', '$created_at'],
+    });
+    expect(pipeline[1].$group._id.$dateTrunc).toEqual(expect.objectContaining({
+      unit: 'day',
+      timezone: 'UTC',
+      date: { $ifNull: ['$confirmed_at', '$created_at'] },
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      period: '7d',
+      timezone: 'UTC',
+      granularity: 'day',
+      total_amount: 1234.57,
+      total_count: 2,
+      buckets: [{
+        start: '2026-07-24T00:00:00.000Z',
+        amount: 1234.57,
+        count: 2,
+      }],
+    }));
+  });
+
+  it('groups 90 days by UTC weeks starting on Monday', async () => {
+    const rechargeModel = makeModelMock();
+    rechargeModel.aggregate.mockResolvedValue([]);
+    const service = new RechargeService(
+      rechargeModel as any,
+      makeModelMock() as any,
+      makeModelMock() as any,
+    );
+
+    const result = await service.getDepositTraffic('90d');
+    const dateTrunc = rechargeModel.aggregate.mock.calls[0][0][1].$group._id.$dateTrunc;
+
+    expect(dateTrunc).toEqual(expect.objectContaining({
+      unit: 'week',
+      timezone: 'UTC',
+      startOfWeek: 'monday',
+    }));
+    expect(result.granularity).toBe('week');
+  });
+
+  it('caches the same UTC period for 30 seconds', async () => {
+    const rechargeModel = makeModelMock();
+    rechargeModel.aggregate.mockResolvedValue([]);
+    const service = new RechargeService(
+      rechargeModel as any,
+      makeModelMock() as any,
+      makeModelMock() as any,
+    );
+
+    await service.getDepositTraffic('30d');
+    await service.getDepositTraffic('30d');
+
+    expect(rechargeModel.aggregate).toHaveBeenCalledTimes(1);
   });
 });

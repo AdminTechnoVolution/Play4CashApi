@@ -5,6 +5,7 @@ import { RechargeService } from './recharge.service';
 import { Recharge, RechargeSchema } from './schemas/recharge.schema';
 import { User, UserSchema } from '../user/schemas/user.schema';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
+import { RechargeAdminController } from './recharge-admin.controller';
 
 @Module({
   imports: [
@@ -19,7 +20,7 @@ import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
       }) },
     ]),
   ],
-  controllers: [RechargeController],
+  controllers: [RechargeController, RechargeAdminController],
   providers: [RechargeService],
 })
 export class RechargeModule {}
