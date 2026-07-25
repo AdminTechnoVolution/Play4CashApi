@@ -31,6 +31,7 @@ import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { TournamentModule } from './modules/tournament/tournament.module';
 import { ContactUsModule } from './modules/contact-us/contact-us.module';
 import { GameAuditModule } from './modules/game-audit/game-audit.module';
+import { HouseTreasuryModule } from './modules/house-treasury/house-treasury.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -87,6 +88,7 @@ import { GameAuditModule } from './modules/game-audit/game-audit.module';
     TournamentModule,
     ContactUsModule,
     GameAuditModule,
+    HouseTreasuryModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },

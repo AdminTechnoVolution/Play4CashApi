@@ -7,6 +7,7 @@ import {
 } from '../schemas/tournament-transaction.schema';
 import { TournamentTransactionType } from '../constants/tournament.constants';
 import { User, UserDocument } from '../../user/schemas/user.schema';
+import { HouseTreasuryService } from '../../house-treasury/house-treasury.service';
 
 @Injectable()
 export class TournamentLedgerService {
@@ -16,6 +17,7 @@ export class TournamentLedgerService {
     @InjectModel(TournamentTransaction.name)
     private readonly txModel: Model<TournamentTransactionDocument>,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    private readonly houseTreasury: HouseTreasuryService,
   ) {}
 
   async debitRegistration(
@@ -106,6 +108,13 @@ export class TournamentLedgerService {
       idempotency_key: idempotencyKey,
       reference: 'house_fee',
     });
+    try {
+      await this.houseTreasury.recordTournamentFee(tournamentId, amount);
+    } catch (error) {
+      this.logger.warn(
+        `event=house_fee_mirror_pending tournament=${tournamentId} err=${(error as Error).message}`,
+      );
+    }
   }
 
   async refundAllRegistered(
