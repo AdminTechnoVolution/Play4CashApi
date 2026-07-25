@@ -30,3 +30,4 @@ RechargeSchema.index({ txId: 1 }, { unique: true });
 RechargeSchema.index({ user_id: 1 });
 RechargeSchema.index({ coin: 1 });
 RechargeSchema.index({ status: 1 });
+RechargeSchema.index({ status: 1, coin: 1, confirmed_at: 1 });

@@ -7,10 +7,23 @@ import { getDepositHistory } from '../../common/clients/binance.client';
 import Decimal from 'decimal.js';
 import { TtlCache } from '../../common/ttl-cache';
 
+export type DepositTrafficPeriod = '7d' | '30d' | '90d';
+export interface DepositTrafficResponse {
+  period: DepositTrafficPeriod;
+  timezone: 'UTC';
+  granularity: 'day' | 'week';
+  from: string;
+  to: string;
+  total_amount: number;
+  total_count: number;
+  buckets: Array<{ start: string; amount: number; count: number }>;
+}
+
 @Injectable()
 export class RechargeService {
   private readonly logger = new Logger(RechargeService.name);
   private readonly historyCache = new TtlCache<RechargeDocument[]>();
+  private readonly trafficCache = new TtlCache<DepositTrafficResponse>();
 
   constructor(
     @InjectModel(Recharge.name) private readonly rechargeModel: Model<RechargeDocument>,
@@ -25,6 +38,7 @@ export class RechargeService {
     processingExpiryMins: number,
   ): Promise<{ balance: number }> {
     this.historyCache.delete(`recharge-history:${userId}`);
+    this.trafficCache.clear();
     const time_processing_expires_at = new Date(Date.now() + processingExpiryMins * 60 * 1000);
 
     const existing = await this.findExistingRechargeByTxId(txId);
@@ -93,6 +107,66 @@ export class RechargeService {
     this.historyCache.delete(`recharge-history:${userId}`);
 
     return { balance: new Decimal(user.balance).toNumber() };
+  }
+
+  async getDepositTraffic(period: DepositTrafficPeriod): Promise<DepositTrafficResponse> {
+    return this.trafficCache.getOrSet(`deposit-traffic:${period}:UTC`, 30_000, async () => {
+      const days = period === '7d' ? 7 : period === '30d' ? 30 : 90;
+      const granularity: 'day' | 'week' = period === '90d' ? 'week' : 'day';
+      const to = new Date();
+      const from = new Date(Date.UTC(
+        to.getUTCFullYear(),
+        to.getUTCMonth(),
+        to.getUTCDate() - (days - 1),
+      ));
+      const rows = await this.rechargeModel.aggregate<{
+        _id: Date;
+        amount: number;
+        count: number;
+      }>([
+        {
+          $match: {
+            status: 'confirmed',
+            coin: 'USDT',
+            $expr: {
+              $gte: [{ $ifNull: ['$confirmed_at', '$created_at'] }, from],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateTrunc: {
+                date: { $ifNull: ['$confirmed_at', '$created_at'] },
+                unit: granularity,
+                timezone: 'UTC',
+                ...(granularity === 'week' ? { startOfWeek: 'monday' } : {}),
+              },
+            },
+            amount: { $sum: '$amount' },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]);
+      const buckets = rows.map((row) => ({
+        start: row._id.toISOString(),
+        amount: new Decimal(row.amount || 0).toDecimalPlaces(2).toNumber(),
+        count: Number(row.count || 0),
+      }));
+      return {
+        period,
+        timezone: 'UTC',
+        granularity,
+        from: from.toISOString(),
+        to: to.toISOString(),
+        total_amount: new Decimal(buckets.reduce((sum, row) => sum + row.amount, 0))
+          .toDecimalPlaces(2)
+          .toNumber(),
+        total_count: buckets.reduce((sum, row) => sum + row.count, 0),
+        buckets,
+      };
+    });
   }
 
   async getHistory(userId: string): Promise<RechargeDocument[]> {
