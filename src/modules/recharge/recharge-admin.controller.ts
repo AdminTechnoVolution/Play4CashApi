@@ -1,7 +1,7 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { IsIn, IsOptional } from 'class-validator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminRoute } from '../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../admin-auth/admin-auth.guard';
 import { RechargeService } from './recharge.service';
 import type { DepositTrafficPeriod } from './recharge.service';
 
@@ -12,8 +12,8 @@ class DepositTrafficQueryDto {
 }
 
 @Controller('admin/dashboard/deposits')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class RechargeAdminController {
   constructor(private readonly rechargeService: RechargeService) {}
 

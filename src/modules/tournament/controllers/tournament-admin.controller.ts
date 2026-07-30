@@ -8,8 +8,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../../common/guards/roles.guard';
+import { AdminRoute } from '../../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../../admin-auth/admin-auth.guard';
 import { TournamentAdminService } from '../services/tournament-admin.service';
 import { TournamentStateService } from '../services/tournament-state.service';
 import { CreateTournamentDto, UpdateTournamentDto } from '../dtos/tournament.dto';
@@ -24,8 +24,8 @@ import {
 @ApiTags('Admin · Tournaments')
 @ApiBearerAuth()
 @Controller('admin/tournaments')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class TournamentAdminController {
   constructor(
     private readonly adminService: TournamentAdminService,

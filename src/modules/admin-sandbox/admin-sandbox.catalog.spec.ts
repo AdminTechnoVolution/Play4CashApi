@@ -2,43 +2,33 @@ import { PATH_METADATA, METHOD_METADATA } from '@nestjs/common/constants';
 import { RequestMethod } from '@nestjs/common';
 import { ADMIN_SANDBOX_ENDPOINTS } from './admin-sandbox.catalog';
 import { AdminHealthController } from '../admin-health/admin-health.controller';
-import { AppConfigController } from '../app-config/app-config.controller';
+import { AppConfigAdminController } from '../app-config/app-config-admin.controller';
 import { AppVersionController } from '../app-version/app-version.controller';
 import { ContactUsAdminController } from '../contact-us/contact-us-admin.controller';
-import { ContactUsController } from '../contact-us/contact-us.controller';
 import { GameAuditController } from '../game-audit/game-audit.controller';
 import { GameAdminController } from '../game/game-admin.controller';
-import { GameController } from '../game/game.controller';
-import { GreetingController } from '../greeting/greeting.controller';
+import { GreetingAdminController } from '../greeting/greeting-admin.controller';
 import { HouseTreasuryController } from '../house-treasury/house-treasury.controller';
 import { RechargeAdminController } from '../recharge/recharge-admin.controller';
-import { RechargeController } from '../recharge/recharge.controller';
-import { RoomController } from '../room/room.controller';
+import { RoomAdminController } from '../room/room-admin.controller';
 import { TournamentAdminController } from '../tournament/controllers/tournament-admin.controller';
-import { TournamentController } from '../tournament/controllers/tournament.controller';
-import { UserController } from '../user/user.controller';
-import { WalletController } from '../wallet/wallet.controller';
-import { WithdrawalController } from '../withdrawal/withdrawal.controller';
+import { UserAdminController } from '../user/user-admin.controller';
+import { WalletAdminController } from '../wallet/wallet-admin.controller';
 
 const controllers = [
   AdminHealthController,
-  AppConfigController,
+  AppConfigAdminController,
   AppVersionController,
   ContactUsAdminController,
-  ContactUsController,
   GameAuditController,
   GameAdminController,
-  GameController,
-  GreetingController,
+  GreetingAdminController,
   HouseTreasuryController,
   RechargeAdminController,
-  RechargeController,
-  RoomController,
+  RoomAdminController,
   TournamentAdminController,
-  TournamentController,
-  UserController,
-  WalletController,
-  WithdrawalController,
+  UserAdminController,
+  WalletAdminController,
 ];
 
 function joinRoute(controllerPath: string, methodPath: string): string {
@@ -72,6 +62,9 @@ describe('admin sandbox catalog', () => {
       .toBe(ADMIN_SANDBOX_ENDPOINTS.length);
     expect(new Set(ADMIN_SANDBOX_ENDPOINTS.map((endpoint) => endpoint.path)).size)
       .toBe(ADMIN_SANDBOX_ENDPOINTS.length);
+    expect(ADMIN_SANDBOX_ENDPOINTS.every((endpoint) =>
+      endpoint.authentication === 'admin' && endpoint.path.startsWith('/api/admin/'),
+    )).toBe(true);
   });
 
   it('maps every catalog entry to a registered NestJS GET route', () => {

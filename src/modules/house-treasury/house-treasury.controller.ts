@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminRoute } from '../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../admin-auth/admin-auth.guard';
 import {
   CreateHouseAdjustmentDto,
   CreateHouseWithdrawalDto,
@@ -11,8 +11,8 @@ import {
 import { HouseTreasuryService } from './house-treasury.service';
 
 @Controller('admin/house-treasury')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class HouseTreasuryController {
   constructor(private readonly treasury: HouseTreasuryService) {}
 

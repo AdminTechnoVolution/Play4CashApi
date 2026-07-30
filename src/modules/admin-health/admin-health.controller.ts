@@ -1,11 +1,11 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminRoute } from '../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../admin-auth/admin-auth.guard';
 import { AdminHealthService } from './admin-health.service';
 
 @Controller('admin/health')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class AdminHealthController {
   constructor(private readonly health: AdminHealthService) {}
 
@@ -14,4 +14,3 @@ export class AdminHealthController {
     return this.health.check();
   }
 }
-

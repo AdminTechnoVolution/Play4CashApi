@@ -7,6 +7,7 @@ import { User, UserSchema } from '../user/schemas/user.schema';
 import { Game, GameSchema } from '../game/schemas/game.schema';
 import { BattleshipPlacement, BattleshipPlacementSchema } from '../naval-battle/schemas/battleship-placement.schema';
 import { WebsocketsModule } from '../websockets/websockets.module';
+import { RoomAdminController } from './room-admin.controller';
 
 @Module({
   imports: [
@@ -18,7 +19,7 @@ import { WebsocketsModule } from '../websockets/websockets.module';
     ]),
     WebsocketsModule, // imports RoomsGateway for WS broadcasts
   ],
-  controllers: [RoomController],
+  controllers: [RoomController, RoomAdminController],
   providers: [RoomService],
   exports: [RoomService],
 })

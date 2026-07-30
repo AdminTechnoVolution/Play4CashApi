@@ -9,6 +9,7 @@ import { Room, RoomSchema } from '../room/schemas/room.schema';
 import { WalletModule } from '../wallet/wallet.module';
 import { AppConfigModule } from '../app-config/app-config.module';
 import { GameAuditReversal, GameAuditReversalSchema } from '../game-audit/schemas/game-audit.schema';
+import { UserAdminController } from './user-admin.controller';
 
 @Module({
   imports: [
@@ -21,7 +22,7 @@ import { GameAuditReversal, GameAuditReversalSchema } from '../game-audit/schema
     WalletModule,
     AppConfigModule,
   ],
-  controllers: [UserController],
+  controllers: [UserController, UserAdminController],
   providers: [UserService, UserRepository],
   exports: [UserService, UserRepository],
 })

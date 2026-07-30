@@ -7,6 +7,7 @@ export interface JwtPayload {
   username?: string;
   name?: string;
   role?: 'admin' | 'user';
+  actor_type?: 'admin' | 'player';
   /** Identifies the session family used for refresh-reuse detection. */
   familyId?: string;
   /** Access tokens only (set by AuthService). */

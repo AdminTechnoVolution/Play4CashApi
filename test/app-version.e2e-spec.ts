@@ -7,7 +7,7 @@ import { Server } from 'http';
 import { AppVersionController } from '../src/modules/app-version/app-version.controller';
 import { AppVersionStatsService } from '../src/modules/app-version/app-version-stats.service';
 import { REDIS_CLIENT } from '../src/common/redis/redis.module';
-import { RolesGuard } from '../src/common/guards/roles.guard';
+import { AdminAuthGuard } from '../src/modules/admin-auth/admin-auth.guard';
 import { Reflector } from '@nestjs/core';
 import { RateLimitGuard } from '../src/common/guards/rate-limit.guard';
 
@@ -68,7 +68,6 @@ async function buildApp(redis: FakeRedis): Promise<INestApplication> {
             'pwa.minVersion': '2.0.0',
             'pwa.statsSampleRate': 0.0,
             'pwa.statsRetentionDays': 7,
-            'admin.emails': [],
             'throttle.limit': 50,
             'throttle.ttlMs': 60_000,
           }),
@@ -83,7 +82,7 @@ async function buildApp(redis: FakeRedis): Promise<INestApplication> {
       { provide: APP_GUARD, useClass: RateLimitGuard },
     ],
   })
-    .overrideGuard(RolesGuard)
+    .overrideGuard(AdminAuthGuard)
     .useValue(new StubRolesGuard())
     .compile();
 

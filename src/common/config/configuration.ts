@@ -37,6 +37,14 @@ export default () => ({
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID,
   },
+  adminAuth: {
+    googleClientId: process.env.GOOGLE_ADMIN_CLIENT_ID,
+    jwtSecret: process.env.ADMIN_JWT_SECRET_KEY,
+    accessTtlSecs: parseInt(process.env.ADMIN_JWT_ACCESS_TOKEN_TTL_SECS || '1800', 10),
+    refreshTtlSecs: parseInt(process.env.ADMIN_JWT_REFRESH_TOKEN_TTL_SECS || '28800', 10),
+    issuer: process.env.ADMIN_JWT_ISSUER || 'play4cash-api',
+    audience: process.env.ADMIN_JWT_AUDIENCE || 'play4cash-admin',
+  },
   email: {
     service: process.env.EMAIL_SERVICE,
     from: process.env.EMAIL_FROM,
@@ -56,9 +64,6 @@ export default () => ({
   cors: {
     allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean),
     socketOrigin: process.env.SOCKET_ORIGIN || '*',
-  },
-  admin: {
-    emails: (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()),
   },
   swagger: {
     enabled: process.env.ENABLE_SWAGGER === 'true',
