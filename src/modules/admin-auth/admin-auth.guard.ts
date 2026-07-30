@@ -34,7 +34,7 @@ export class AdminAuthGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const header = String(request.headers.authorization || '');
     const cookie = readNamedCookie(request.headers.cookie, ADMIN_ACCESS_COOKIE);
-    const token = cookie || (header.startsWith('Bearer ') ? header.slice(7) : '');
+    const token = (header.startsWith('Bearer ') ? header.slice(7) : '') || cookie;
     if (!token) throw new UnauthorizedException('ERROR_AUTH');
 
     let payload: jwt.JwtPayload & Record<string, unknown>;

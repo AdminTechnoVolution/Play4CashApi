@@ -12,8 +12,13 @@ const config = {
   })[key],
 } as any;
 
-function context(token: string): ExecutionContext {
-  const request = { headers: { authorization: `Bearer ${token}` } };
+function context(token: string, cookieToken?: string): ExecutionContext {
+  const request = {
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(cookieToken ? { cookie: `p4c_admin_access=${cookieToken}` } : {}),
+    },
+  };
   return {
     getHandler: () => null,
     getClass: () => null,
@@ -47,6 +52,17 @@ describe('AdminAuthGuard', () => {
     } as any;
     const guard = new AdminAuthGuard(reflector, config, admins, redis);
     await expect(guard.canActivate(context(token))).resolves.toBe(true);
+  });
+
+  it('prefers the current bearer token over a stale admin cookie', async () => {
+    const token = sign('admin-secret', 'play4cash-admin', 'admin');
+    const redis = {
+      exists: jest.fn(async (key: string) => key === `${ADMIN_REDIS_ACCESS}${token}` ? 1 : 0),
+    } as any;
+    const guard = new AdminAuthGuard(reflector, config, admins, redis);
+
+    await expect(guard.canActivate(context(token, 'stale-cookie-token'))).resolves.toBe(true);
+    expect(redis.exists).toHaveBeenCalledWith(`${ADMIN_REDIS_ACCESS}${token}`);
   });
 
   it('rejects a player token even when presented to an admin route', async () => {
