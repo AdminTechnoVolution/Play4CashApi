@@ -13,6 +13,7 @@ import { REDIS_CLIENT } from '../redis/redis.module';
 import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
 import { jwtVerifyOptions, isAccessTokenPayload } from '../auth/jwt-token.util';
 import { accessCookieName, readCookieFromHeader } from '../../modules/auth/auth-cookie.util';
+import { IS_ADMIN_ROUTE_KEY } from '../decorators/admin-route.decorator';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -23,6 +24,12 @@ export class AuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const isAdminRoute = this.reflector.getAllAndOverride<boolean>(IS_ADMIN_ROUTE_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isAdminRoute) return true;
+
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -51,6 +58,9 @@ export class AuthGuard implements CanActivate {
     }
 
     if (!isAccessTokenPayload(payload)) {
+      throw new UnauthorizedException('ERROR_AUTH');
+    }
+    if (payload.actor_type && payload.actor_type !== 'player') {
       throw new UnauthorizedException('ERROR_AUTH');
     }
 

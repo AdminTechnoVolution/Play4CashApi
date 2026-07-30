@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminRoute } from '../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../admin-auth/admin-auth.guard';
 import { ContactUsService } from './contact-us.service';
 import { UpdateContactDto } from './dtos/update-contact.dto';
 import { ContactMessageStatus } from './schemas/contact-message.schema';
@@ -9,8 +9,8 @@ import { ContactMessageStatus } from './schemas/contact-message.schema';
 @ApiTags('Admin · Contact Us')
 @ApiBearerAuth()
 @Controller('admin/contact-us')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class ContactUsAdminController {
   constructor(private readonly contactUsService: ContactUsService) {}
 

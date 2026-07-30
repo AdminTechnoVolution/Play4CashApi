@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { RoomService } from './room.service';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
@@ -6,7 +6,6 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { IsBoolean, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
-import { AdminGuard } from '../../common/guards/admin.guard';
 import { Public } from '../../common/decorators/public.decorator';
 import { BattleshipPlacementDto } from './dtos/battleship-placement.dto';
 
@@ -150,15 +149,6 @@ export class RoomController {
     @Headers('accept-language') lang: string,
   ) {
     return this.roomService.setReady(user.id, id, dto.ready, lang || 'en');
-  }
-
-  // DELETE /api/rooms/:id  — admin only
-  @Delete(':id')
-  @UseGuards(AdminGuard)
-  @ApiOperation({ summary: 'Admin: delete a room' })
-  async deleteRoom(@Param('id') id: string) {
-    await this.roomService.deleteRoom(id);
-    return { success: true, messages: ['SUCCESS_DELETE'], data: null };
   }
 
   @Post(':id/battleship/placement')

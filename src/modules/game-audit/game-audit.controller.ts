@@ -2,16 +2,16 @@ import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/co
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminRoute } from '../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../admin-auth/admin-auth.guard';
 import { ReverseGameBalanceDto, RunGameAuditDto } from './dtos/game-audit.dto';
 import { GameAuditService } from './game-audit.service';
 
 @ApiTags('Admin · Game Audit')
 @ApiBearerAuth()
 @Controller('admin/game-audits')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class GameAuditController {
   constructor(private readonly service: GameAuditService) {}
 

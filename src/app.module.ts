@@ -34,6 +34,7 @@ import { GameAuditModule } from './modules/game-audit/game-audit.module';
 import { HouseTreasuryModule } from './modules/house-treasury/house-treasury.module';
 import { AdminHealthModule } from './modules/admin-health/admin-health.module';
 import { AdminSandboxModule } from './modules/admin-sandbox/admin-sandbox.module';
+import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
 
 // Feature modules (added as migration progresses)
 // import { AuthModule } from './modules/auth/auth.module';
@@ -71,6 +72,7 @@ import { AdminSandboxModule } from './modules/admin-sandbox/admin-sandbox.module
     // Feature Modules
     TxMessageModule,
     AuthModule,
+    AdminAuthModule,
     UserModule,
     GameModule,
     RechargeModule,

@@ -13,7 +13,6 @@ import {
 } from '../../common/constants/redis-keys.constants';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { UserRepository } from '../user/user.repository';
-import { UserRole } from '../user/schemas/user.schema';
 import { jwtVerifyOptions, isRefreshTokenPayload } from '../../common/auth/jwt-token.util';
 import { buildLogLine, elapsedMs } from '../../common/perf-log.util';
 
@@ -28,6 +27,7 @@ interface AccessPayload {
   username: string;
   name?: string;
   role: 'admin' | 'user';
+  actor_type: 'player';
   familyId: string;
 }
 
@@ -99,7 +99,6 @@ export class AuthService {
       throw new BusinessException('ERROR_LOGIN', 401);
     }
 
-    const role = this.resolveRole(activeUser.role, email);
     const familyId = randomUUID();
     const userId = String(activeUser._id);
 
@@ -108,7 +107,8 @@ export class AuthService {
       email: activeUser.email,
       username: activeUser.username,
       name,
-      role,
+      role: 'user',
+      actor_type: 'player',
       familyId,
     };
     const tokenIssueStart = process.hrtime.bigint();
@@ -189,16 +189,20 @@ export class AuthService {
       .sRem(`${REDIS_KEY_FAMILY_REFRESHES}${familyId}`, currentRefreshToken)
       .exec();
 
-    // Re-resolve role from DB so demotions/promotions take effect on next refresh.
+    // Player identities never acquire administrative privileges.
     const userDoc = await this.userRepo.findById(family.userId);
-    const role = this.resolveRole(userDoc?.role, (payload.email as string)?.toLowerCase());
+    if (!userDoc || userDoc.status !== 'active') {
+      await this.revokeFamily(familyId);
+      throw new BusinessException('ERROR_AUTH', 401);
+    }
 
     const next: AccessPayload = {
       id: family.userId,
       email: String(payload.email),
       username: String(payload.username),
       name: (payload.name as string) || '',
-      role,
+      role: 'user',
+      actor_type: 'player',
       familyId,
     };
 
@@ -248,13 +252,6 @@ export class AuthService {
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
-  private resolveRole(dbRole: string | undefined, email: string | undefined): 'admin' | 'user' {
-    if (dbRole === UserRole.ADMIN) return 'admin';
-    const adminEmails = (this.config.get<string[]>('admin.emails') || []).map((e) => e.toLowerCase());
-    if (email && adminEmails.includes(email)) return 'admin';
-    return 'user';
-  }
-
   private async issueAccessToken(base: AccessPayload): Promise<{ token: string; jti: string }> {
     const ttl = this.config.get<number>('jwt.accessTtlSecs')!;
     return this.signToken({ ...base, typ: 'access' }, ttl);

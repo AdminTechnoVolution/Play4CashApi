@@ -1,8 +1,7 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Put } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserService } from './user.service';
-import { AdminGuard } from '../../common/guards/admin.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { I18nService } from '../../common/i18n/i18n.service';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
@@ -59,14 +58,6 @@ export class UserController {
     private readonly i18n: I18nService,
     private readonly config: ConfigService,
   ) {}
-
-  // GET /api/user/admin/total-balances  (must come before /:id routes)
-  @Get('admin/total-balances')
-  @UseGuards(AdminGuard)
-  @ApiOperation({ summary: 'Admin: get total platform balances' })
-  getTotalBalances() {
-    return this.userService.getTotalBalances();
-  }
 
   // GET /api/user/public/stats — login / marketing (no auth)
   @Public()

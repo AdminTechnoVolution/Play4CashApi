@@ -76,7 +76,6 @@ const CFG = {
   'jwt.accessTtlSecs': 60,
   'jwt.refreshTtlSecs': 600,
   'google.clientId': 'gcid',
-  'admin.emails': [] as string[],
 };
 
 function configMock() {
@@ -85,7 +84,7 @@ function configMock() {
 
 function makeService(redis: ReturnType<typeof createRedisMock>) {
   const userRepo = {
-    findById: jest.fn(async () => ({ role: 'user', email: 'a@b.com' })),
+    findById: jest.fn(async () => ({ role: 'user', email: 'a@b.com', status: 'active' })),
   } as any;
   return new AuthService(configMock(), userRepo, redis as any);
 }

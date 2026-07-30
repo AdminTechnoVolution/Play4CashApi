@@ -9,16 +9,16 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminRoute } from '../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../admin-auth/admin-auth.guard';
 import { GameService } from './game.service';
 import { CreateGameDto, UpdateGameDto } from './dtos/game-admin.dto';
 
 @ApiTags('Admin · Games')
 @ApiBearerAuth()
 @Controller('admin/games')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class GameAdminController {
   constructor(private readonly gameService: GameService) {}
 

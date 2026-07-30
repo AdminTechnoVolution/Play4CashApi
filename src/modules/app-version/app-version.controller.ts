@@ -9,15 +9,15 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { AppVersionStatsService, AppVersionStatsSummary } from './app-version-stats.service';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { RolesGuard } from '../../common/guards/roles.guard';
+import { AdminRoute } from '../../common/decorators/admin-route.decorator';
+import { AdminAuthGuard } from '../admin-auth/admin-auth.guard';
 import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 
 @ApiTags('Admin · App Version')
 @ApiBearerAuth()
 @Controller('admin/app-versions')
-@UseGuards(RolesGuard)
-@Roles('admin')
+@AdminRoute()
+@UseGuards(AdminAuthGuard)
 export class AppVersionController {
   constructor(private readonly stats: AppVersionStatsService) {}
 
