@@ -89,6 +89,29 @@ function makeService(redis: ReturnType<typeof createRedisMock>) {
   return new AuthService(configMock(), userRepo, redis as any);
 }
 
+function makeUserRepoMock() {
+  const users = new Map<string, any>();
+  const usernames = new Set<string>();
+  return {
+    users,
+    findByEmail: jest.fn(async (email: string) => users.get(email) ?? null),
+    findByUsername: jest.fn(async (username: string) => (usernames.has(username) ? {} : null)),
+    findById: jest.fn(async (id: string) =>
+      [...users.values()].find((u) => String(u._id) === id) ?? null,
+    ),
+    create: jest.fn(async (data: { email: string; username: string; status: string }) => {
+      const doc = { _id: `id-${users.size + 1}`, ...data };
+      users.set(data.email, doc);
+      usernames.add(data.username);
+      return doc;
+    }),
+  };
+}
+
+function makeServiceWithUserRepo(redis: ReturnType<typeof createRedisMock>, userRepo: any) {
+  return new AuthService(configMock(), userRepo, redis as any);
+}
+
 function loginPayload(overrides: Partial<{
   id: string;
   email: string;
@@ -203,6 +226,51 @@ describe('AuthService.refreshToken', () => {
 
     await expect(svc.refreshToken(refresh)).rejects.toBeInstanceOf(BusinessException);
     expect(redis.strings.has(`${REDIS_KEY_SESSION_FAMILY}fam-1`)).toBe(false);
+  });
+});
+
+describe('AuthService.fakeLogin', () => {
+  it('creates a new user on first call and issues a real, working session', async () => {
+    const redis = createRedisMock();
+    const userRepo = makeUserRepoMock();
+    const svc = makeServiceWithUserRepo(redis, userRepo);
+
+    const out = await svc.fakeLogin('e2e-alice@play4cash.test', 'Alice E2E');
+
+    expect(out.success).toBe(true);
+    expect(out.data.token).toBeDefined();
+    expect(out.data.refreshToken).toBeDefined();
+    expect(userRepo.create).toHaveBeenCalledTimes(1);
+    expect(userRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ email: 'e2e-alice@play4cash.test', status: 'active' }),
+    );
+
+    // The refresh token is fully live in Redis, same as a real login — a follow-up
+    // refreshToken() call must succeed exactly like it would for a real session.
+    const rotated = await svc.refreshToken(out.data.refreshToken);
+    expect(rotated.data.token).toBeDefined();
+    expect(rotated.data.refreshToken).not.toBe(out.data.refreshToken);
+  });
+
+  it('reuses the same user on a second call instead of creating a duplicate', async () => {
+    const redis = createRedisMock();
+    const userRepo = makeUserRepoMock();
+    const svc = makeServiceWithUserRepo(redis, userRepo);
+
+    await svc.fakeLogin('e2e-bob@play4cash.test');
+    await svc.fakeLogin('e2e-bob@play4cash.test');
+
+    expect(userRepo.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('lower-cases the email the same way loginUser does', async () => {
+    const redis = createRedisMock();
+    const userRepo = makeUserRepoMock();
+    const svc = makeServiceWithUserRepo(redis, userRepo);
+
+    await svc.fakeLogin('E2E-Casey@Play4Cash.test');
+
+    expect(userRepo.findByEmail).toHaveBeenCalledWith('e2e-casey@play4cash.test');
   });
 });
 

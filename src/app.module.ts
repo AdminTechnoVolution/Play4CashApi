@@ -28,6 +28,7 @@ import { GracePeriodModule } from './common/grace-period/grace-period.module';
 import { TurnDeadlineModule } from './common/turn-deadline/turn-deadline.module';
 import { WebPushModule } from './common/web-push/web-push.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
+import { OtpAttemptGuardModule } from './common/otp-attempts/otp-attempt-guard.module';
 import { TournamentModule } from './modules/tournament/tournament.module';
 import { ContactUsModule } from './modules/contact-us/contact-us.module';
 import { GameAuditModule } from './modules/game-audit/game-audit.module';
@@ -89,6 +90,7 @@ import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
     TurnDeadlineModule,
     WebPushModule,
     IdempotencyModule,
+    OtpAttemptGuardModule,
     TournamentModule,
     ContactUsModule,
     GameAuditModule,

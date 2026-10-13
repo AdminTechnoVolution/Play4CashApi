@@ -5,13 +5,19 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { I18nService } from '../../common/i18n/i18n.service';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { ConfigService } from '@nestjs/config';
-import { IsString } from 'class-validator';
+import { IsNumber, IsPositive, IsString } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 
 class CreateRechargeDto {
   @ApiProperty() @IsString() txId: string;
   @ApiProperty() @IsString() coin: string;
+}
+
+class CreateRechargeIntentDto {
+  @ApiProperty() @IsString() coin: string;
+  @ApiProperty() @IsString() network: string;
+  @ApiProperty() @IsNumber() @IsPositive() amount: number;
 }
 
 @ApiTags('Recharges')
@@ -43,6 +49,25 @@ export class RechargeController {
       this.rechargeService.createRecharge(user.id, dto.txId, dto.coin, expiryMins),
     );
     const message = this.i18n.translate('SUCCESS_RECHARGE', lang);
+    return { success: true, messages: [message], data: result };
+  }
+
+  @Post('recharge/intent')
+  @ApiOperation({ summary: 'Reserve an exact deposit amount before sending funds' })
+  async createIntent(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateRechargeIntentDto,
+    @Headers('accept-language') lang: string,
+  ) {
+    const expiryMins = this.config.get<number>('recharge.intentExpiryMinutes') || 45;
+    const result = await this.rechargeService.createIntent(
+      user.id,
+      dto.coin,
+      dto.network,
+      dto.amount,
+      expiryMins,
+    );
+    const message = this.i18n.translate('SUCCESS_RECHARGE_INTENT_CREATED', lang);
     return { success: true, messages: [message], data: result };
   }
 

@@ -11,11 +11,14 @@ import { AppConfigService } from '../app-config/app-config.service';
 import { EmailService } from '../../common/email/email.service';
 import { TtlCache } from '../../common/ttl-cache';
 import { REDIS_CLIENT } from '../../common/redis/redis.module';
+import { OtpAttemptGuardService } from '../../common/otp-attempts/otp-attempt-guard.service';
 
 @Injectable()
 export class WithdrawalService {
   private readonly logger = new Logger(WithdrawalService.name);
   private readonly historyCache = new TtlCache<any[]>();
+  /** After this many wrong codes against the same pending withdrawal, the code is killed outright. */
+  private static readonly MAX_VERIFICATION_ATTEMPTS = 5;
 
   constructor(
     @InjectModel(Withdrawal.name) private readonly withdrawalModel: Model<WithdrawalDocument>,
@@ -25,6 +28,7 @@ export class WithdrawalService {
     private readonly walletService: WalletService,
     private readonly appConfigService: AppConfigService,
     private readonly emailService: EmailService,
+    private readonly otpAttemptGuard: OtpAttemptGuardService,
   ) {}
 
   async processWithdrawal(
@@ -48,12 +52,30 @@ export class WithdrawalService {
     const { amount, coin, wallet, network } = pendingWithdrawal;
 
     // Verify code via bcrypt
+    const attemptScope = `withdrawal:${pendingWithdrawal._id}`;
     const isMatch = await bcrypt.compare(verification_code, pendingWithdrawal.verification_code);
     if (!isMatch) {
+      const attemptTtlMs = Math.max(1000, pendingWithdrawal.verification_expires_at.getTime() - Date.now());
+      const exceeded = await this.otpAttemptGuard.registerFailure(
+        attemptScope,
+        WithdrawalService.MAX_VERIFICATION_ATTEMPTS,
+        attemptTtlMs,
+      );
+      if (exceeded) {
+        // Kill the code outright — a stolen-session attacker can no longer brute-force
+        // it by rotating IPs past the (IP-scoped) route rate limiter. The user must
+        // re-initiate the withdrawal to get a fresh code.
+        await this.withdrawalModel.deleteOne({ _id: pendingWithdrawal._id });
+        await this.otpAttemptGuard.clear(attemptScope);
+        const msg = 'Error: too many invalid verification attempts';
+        await this.saveTxMessage(userId, amount, coin, wallet, msg);
+        throw new BusinessException('ERROR_WITHDRAWAL_CODE_LOCKED', 400);
+      }
       const msg = 'Error: verification code invalid or expired';
       await this.saveTxMessage(userId, amount, coin, wallet, msg);
       throw new BusinessException('ERROR_WITHDRAWAL_CODE_INVALID', 400);
     }
+    await this.otpAttemptGuard.clear(attemptScope);
 
     // Verify expiry
     if (new Date() > pendingWithdrawal.verification_expires_at) {

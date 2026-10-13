@@ -2,10 +2,21 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Recharge, RechargeDocument } from './schemas/recharge.schema';
+import { RechargeIntent, RechargeIntentDocument } from './schemas/recharge-intent.schema';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { getDepositHistory } from '../../common/clients/binance.client';
 import Decimal from 'decimal.js';
 import { TtlCache } from '../../common/ttl-cache';
+import { WalletService } from '../wallet/wallet.service';
+
+export interface RechargeIntentResult {
+  intentId: string;
+  coin: string;
+  network: string;
+  address: string;
+  exactAmount: number;
+  expiresAt: Date;
+}
 
 export type DepositTrafficPeriod = '7d' | '30d' | '90d';
 export interface DepositTrafficResponse {
@@ -29,7 +40,68 @@ export class RechargeService {
     @InjectModel(Recharge.name) private readonly rechargeModel: Model<RechargeDocument>,
     @InjectModel('User') private readonly userModel: Model<any>,
     @InjectModel('TxMessage') private readonly txMessageModel: Model<any>,
+    @InjectModel(RechargeIntent.name) private readonly rechargeIntentModel: Model<RechargeIntentDocument>,
+    private readonly walletService: WalletService,
   ) {}
+
+  /**
+   * Reserves an exact deposit amount for the user on a given coin/network
+   * before they send funds. `createRecharge` will only credit a txId whose
+   * on-chain amount matches an unclaimed, unexpired intent owned by the
+   * claiming user — this is what prevents any authenticated user from
+   * claiming someone else's deposit to the shared platform wallet by
+   * racing a publicly-visible txId.
+   */
+  async createIntent(
+    userId: string,
+    coin: string,
+    network: string,
+    requestedAmount: number,
+    expiryMins: number,
+  ): Promise<RechargeIntentResult> {
+    const coinUpper = coin.toUpperCase();
+    const wallet = await this.walletService.findByCoinAndNetwork(coinUpper, network);
+    if (!wallet) throw new BusinessException('ERROR_RECHARGE_WALLET_NOT_CONFIGURED', 400);
+
+    const amount = new Decimal(requestedAmount);
+    if (!amount.isFinite() || amount.lte(0)) {
+      throw new BusinessException('amount.positive', 400);
+    }
+    if (wallet.minAmount && amount.lt(wallet.minAmount)) {
+      throw new BusinessException('ERROR_RECHARGE_AMOUNT_MINIMUM', 400);
+    }
+
+    const expiresAt = new Date(Date.now() + expiryMins * 60 * 1000);
+    const baseAmount = amount.toDecimalPlaces(4).toNumber();
+
+    const MAX_ATTEMPTS = 10;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const exactAmount = amount.plus(this.randomFingerprint()).toDecimalPlaces(4).toNumber();
+      try {
+        const intent = await this.rechargeIntentModel.create({
+          user_id: new Types.ObjectId(userId),
+          coin: coinUpper,
+          network,
+          requestedAmount: baseAmount,
+          exactAmount,
+          address: wallet.address,
+          expires_at: expiresAt,
+        });
+        return {
+          intentId: String(intent._id),
+          coin: coinUpper,
+          network,
+          address: wallet.address,
+          exactAmount,
+          expiresAt,
+        };
+      } catch (err) {
+        if (this.isDuplicateExactAmountError(err) && attempt < MAX_ATTEMPTS - 1) continue;
+        throw err;
+      }
+    }
+    throw new BusinessException('ERROR_GENERIC_RESPONSE', 500);
+  }
 
   async createRecharge(
     userId: string,
@@ -61,11 +133,43 @@ export class RechargeService {
     }
 
     const depositAmount = new Decimal(deposit.amount).toNumber();
+    const matchAmount = new Decimal(deposit.amount).toDecimalPlaces(4).toNumber();
+
+    // Claim the reservation atomically: only a pending, unexpired intent
+    // owned by this user and matching the exact deposited amount qualifies.
+    // Without this, crediting would trust a client-supplied txId against the
+    // exchange account's whole deposit history with no ownership check.
+    const intent = await this.rechargeIntentModel.findOneAndUpdate(
+      {
+        user_id: new Types.ObjectId(userId),
+        coin: coin.toUpperCase(),
+        exactAmount: matchAmount,
+        status: 'pending',
+        expires_at: { $gt: new Date() },
+      },
+      {
+        $set: { status: 'claimed', claimed_at: new Date(), txId },
+        $unset: { expires_at: '' },
+      },
+      { returnDocument: 'after' },
+    );
+
+    if (!intent) {
+      await this.saveTxMessage(
+        userId,
+        txId,
+        depositAmount,
+        coin,
+        'No matching deposit reservation for this amount. Create a reservation before sending funds.',
+      );
+      throw new BusinessException('WARNING_NO_MATCHING_DEPOSIT_INTENT', 400);
+    }
 
     let recharge: RechargeDocument;
     try {
       recharge = await this.rechargeModel.create({
         user_id: new Types.ObjectId(userId),
+        intent_id: intent._id,
         txId,
         coin: coin.toUpperCase(),
         amount: depositAmount,
@@ -212,6 +316,20 @@ export class RechargeService {
   private isDuplicateTxError(err: unknown): boolean {
     const e = err as { code?: number; keyPattern?: Record<string, unknown>; message?: string };
     return e?.code === 11000 && (e.keyPattern?.txId === 1 || String(e.message || '').includes('txId'));
+  }
+
+  private isDuplicateExactAmountError(err: unknown): boolean {
+    const e = err as { code?: number; keyPattern?: Record<string, unknown> };
+    return e?.code === 11000 && !!e.keyPattern?.exactAmount;
+  }
+
+  /**
+   * A small, low-order offset (0.0001–0.0999) layered on top of the
+   * user-requested amount so concurrently-reserved amounts don't collide,
+   * without being large enough to matter to the depositor.
+   */
+  private randomFingerprint(): number {
+    return Math.floor(1 + Math.random() * 999) / 10000;
   }
 
   private toWalletFacingRechargeMessage(err: unknown): string {

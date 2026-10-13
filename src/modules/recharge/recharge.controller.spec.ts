@@ -3,6 +3,7 @@ import { RechargeController } from './recharge.controller';
 
 jest.mock('class-validator', () => ({
   IsNumber: () => () => undefined,
+  IsPositive: () => () => undefined,
   IsString: () => () => undefined,
 }));
 
@@ -16,6 +17,14 @@ jest.mock('@nestjs/swagger', () => ({
 function makeDeps() {
   const rechargeService = {
     createRecharge: jest.fn().mockResolvedValue({ balance: 125 }),
+    createIntent: jest.fn().mockResolvedValue({
+      intentId: 'intent-1',
+      coin: 'USDT',
+      network: 'BSC',
+      address: 'wallet-addr',
+      exactAmount: 50.0034,
+      expiresAt: new Date('2026-08-04T13:00:00.000Z'),
+    }),
     getHistory: jest.fn(),
   } as any;
   const config = {
@@ -78,5 +87,40 @@ describe('RechargeController.create', () => {
 
     expect(idempotency.getOrSet).not.toHaveBeenCalled();
     expect(rechargeService.createRecharge).not.toHaveBeenCalled();
+  });
+});
+
+describe('RechargeController.createIntent', () => {
+  const user = { id: '507f1f77bcf86cd799439011' };
+  const lang = 'en';
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('reserves an exact deposit amount and returns it to the caller', async () => {
+    const { controller, rechargeService, config, i18n } = makeDeps();
+
+    const out = await controller.createIntent(
+      user,
+      { coin: 'usdt', network: 'BSC', amount: 50 },
+      lang,
+    );
+
+    expect(config.get).toHaveBeenCalledWith('recharge.intentExpiryMinutes');
+    expect(rechargeService.createIntent).toHaveBeenCalledWith(user.id, 'usdt', 'BSC', 50, 45);
+    expect(i18n.translate).toHaveBeenCalledWith('SUCCESS_RECHARGE_INTENT_CREATED', lang);
+    expect(out).toEqual({
+      success: true,
+      messages: ['SUCCESS_RECHARGE_INTENT_CREATED'],
+      data: {
+        intentId: 'intent-1',
+        coin: 'USDT',
+        network: 'BSC',
+        address: 'wallet-addr',
+        exactAmount: 50.0034,
+        expiresAt: new Date('2026-08-04T13:00:00.000Z'),
+      },
+    });
   });
 });

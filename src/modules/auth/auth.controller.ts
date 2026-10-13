@@ -4,6 +4,7 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Post,
   Req,
   Res,
@@ -18,6 +19,7 @@ import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { FakeLoginDto } from './dto/fake-login.dto';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import {
   clearRefreshCookie,
@@ -102,6 +104,31 @@ export class AuthController {
     }
     if (newRefresh) {
       setRefreshCookie(res, this.config, newRefresh);
+    }
+    return result;
+  }
+
+  // Test-only login bypass — gated by config.auth.fakeLoginEnabled (see
+  // configuration.ts: requires ENABLE_FAKE_LOGIN=true AND NODE_ENV !== production).
+  // Returns 404 when disabled so it's indistinguishable from a route that doesn't
+  // exist at all; never leaks "this feature exists but is off" to a prod probe.
+  @RateLimit({ limit: 30, ttlMs: 900_000 })
+  @Public()
+  @Post('login/fake')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '[Test only] Login without Google OAuth — disabled unless explicitly enabled' })
+  async fakeLogin(@Body() dto: FakeLoginDto, @Res({ passthrough: true }) res: Response) {
+    if (!this.config.get<boolean>('auth.fakeLoginEnabled')) {
+      throw new NotFoundException();
+    }
+    const result = await this.authService.fakeLogin(dto.email, dto.name);
+    const access = result?.data?.token;
+    const refresh = result?.data?.refreshToken;
+    if (access) {
+      setAccessCookie(res, this.config, access);
+    }
+    if (refresh) {
+      setRefreshCookie(res, this.config, refresh);
     }
     return result;
   }
