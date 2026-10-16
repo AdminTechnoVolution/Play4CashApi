@@ -1,3 +1,4 @@
+import { registerTournament } from '../../payments/tournament-finance';
 import {
   BadRequestException,
   ConflictException,
@@ -48,6 +49,11 @@ export class TournamentRegistrationService {
     idempotencyKeyHeader: string | undefined,
   ) {
     const idempKey = this.assertIdempotencyKey(idempotencyKeyHeader);
+    if (process.env.FINANCE_V2_ENABLED === 'true') {
+      const result = await registerTournament(this.userModel.db, tournamentId, userId, idempKey);
+      await this.tournamentsGateway.emitMatchUpdate(tournamentId);
+      return result;
+    }
     const cacheKey = `idem:tournament:register:${userId}:${idempKey}`;
 
     return this.idempotency.getOrSet(cacheKey, IdempotencyService.DEFAULT_TTL_SEC, async () => {
@@ -100,7 +106,7 @@ export class TournamentRegistrationService {
       }
       await t.save();
 
-      void this.tournamentsGateway.emitMatchUpdate(t._id.toString());
+      await this.tournamentsGateway.emitMatchUpdate(t._id.toString());
 
       return {
         registered: true,
@@ -119,6 +125,11 @@ export class TournamentRegistrationService {
     idempotencyKeyHeader: string | undefined,
   ) {
     const idempKey = this.assertIdempotencyKey(idempotencyKeyHeader);
+    if (process.env.FINANCE_V2_ENABLED === 'true') {
+      const result = await registerTournament(this.userModel.db, tournamentId, userId, idempKey, true);
+      await this.tournamentsGateway.emitMatchUpdate(tournamentId);
+      return result;
+    }
     const cacheKey = `idem:tournament:unregister:${userId}:${idempKey}`;
 
     return this.idempotency.getOrSet(cacheKey, IdempotencyService.DEFAULT_TTL_SEC, async () => {
@@ -152,7 +163,7 @@ export class TournamentRegistrationService {
       }
       await t.save();
 
-      void this.tournamentsGateway.emitMatchUpdate(t._id.toString());
+      await this.tournamentsGateway.emitMatchUpdate(t._id.toString());
 
       return { unregistered: true, registeredCount: t.registered_count, status: t.status };
     });

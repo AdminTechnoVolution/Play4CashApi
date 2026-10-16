@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import { decimalWire } from '../../modules/payments/decimal-wire';
 
 export interface ApiResponse<T> {
   success: boolean;
@@ -27,15 +28,16 @@ export class ResponseInterceptor<T>
   ): Observable<ApiResponse<T>> {
     return next.handle().pipe(
       map((data) => {
+        const normalized = decimalWire(data);
         // If the service already returned a BaseResponse shape, pass through
         if (
           data &&
           typeof data === 'object' &&
           'success' in (data as object)
         ) {
-          return data as any;
+          return normalized as any;
         }
-        return { success: true, messages: [], data: data ?? null };
+        return { success: true, messages: [], data: normalized ?? null };
       }),
     );
   }

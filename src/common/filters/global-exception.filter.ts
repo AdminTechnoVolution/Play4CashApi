@@ -14,6 +14,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
   constructor(private readonly i18n: I18nService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
+    if (host.getType() === 'ws') {
+      host.switchToWs().getClient().emit('exception', { success: false, messages: ['COMMAND_RECOVERY_REQUIRED'] });
+      return;
+    }
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();

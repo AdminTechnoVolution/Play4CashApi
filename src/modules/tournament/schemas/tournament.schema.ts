@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
+import { Document, Types, Schema as MongooseSchema } from 'mongoose';
 import {
   LanguageField,
   LanguageFieldSchema,
@@ -37,6 +37,8 @@ export class Tournament {
 
   @Prop({ required: true, min: 0.01 })
   buy_in: number;
+  @Prop({ type: MongooseSchema.Types.Decimal128 })
+  buy_in_decimal?: Types.Decimal128;
 
   @Prop({ required: true, default: 8, min: TOURNAMENT_MIN_PLAYERS })
   max_players: number;

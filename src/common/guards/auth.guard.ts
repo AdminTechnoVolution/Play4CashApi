@@ -14,6 +14,7 @@ import { REDIS_KEY_ACCESS_TOKEN } from '../constants/redis-keys.constants';
 import { jwtVerifyOptions, isAccessTokenPayload } from '../auth/jwt-token.util';
 import { accessCookieName, readCookieFromHeader } from '../../modules/auth/auth-cookie.util';
 import { IS_ADMIN_ROUTE_KEY } from '../decorators/admin-route.decorator';
+import { redisSessionExists } from '../auth/redis-session';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -37,9 +38,6 @@ export class AuthGuard implements CanActivate {
     if (isPublic) return true;
 
     const request = context.switchToHttp().getRequest();
-    if (request.gatewayTrusted && request.user) {
-      return true;
-    }
 
     const authHeader: string = request.headers['authorization'] || '';
     const cookieToken = readCookieFromHeader(request.headers.cookie, accessCookieName(this.config));
@@ -64,8 +62,8 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('ERROR_AUTH');
     }
 
-    const exists = await this.redis.exists(`${REDIS_KEY_ACCESS_TOKEN}${token}`);
-    if (exists !== 1) throw new UnauthorizedException('ERROR_AUTH');
+    const exists = await redisSessionExists(this.redis, `${REDIS_KEY_ACCESS_TOKEN}${token}`);
+    if (!exists) throw new UnauthorizedException('ERROR_AUTH');
 
     request.user = payload;
     request.token = token;

@@ -119,6 +119,7 @@ export class UserController {
   }
 
   // POST /api/user/confirm-wallet-change
+  @RateLimit({ limit: 20, ttlMs: 900_000 })
   @Post('confirm-wallet-change')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Confirm wallet update with email verification code' })

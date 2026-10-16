@@ -63,6 +63,26 @@ export class AuthService {
     let { email, name } = googlePayload;
     email = email.toLowerCase();
 
+    return this.completeLogin(email, name, startedAt, googleVerifyMs);
+  }
+
+  // ─── Fake login (test-only bypass, see config.auth.fakeLoginEnabled) ───────
+  // Skips Google verification entirely and runs the exact same find-or-create +
+  // token-issuance + Redis-family-persistence path as a real login, so the
+  // resulting session is functionally indistinguishable from a genuine one.
+  // The controller is responsible for checking `fakeLoginEnabled` and for
+  // restricting which emails are accepted before calling this.
+  async fakeLogin(email: string, name?: string): Promise<any> {
+    const startedAt = process.hrtime.bigint();
+    return this.completeLogin(email.toLowerCase(), name || 'E2E Test User', startedAt, 0);
+  }
+
+  private async completeLogin(
+    email: string,
+    name: string | undefined,
+    startedAt: bigint,
+    googleVerifyMs: number,
+  ): Promise<any> {
     const userLookupStart = process.hrtime.bigint();
     let user = await this.userRepo.findByEmail(email);
     const userLookupMs = Number(process.hrtime.bigint() - userLookupStart) / 1_000_000;

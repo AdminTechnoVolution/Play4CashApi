@@ -13,12 +13,15 @@ import { TtlCache } from '../../common/ttl-cache';
 import { logSlowEvent } from '../../common/perf-log.util';
 import { AppConfigService } from '../app-config/app-config.service';
 import { GameAuditReversal } from '../game-audit/schemas/game-audit.schema';
+import { OtpAttemptGuardService } from '../../common/otp-attempts/otp-attempt-guard.service';
 
 @Injectable()
 export class UserService {
   private readonly logger = new Logger(UserService.name);
   private readonly publicStatsCache = new TtlCache<{ registeredUsers: number }>();
   private readonly userHistoryCache = new TtlCache<any[]>();
+  /** After this many wrong codes against the same pending wallet change, the code is killed outright. */
+  private static readonly MAX_WALLET_CHANGE_ATTEMPTS = 5;
 
   constructor(
     private readonly userRepo: UserRepository,
@@ -31,6 +34,7 @@ export class UserService {
     private readonly emailService: EmailService,
     private readonly appConfigService: AppConfigService,
     private readonly config: ConfigService,
+    private readonly otpAttemptGuard: OtpAttemptGuardService,
   ) {}
 
   invalidateHistory(userIds: string[]): void {
@@ -62,6 +66,9 @@ export class UserService {
     const configLookupMs = Number(process.hrtime.bigint() - configLookupStart) / 1_000_000;
 
     const profile = user as any;
+    for (const field of ['balance', 'total_recharged', 'total_witdrawal', 'total_won']) {
+      if (profile[field] != null) profile[field] = String(profile[field]);
+    }
     profile.limits = { daily_withdrawal: withdrawal_daily_limit };
     logSlowEvent(this.logger, 'user_profile_trace', startedAt, 50, {
       user_lookup_ms: userLookupMs.toFixed(1),
@@ -255,10 +262,26 @@ export class UserService {
       throw new BusinessException('ERROR_WALLET_CHANGE_NONE_PENDING', 400);
     }
 
+    const attemptScope = `wallet-change:${pending._id}`;
     const isMatch = await bcrypt.compare(verification_code, pending.verification_code);
     if (!isMatch) {
+      const attemptTtlMs = Math.max(1000, pending.verification_expires_at.getTime() - Date.now());
+      const exceeded = await this.otpAttemptGuard.registerFailure(
+        attemptScope,
+        UserService.MAX_WALLET_CHANGE_ATTEMPTS,
+        attemptTtlMs,
+      );
+      if (exceeded) {
+        // Kill the code outright — a stolen-session attacker can no longer brute-force
+        // it by rotating IPs past the (IP-scoped) route rate limiter. The user must
+        // re-request the wallet change to get a fresh code.
+        await this.walletChangePendingModel.deleteOne({ _id: pending._id });
+        await this.otpAttemptGuard.clear(attemptScope);
+        throw new BusinessException('ERROR_WALLET_CHANGE_LOCKED', 400);
+      }
       throw new BusinessException('ERROR_WALLET_CHANGE_CODE_INVALID', 400);
     }
+    await this.otpAttemptGuard.clear(attemptScope);
 
     if (new Date() > pending.verification_expires_at) {
       await this.walletChangePendingModel.deleteOne({ _id: pending._id });

@@ -7,6 +7,13 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { randomUUID } from 'crypto';
+import Decimal from 'decimal.js';
+import { positiveMoney, bsonMoney } from '../../payments/money';
+import { LedgerService } from '../../payments/ledger.service';
+import { consumeFinancialMfa } from '../../payments/financial-mfa';
+import { idempotencyKey } from '../../payments/payments.service';
+import { fingerprint } from '../../payments/canonical';
+import { ConfigService } from '@nestjs/config';
 import { Tournament, TournamentDocument } from '../schemas/tournament.schema';
 import {
   TOURNAMENT_SUPPORTED_SOCKET_CODES,
@@ -25,6 +32,7 @@ export class TournamentAdminService {
   constructor(
     @InjectModel(Tournament.name) private readonly tournamentModel: Model<TournamentDocument>,
     @InjectModel(Game.name) private readonly gameModel: Model<GameDocument>,
+    private readonly config: ConfigService,
   ) {}
 
   private validatePercents(house: number, first: number, second: number): void {
@@ -53,6 +61,8 @@ export class TournamentAdminService {
   }
 
   async create(dto: CreateTournamentDto): Promise<TournamentDocument> {
+    const buyIn = positiveMoney(String(dto.buyIn));
+    if (new Decimal(buyIn).lt('0.01')) throw new BadRequestException('BUY_IN_BELOW_MINIMUM');
     const layout = resolveTournamentLayout(
       dto.maxPlayers,
       dto.minPlayers,
@@ -74,7 +84,8 @@ export class TournamentAdminService {
       game_id: game._id,
       game_socket_code: game.socket_code,
       status: TournamentStatus.DRAFT,
-      buy_in: dto.buyIn,
+      buy_in: Number(buyIn),
+      buy_in_decimal: bsonMoney(buyIn),
       max_players: layout.maxPlayers,
       min_players: layout.minPlayers,
       group_count: layout.groupCount,
@@ -136,7 +147,12 @@ export class TournamentAdminService {
     }
     if (dto.title != null) t.title = normalizeLanguageField(dto.title, 'TITLE');
     if (dto.description != null) t.description = normalizeOptionalLanguageField(dto.description);
-    if (dto.buyIn != null) t.buy_in = dto.buyIn;
+    if (dto.buyIn != null) {
+      const buyIn = positiveMoney(String(dto.buyIn));
+      if (new Decimal(buyIn).lt('0.01')) throw new BadRequestException('BUY_IN_BELOW_MINIMUM');
+      t.buy_in = Number(buyIn);
+      t.buy_in_decimal = bsonMoney(buyIn);
+    }
     if (dto.startsAt != null) t.starts_at = new Date(dto.startsAt);
     if (dto.registrationOpensAt != null) t.registration_opens_at = new Date(dto.registrationOpensAt);
     if (dto.registrationClosesAt != null) t.registration_closes_at = new Date(dto.registrationClosesAt);
@@ -172,7 +188,36 @@ export class TournamentAdminService {
     return t;
   }
 
-  async cancel(id: string): Promise<TournamentDocument> {
+  async cancel(id: string, authorization?: { adminId: string; code: string; key: string; reason: string }): Promise<TournamentDocument> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') {
+      if (!authorization || authorization.reason.length < 10) throw new BadRequestException('FINANCIAL_AUTHORIZATION_REQUIRED');
+      const db = this.tournamentModel.db;
+      const requestId = `admin:tournament:cancel:${authorization.adminId}:${idempotencyKey(authorization.key)}`;
+      const hash = fingerprint({ id, reason: authorization.reason });
+      await new LedgerService(db).transaction(async session => {
+        const previous = await db.collection('finance_admin_audit').findOne({ _id: requestId as any }, { session });
+        if (previous) {
+          if (previous.hash !== hash) throw new BadRequestException('IDEMPOTENCY_CONFLICT');
+          return;
+        }
+        await consumeFinancialMfa(db, this.config, authorization.adminId, authorization.code, session);
+        const cancelled = await this.tournamentModel.findOneAndUpdate({ _id: id,
+          status: { $nin: [TournamentStatus.FINISHED, TournamentStatus.CANCELLED] }, prizes_settled: { $ne: true } },
+          { $set: { status: TournamentStatus.CANCELLED } }, { session, returnDocument: 'after' });
+        if (!cancelled) throw new BadRequestException('Tournament already terminal');
+        const rooms = await db.collection('rooms').find({ tournament_id: new Types.ObjectId(id), status: { $in: ['waiting', 'started'] } }, { session }).toArray();
+        const namespace = cancelled.game_socket_code === 'battleship' ? '/naval-battle' : `/${cancelled.game_socket_code}`;
+        for (const room of rooms) {
+          const version = Number(room.command_revision ?? 0) + 1;
+          await db.collection('rooms').updateOne({ _id: room._id }, { $set: { status: 'finished', winner_reason: 'tournament_cancelled', finished_at: new Date(), command_revision: version } }, { session });
+          await db.collection('game_outbox').insertOne({ roomId: String(room._id), sequence: version, index: 0, published: false, createdAt: new Date(),
+            event: { namespace, rooms: [String(room._id)], except: [], event: namespace.slice(1), args: [{ success: true, messages: [], data: { roomId: String(room._id), stateVersion: version, gameEnded: true, gameStarted: false, reason: 'tournament_cancelled' } }] } }, { session });
+        }
+        await db.collection('finance_admin_audit').insertOne({ _id: requestId as any, adminId: authorization.adminId, tournamentId: id,
+          hash, reason: authorization.reason, decision: 'cancel_tournament', createdAt: new Date() }, { session });
+      });
+      return this.findById(id);
+    }
     const t = await this.findById(id);
     if (t.status === TournamentStatus.FINISHED || t.status === TournamentStatus.CANCELLED) {
       throw new BadRequestException('Tournament already terminal');

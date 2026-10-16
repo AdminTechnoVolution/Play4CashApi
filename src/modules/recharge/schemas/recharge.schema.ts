@@ -6,6 +6,7 @@ export type RechargeDocument = Recharge & Document;
 @Schema({ versionKey: false, timestamps: false })
 export class Recharge {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true }) user_id: Types.ObjectId;
+  @Prop({ type: Types.ObjectId, ref: 'RechargeIntent' }) intent_id: Types.ObjectId;
   @Prop({ required: true }) txId: string;
   @Prop({ required: true }) amount: number;
   @Prop() network: string;

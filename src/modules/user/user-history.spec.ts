@@ -33,6 +33,7 @@ function makeService(rooms: any[]): UserService {
     {} as any,
     {} as any,
     {} as any,
+    {} as any,
   );
 }
 

@@ -93,7 +93,7 @@ export class TournamentSchedulerService {
         fresh.current_round_index = 0;
         await fresh.save();
         await this.matchService.activateRoundMatches(fresh, 0);
-        void this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
+        await this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
       });
     }
   }
@@ -135,7 +135,7 @@ export class TournamentSchedulerService {
         }
         fresh.between_rounds_ends_at = undefined;
         await fresh.save();
-        void this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
+        await this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
       });
     }
   }
@@ -183,7 +183,7 @@ export class TournamentSchedulerService {
         this.logger.log(
           `event=tournament_match_repaired_from_room matchId=${freshMatch._id.toString()} roomId=${room._id.toString()} winnerId=${winnerId}`,
         );
-        void this.tournamentsGateway.emitMatchUpdate(tid);
+        await this.tournamentsGateway.emitMatchUpdate(tid);
       });
     }
   }
@@ -225,7 +225,7 @@ export class TournamentSchedulerService {
           this.logger.log(
             `event=tournament_room_repaired matchId=${freshMatch._id.toString()} roomId=${afterRoomId}`,
           );
-          void this.tournamentsGateway.emitMatchUpdate(tid);
+          await this.tournamentsGateway.emitMatchUpdate(tid);
         }
       });
     }
@@ -265,7 +265,7 @@ export class TournamentSchedulerService {
           `event=tournament_finals_activated tournament=${fresh._id.toString()} round=${fresh.current_round_index} pending=${stillPending}`,
         );
         await this.matchService.activateRoundMatches(fresh, fresh.current_round_index);
-        void this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
+        await this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
       });
     }
   }

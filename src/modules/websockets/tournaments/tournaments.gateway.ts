@@ -1,3 +1,4 @@
+import { durableEmit } from '../../../common/reliable-commands/reliable-commands';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -65,7 +66,7 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
         const lang = resolveWsLang(remote as unknown as Socket);
         const uid = remote.data.player_id as string | undefined;
         const data = await this.stateService.toPublicDetail(t, uid, lang);
-        remote.emit(EVENT, {
+        durableEmit(remote, EVENT, {
           success: true,
           event: 'tournament:state',
           data,
@@ -78,7 +79,7 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
   async emitBracketUpdated(tournamentId: string): Promise<void> {
     const bracket = await this.stateService.getBracket(tournamentId);
     const room = this.roomId(tournamentId);
-    this.server.to(room).emit(EVENT, {
+    durableEmit(this.server.to(room), EVENT, {
       success: true,
       event: 'tournament:bracketUpdated',
       data: { tournamentId, bracket },
@@ -98,7 +99,7 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
   ) {
     const tournamentId = payload?.tournament_id;
     if (!tournamentId) {
-      return client.emit(EVENT, { success: false, event: 'tournament:error', messages: ['Missing tournament_id'] });
+      return durableEmit(client, EVENT, { success: false, event: 'tournament:error', messages: ['Missing tournament_id'] });
     }
     await client.join(this.roomId(tournamentId));
     client.data.tournament_id = tournamentId;
@@ -107,10 +108,10 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
     if (uid) await this.presenceService.markPresent(tournamentId, uid);
     const t = await this.tournamentModel.findById(tournamentId);
     if (!t) {
-      return client.emit(EVENT, { success: false, event: 'tournament:error', messages: ['Not found'] });
+      return durableEmit(client, EVENT, { success: false, event: 'tournament:error', messages: ['Not found'] });
     }
     const data = await this.stateService.toPublicDetail(t, uid, client.data.lang);
-    client.emit(EVENT, { success: true, event: 'tournament:state', data, messages: [] });
+    durableEmit(client, EVENT, { success: true, event: 'tournament:state', data, messages: [] });
   }
 
   @SubscribeMessage('tournament:leave')
@@ -120,20 +121,20 @@ export class TournamentsGateway implements OnGatewayInit, OnGatewayConnection, O
     if (tid) await client.leave(this.roomId(tid));
     if (tid && uid) await this.presenceService.clear(tid, uid);
     client.data.tournament_id = undefined;
-    client.emit(EVENT, { success: true, event: 'tournament:left', data: {}, messages: [] });
+    durableEmit(client, EVENT, { success: true, event: 'tournament:left', data: {}, messages: [] });
   }
 
   @SubscribeMessage('tournament:getState')
   async handleGetState(@ConnectedSocket() client: Socket) {
     const tid = client.data.tournament_id as string | undefined;
     if (!tid) {
-      return client.emit(EVENT, { success: false, event: 'tournament:error', messages: ['Not joined'] });
+      return durableEmit(client, EVENT, { success: false, event: 'tournament:error', messages: ['Not joined'] });
     }
     const t = await this.tournamentModel.findById(tid);
     if (!t) return;
     const lang = client.data.lang ?? resolveWsLang(client);
     const data = await this.stateService.toPublicDetail(t, client.data.player_id, lang);
-    client.emit(EVENT, { success: true, event: 'tournament:state', data, messages: [] });
+    durableEmit(client, EVENT, { success: true, event: 'tournament:state', data, messages: [] });
   }
 
   @SubscribeMessage('tournament:heartbeat')

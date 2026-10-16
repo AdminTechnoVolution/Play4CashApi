@@ -6,9 +6,14 @@ import {
   Patch,
   Post,
   UseGuards,
+  Headers,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { AdminRoute } from '../../../common/decorators/admin-route.decorator';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import type { JwtPayload } from '../../../common/decorators/current-user.decorator';
+import { RateLimit } from '../../../common/rate-limit/rate-limit.decorator';
+import { IsString, Length, Matches } from 'class-validator';
 import { AdminAuthGuard } from '../../admin-auth/admin-auth.guard';
 import { TournamentAdminService } from '../services/tournament-admin.service';
 import { TournamentStateService } from '../services/tournament-state.service';
@@ -21,6 +26,10 @@ import {
   TournamentParticipantDocument,
 } from '../schemas/tournament-participant.schema';
 
+class CancelTournamentDto {
+  @IsString() @Matches(/^\d{6}$/) code: string;
+  @IsString() @Length(10, 500) reason: string;
+}
 @ApiTags('Admin · Tournaments')
 @ApiBearerAuth()
 @Controller('admin/tournaments')
@@ -77,9 +86,10 @@ export class TournamentAdminController {
   }
 
   @Post(':id/cancel')
+  @RateLimit({ limit: 10, ttlMs: 60000 })
   @ApiOperation({ summary: 'Cancel tournament and refund registrations' })
-  async cancel(@Param('id') id: string) {
-    const t = await this.adminService.cancel(id);
+  async cancel(@Param('id') id: string, @CurrentUser() admin: JwtPayload, @Body() dto: CancelTournamentDto, @Headers('idempotency-key') key: string) {
+    const t = await this.adminService.cancel(id, { adminId: admin.id, code: dto.code, reason: dto.reason, key });
     const parts = await this.participantModel.find({ tournament_id: t._id });
     await this.ledger.refundAllRegistered(
       t._id as any,

@@ -51,6 +51,7 @@ export class HouseTreasuryService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') return;
     const config = await this.configModel.findOneAndUpdate(
       { key: 'main' },
       { $setOnInsert: { key: 'main', activated_at: new Date(), ledger_balance: 0 } },
@@ -61,6 +62,7 @@ export class HouseTreasuryService implements OnModuleInit {
   }
 
   async recordTournamentFee(tournamentId: Types.ObjectId, amount: number): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') return;
     const rounded = money(amount);
     if (rounded <= 0) return;
     await this.createLedgerEntry({
@@ -143,6 +145,11 @@ export class HouseTreasuryService implements OnModuleInit {
   }
 
   async getSummary(refreshBinance = false): Promise<Record<string, unknown>> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') {
+      const account = await this.connection.collection('finance_accounts').findOne({ account: 'house:main' });
+      return { currency: 'USDT', house_balance: account?.balance?.toString() ?? '0.000000',
+        finance_v2: true, sandbox_only: true, reconciliation_difference: null };
+    }
     await this.reconcileCasualGameFees();
     const [totals, users] = await Promise.all([
       this.ledgerModel.aggregate([
@@ -256,6 +263,7 @@ export class HouseTreasuryService implements OnModuleInit {
     dto: CreateHouseWithdrawalDto,
     administratorId: string,
   ): Promise<HouseWithdrawalDocument> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') throw new BadRequestException('LEGACY_TREASURY_DISABLED');
     const existing = await this.withdrawalModel.findOne({ idempotency_key: dto.idempotency_key });
     if (existing) return existing;
     const session = await this.connection.startSession();
@@ -305,6 +313,7 @@ export class HouseTreasuryService implements OnModuleInit {
     dto: CreateHouseAdjustmentDto,
     administratorId: string,
   ): Promise<HouseLedgerDocument> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') throw new BadRequestException('USE_MFA_LEDGER_ADJUSTMENT');
     const existing = await this.ledgerModel.findOne({ idempotency_key: dto.idempotency_key });
     if (existing) return existing;
     const original = await this.ledgerModel.findById(dto.correction_of);

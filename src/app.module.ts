@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { PaymentGeoInterceptor } from './modules/payments/geo.interceptor';
+import { ReliableCommandsModule } from './common/reliable-commands/reliable-commands.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -28,6 +31,7 @@ import { GracePeriodModule } from './common/grace-period/grace-period.module';
 import { TurnDeadlineModule } from './common/turn-deadline/turn-deadline.module';
 import { WebPushModule } from './common/web-push/web-push.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
+import { OtpAttemptGuardModule } from './common/otp-attempts/otp-attempt-guard.module';
 import { TournamentModule } from './modules/tournament/tournament.module';
 import { ContactUsModule } from './modules/contact-us/contact-us.module';
 import { GameAuditModule } from './modules/game-audit/game-audit.module';
@@ -70,13 +74,13 @@ import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
     ScheduleModule.forRoot(),
 
     // Feature Modules
+    ReliableCommandsModule,
+    PaymentsModule,
     TxMessageModule,
     AuthModule,
     AdminAuthModule,
     UserModule,
     GameModule,
-    RechargeModule,
-    WithdrawalModule,
     WalletModule,
     AppConfigModule,
     RoomModule,
@@ -89,6 +93,7 @@ import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
     TurnDeadlineModule,
     WebPushModule,
     IdempotencyModule,
+    OtpAttemptGuardModule,
     TournamentModule,
     ContactUsModule,
     GameAuditModule,
@@ -100,6 +105,7 @@ import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
     { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+    { provide: APP_INTERCEPTOR, useClass: PaymentGeoInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_PIPE, useFactory: () => new ValidationPipe({ whitelist: true, transform: true }) },
   ],

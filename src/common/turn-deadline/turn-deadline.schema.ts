@@ -17,6 +17,8 @@ export class TurnDeadline {
   @Prop({ required: true, index: true })
   expires_at: Date;
 
+  @Prop({ type: Date }) processing_at?: Date;
+
   @Prop({ default: false })
   processing: boolean;
 }

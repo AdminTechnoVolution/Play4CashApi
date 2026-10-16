@@ -1,3 +1,5 @@
+import { durableVersion, executeReliableAction } from '../reliable-commands/reliable-commands';
+import { settleGameRoom } from '../../modules/payments/game-finance';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -72,6 +74,21 @@ export class MissingGameRecoveryService implements OnModuleInit {
 
   private async refundAndCancel(room: any): Promise<void> {
     const roomId = String(room._id);
+    if (process.env.FINANCE_V2_ENABLED === 'true') {
+      const version = await durableVersion(roomId);
+      await executeReliableAction(roomId, 'server', `missing-game:${roomId}:${version}`, version,
+        'missingGameRecovery', { roomId }, '/rooms', async () => {
+          const fresh = await this.roomModel.findById(roomId).populate('game_id', 'socket_code');
+          if (!fresh || fresh.status !== RoomStatus.STARTED) return;
+          const model = this.modelForSocketCode((fresh.game_id as any)?.socket_code);
+          if (!model || await model.exists({ room_id: fresh._id })) return;
+          const finished = await this.roomModel.findOneAndUpdate({ _id: fresh._id, status: RoomStatus.STARTED },
+            { $set: { status: RoomStatus.FINISHED, winner_reason: 'start_state_missing_refunded', finished_at: new Date() }, $unset: { winner: 1 } }, { returnDocument: 'after' });
+          await settleGameRoom(this.userModel.db, roomId);
+          if (finished && this.roomsGateway.server) this.roomsGateway.broadcastRoomUpdate(String((fresh.game_id as any)?._id), 'roomUpdated', finished);
+        }, true);
+      return;
+    }
     const adjustmentKey = `missing-game-refund:${roomId}`;
     const amount = Number(room.bet_amount) || 0;
 

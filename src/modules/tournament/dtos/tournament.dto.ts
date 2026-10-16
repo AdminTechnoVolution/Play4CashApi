@@ -7,6 +7,7 @@ import {
   IsString,
   Max,
   Min,
+  Matches,
 } from 'class-validator';
 import {
   TOURNAMENT_GROUP_SIZE,
@@ -47,9 +48,9 @@ export class CreateTournamentDto {
   gameId: string;
 
   @ApiProperty()
-  @IsNumber()
-  @Min(0.01)
-  buyIn: number;
+  @IsString()
+  @Matches(/^\d{1,18}(\.\d{1,6})?$/)
+  buyIn: number | string;
 
   @ApiProperty({ default: 8, description: 'Power of 2 (2, 4, 8, 16…) — players are grouped in pairs (groupSize 2)' })
   @IsNumber()
@@ -169,9 +170,9 @@ export class UpdateTournamentDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsNumber()
-  @Min(0.01)
-  buyIn?: number;
+  @IsString()
+  @Matches(/^\d{1,18}(\.\d{1,6})?$/)
+  buyIn?: number | string;
 
   @ApiPropertyOptional()
   @IsOptional()

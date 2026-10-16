@@ -33,6 +33,15 @@ export default () => ({
     refreshCookieSecure:
       process.env.AUTH_REFRESH_COOKIE_SECURE === 'true' ||
       process.env.NODE_ENV === 'production',
+    /**
+     * Test-only login bypass (POST /login/fake) that skips Google OAuth entirely —
+     * needed so e2e suites (Cypress etc.) can reach authenticated routes without
+     * automating a real Google sign-in, which browsers block anyway.
+     * Requires BOTH an explicit opt-in AND a non-production NODE_ENV, so it can never
+     * be reachable in production even if the flag is left set by mistake.
+     */
+    fakeLoginEnabled:
+      process.env.ENABLE_FAKE_LOGIN === 'true' && process.env.NODE_ENV !== 'production',
   },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID,
@@ -60,6 +69,10 @@ export default () => ({
     verificationExpiryMinutes: parseInt(process.env.WITHDRAWAL_VERIFICATION_EXPIRY_MINUTES || '30', 10),
     minAmount: parseFloat(process.env.MIN_WITHDRAWAL || '10'),
     cronSchedule: process.env.JOB_CRON_WITHDRAWAL_IN_PROCESSING || '*/5 * * * *',
+  },
+  recharge: {
+    /** How long a reserved exact-amount deposit intent stays claimable before it self-expires. */
+    intentExpiryMinutes: parseInt(process.env.RECHARGE_INTENT_EXPIRY_MINUTES || '45', 10),
   },
   cors: {
     allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean),

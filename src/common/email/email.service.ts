@@ -38,8 +38,8 @@ export class EmailService {
       await this.transporter.sendMail(mailOptions);
       this.logger.log(`Email sent to ${to}`);
     } catch (error) {
-      this.logger.error(`Failed to send email to ${to}: ${error}`);
-      // In production, we might want to re-throw or handle this
+      this.logger.error('event=email_delivery_failed');
+      throw new Error('EMAIL_DELIVERY_FAILED');
     }
   }
 
@@ -49,7 +49,10 @@ export class EmailService {
     code: string,
     expiryMins: number,
     lang = 'en',
+    withdrawalDetails?: { network: string; address: string; amount: string; net: string; fee: string },
   ): Promise<void> {
+    const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+    username = escape(username);
     const translations: Record<string, { subject: string; body: string }> = {
       en: {
         subject: 'Play4Cash - Withdrawal Verification',
@@ -144,7 +147,8 @@ export class EmailService {
     };
 
     const t = translations[lang] || translations['en'];
-    await this.sendEmail(to, t.subject, t.body);
+    const details = withdrawalDetails ? `<p>USDT · ${escape(withdrawalDetails.network)}</p><p>${escape(withdrawalDetails.address)}</p><p>Total: ${escape(withdrawalDetails.amount)} USDT · Neto: ${escape(withdrawalDetails.net)} USDT · Fee: ${escape(withdrawalDetails.fee)} USDT</p>` : '';
+    await this.sendEmail(to, t.subject, details + t.body);
   }
 
   async sendWalletChangeVerification(

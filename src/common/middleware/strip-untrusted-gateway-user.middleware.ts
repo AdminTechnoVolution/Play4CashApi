@@ -23,12 +23,16 @@ export function createStripUntrustedGatewayUserMiddleware(config: ConfigService)
       trusted = true;
     } else if (trustedIps.length > 0) {
       const ip =
-        (req as { ip?: string }).ip ||
         (req as { socket?: { remoteAddress?: string } }).socket?.remoteAddress ||
         '';
       trusted = trustedIps.some((allowed) => allowed === ip);
     }
 
+    delete (req as Record<string, unknown>).gatewayGeoCountry;
+    if (trusted && typeof headers['x-p4c-geo-country'] === 'string' && /^[A-Z]{2}$/.test(headers['x-p4c-geo-country'])) {
+      (req as Record<string, unknown>).gatewayGeoCountry = headers['x-p4c-geo-country'];
+    }
+    delete headers['x-p4c-geo-country'];
     const hasTrustConfig = !!secret || trustedIps.length > 0;
     if (!hasTrustConfig || !trusted) {
       delete headers['x-gateway-user'];

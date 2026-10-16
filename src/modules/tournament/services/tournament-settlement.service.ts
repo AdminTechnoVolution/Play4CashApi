@@ -1,3 +1,4 @@
+import { settleTournament } from '../../payments/tournament-finance';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -29,6 +30,7 @@ export class TournamentSettlementService {
     winnerUserId: Types.ObjectId,
     runnerUpUserId: Types.ObjectId,
   ): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') return settleTournament(this.tournamentModel.db, String(tournament._id), String(winnerUserId), String(runnerUpUserId));
     const updated = await this.tournamentModel.findOneAndUpdate(
       { _id: tournament._id, prizes_settled: { $ne: true }, status: { $ne: TournamentStatus.FINISHED } },
       {

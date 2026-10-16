@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { I18nService } from '../../common/i18n/i18n.service';
 import { IsNumber, IsString } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 
 class InitiateWithdrawalDto {
   @ApiProperty() @IsNumber() amount: number;
@@ -39,6 +40,7 @@ export class WithdrawalController {
     return { success: true, messages: [message], data: null };
   }
 
+  @RateLimit({ limit: 20, ttlMs: 900_000 })
   @Post('verify-withdrawal')
   @ApiOperation({ summary: 'Confirm withdrawal with verification code' })
   async verify(

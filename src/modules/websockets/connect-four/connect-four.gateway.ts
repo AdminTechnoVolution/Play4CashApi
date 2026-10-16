@@ -1,3 +1,6 @@
+import { ReliableDisconnectAction, registerReliableDisconnectHandler } from '../../../common/reliable-commands/reliable-commands';
+import { durableEmit, ReliableAction, ReliableInternalAction, ReliableReadAction } from '../../../common/reliable-commands/reliable-commands';
+import { gameFinancialUpdate } from '../../payments/game-finance';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -48,32 +51,6 @@ import { acquireGameStartLease, publishGameStarted, releaseGameStartLease } from
 import { recordGameAuditAction } from '../../../common/game-audit-evidence.util';
 
 const EVENT = 'connect-four';
-const EDGE_COMMAND_STREAM = 'p4c:rt:connect-four:commands';
-const EDGE_EVENT_STREAM = 'p4c:rt:connect-four:events';
-const EDGE_COMMAND_GROUP = 'p4c-api-connect-four';
-const EDGE_STREAM_MAXLEN = '10000';
-
-type EdgeCommandName = 'join' | 'get_state' | 'drop_disc' | 'forfeit' | 'disconnect';
-
-interface EdgeCommand {
-  id: string;
-  commandId: string;
-  event: EdgeCommandName;
-  socketId: string;
-  playerId: string;
-  roomId: string;
-  payload: Record<string, any>;
-  lang: string;
-}
-
-interface EdgeEvent {
-  target: 'socket' | 'room' | 'player' | 'spectators';
-  event: string;
-  payload: Record<string, unknown>;
-  socketId?: string;
-  roomId?: string;
-  playerId?: string;
-}
 
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => {
@@ -91,8 +68,6 @@ export class ConnectFourGateway
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(ConnectFourGateway.name);
   private usernameCache = new Map<string, string>();
-  private edgeBusRunning = false;
-  private readonly edgeConsumerName = `api-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
   constructor(
     @InjectModel(ConnectFourGame.name) private readonly gameModel: Model<ConnectFourGameDocument>,
@@ -114,11 +89,11 @@ export class ConnectFourGateway
     this.turnDeadlines.registerHandler('connect-four', (_playerId, roomId) =>
       this.executeConnectFourTurnTimeout(roomId),
     );
-    // Direct /connect-four WebSocket proxy is preferred; disable Redis Streams consumer when unused.
   }
 
   afterInit(server: Server) {
     applyWsAuth(server, this.config, this.redis);
+    registerReliableDisconnectHandler((server as any).name, data => this.handleDisconnect({ id: data.id, data: data.data, handshake: { query: {} }, to: (room: string) => (server as any).to(room).except(`player:${data.data.player_id}`) } as unknown as Socket));
   }
 
   private getLang(client: Socket): string {
@@ -134,796 +109,7 @@ export class ConnectFourGateway
   }
 
   private emit(client: Socket, success: boolean, data: Record<string, unknown>, messages: string[]) {
-    client.emit(EVENT, { success, data, messages });
-  }
-
-  private async redisCommand(args: string[]): Promise<any> {
-    if (typeof this.redis?.sendCommand === 'function') {
-      return this.redis.sendCommand(args);
-    }
-    if (typeof this.redis?.send_command === 'function') {
-      return this.redis.send_command(args);
-    }
-    throw new Error('Redis client does not support sendCommand');
-  }
-
-  private async ensureEdgeCommandGroup(): Promise<void> {
-    try {
-      await this.redisCommand([
-        'XGROUP',
-        'CREATE',
-        EDGE_COMMAND_STREAM,
-        EDGE_COMMAND_GROUP,
-        '0',
-        'MKSTREAM',
-      ]);
-    } catch (err) {
-      const message = (err as Error).message || '';
-      if (!message.includes('BUSYGROUP')) {
-        throw err;
-      }
-    }
-  }
-
-  private parseStreamFields(fields: unknown): Record<string, string> {
-    const items = Array.isArray(fields) ? fields : [];
-    const out: Record<string, string> = {};
-    for (let i = 0; i < items.length; i += 2) {
-      out[String(items[i])] = String(items[i + 1] ?? '');
-    }
-    return out;
-  }
-
-  private parseEdgeCommand(streamId: string, fields: Record<string, string>): EdgeCommand | null {
-    const event = fields.event as EdgeCommandName;
-    if (!['join', 'get_state', 'drop_disc', 'forfeit', 'disconnect'].includes(event)) {
-      return null;
-    }
-    let payload: Record<string, any> = {};
-    try {
-      payload = fields.payload ? JSON.parse(fields.payload) : {};
-    } catch {
-      payload = {};
-    }
-    return {
-      id: streamId,
-      commandId: fields.commandId || streamId,
-      event,
-      socketId: fields.socketId || '',
-      playerId: fields.playerId || '',
-      roomId: fields.roomId || payload.room_id || '',
-      payload,
-      lang: fields.lang || 'en',
-    };
-  }
-
-  private async publishEdgeEvent(event: EdgeEvent): Promise<void> {
-    await this.redisCommand([
-      'XADD',
-      EDGE_EVENT_STREAM,
-      'MAXLEN',
-      '~',
-      EDGE_STREAM_MAXLEN,
-      '*',
-      'eventId',
-      `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      'target',
-      event.target,
-      'event',
-      event.event,
-      'socketId',
-      event.socketId ?? '',
-      'roomId',
-      event.roomId ?? '',
-      'playerId',
-      event.playerId ?? '',
-      'payload',
-      JSON.stringify(event.payload ?? {}),
-      'issuedAt',
-      new Date().toISOString(),
-    ]);
-  }
-
-  private async publishEdgeEnvelope(
-    target: Omit<EdgeEvent, 'event' | 'payload'>,
-    success: boolean,
-    data: Record<string, unknown>,
-    messages: string[],
-  ): Promise<void> {
-    await this.publishEdgeEvent({
-      ...target,
-      event: EVENT,
-      payload: { success, data, messages },
-    });
-  }
-
-  private async startEdgeCommandConsumer(): Promise<void> {
-    if (this.edgeBusRunning) return;
-    this.edgeBusRunning = true;
-    try {
-      await this.ensureEdgeCommandGroup();
-      this.logger.log('ConnectFour Redis Streams consumer listo');
-    } catch (err) {
-      this.logger.error('No se pudo inicializar el consumidor Redis Streams de ConnectFour', err);
-      this.edgeBusRunning = false;
-      return;
-    }
-
-    while (this.edgeBusRunning) {
-      try {
-        const response = await this.redisCommand([
-          'XREADGROUP',
-          'GROUP',
-          EDGE_COMMAND_GROUP,
-          this.edgeConsumerName,
-          'COUNT',
-          '10',
-          'BLOCK',
-          '5000',
-          'STREAMS',
-          EDGE_COMMAND_STREAM,
-          '>',
-        ]);
-        await this.processEdgeReadResponse(response);
-      } catch (err) {
-        this.logger.warn(
-          `ConnectFour Redis Streams consumer retry: ${(err as Error).message}`,
-        );
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
-  }
-
-  private async processEdgeReadResponse(response: unknown): Promise<void> {
-    if (!Array.isArray(response)) return;
-    for (const stream of response) {
-      const entries = Array.isArray(stream?.[1]) ? stream[1] : [];
-      for (const entry of entries) {
-        const streamId = String(entry?.[0] ?? '');
-        const fields = this.parseStreamFields(entry?.[1]);
-        const command = this.parseEdgeCommand(streamId, fields);
-        if (!command) {
-          await this.redisCommand(['XACK', EDGE_COMMAND_STREAM, EDGE_COMMAND_GROUP, streamId]);
-          continue;
-        }
-
-        const processedKey = `p4c:rt:connect-four:processed:${command.commandId}`;
-        const claimed = await this.redisCommand(['SET', processedKey, '1', 'EX', '300', 'NX']);
-        if (claimed !== 'OK') {
-          await this.redisCommand(['XACK', EDGE_COMMAND_STREAM, EDGE_COMMAND_GROUP, streamId]);
-          continue;
-        }
-
-        try {
-          await this.handleEdgeCommand(command);
-        } catch (err) {
-          this.logger.error(
-            `event=connect_four_edge_command_failed command=${command.event} id=${command.commandId}`,
-            err,
-          );
-          await this.publishEdgeEnvelope(
-            { target: 'socket', socketId: command.socketId },
-            false,
-            {},
-            [this.i18n.translate('ws.games.matchmakingError', command.lang)],
-          );
-        } finally {
-          await this.redisCommand(['XACK', EDGE_COMMAND_STREAM, EDGE_COMMAND_GROUP, streamId]);
-        }
-      }
-    }
-  }
-
-  private async handleEdgeCommand(command: EdgeCommand): Promise<void> {
-    switch (command.event) {
-      case 'join':
-        return this.handleEdgeJoin(command);
-      case 'get_state':
-        return this.handleEdgeGetState(command);
-      case 'drop_disc':
-        return this.handleEdgeDropDisc(command);
-      case 'forfeit':
-        return this.handleEdgeForfeit(command);
-      case 'disconnect':
-        return this.handleEdgeDisconnect(command);
-      default:
-        return undefined;
-    }
-  }
-
-  private resolvePlayerNumFromRoom(playerId: string, room: any): number {
-    const idx = room.players.findIndex((p: any) => p.playerId.toString() === playerId);
-    if (idx === 0) return 1;
-    if (idx === 1) return 2;
-    return 0;
-  }
-
-  private async handleEdgeJoin(command: EdgeCommand): Promise<void> {
-    const player_id = command.playerId;
-    const room_id = command.roomId || command.payload?.room_id;
-    await this.grace.cancel('connect-four', player_id);
-
-    if (!room_id) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.invalidMessageFormat', command.lang)],
-      );
-    }
-
-    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.gameNotFound', command.lang)],
-      );
-    }
-
-    if (room.status === 'finished') {
-      await this.publishEdgeEvent({
-        target: 'socket',
-        socketId: command.socketId,
-        event: 'edge:join-room',
-        payload: { roomId: room_id, isSpectator: false, playerNum: 0 },
-      });
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        true,
-        buildFinishedRoomSyncData(room, player_id),
-        [this.i18n.translate('ws.games.playerDisconnected', command.lang)],
-      );
-    }
-
-    const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
-    const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
-    if (!isMember && !isSpectator) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.notInRoom', command.lang)],
-      );
-    }
-
-    const playerNum = isMember ? this.resolvePlayerNumFromRoom(player_id, room) : 0;
-    if (isMember && (room.status === 'waiting' || room.status === 'started')) {
-      await this.roomModel.updateOne(
-        { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
-        { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
-      );
-    }
-    await this.publishEdgeEvent({
-      target: 'socket',
-      socketId: command.socketId,
-      event: 'edge:join-room',
-      payload: { roomId: room_id, isSpectator: !isMember, playerNum },
-    });
-
-    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-
-    if (!isMember) {
-      const state = await this.buildPublicState(room, game, null, true);
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        true,
-        {
-          ...state,
-          waitingForOpponent: room.status !== 'started',
-          gameStarted: room.status === 'started' || room.status === 'finished',
-          spectatorsCount: room.spectators?.length ?? 0,
-        },
-        room.status === 'started'
-          ? []
-          : [this.i18n.translate('ws.games.waitingOpponent', command.lang)],
-      );
-    }
-
-    if (room.status === 'started' && game) {
-      const state = await this.buildPublicState(room, game, playerNum, false);
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        true,
-        { ...state, waitingForOpponent: false, gameStarted: true },
-        [],
-      );
-    }
-
-    await this.publishEdgeEnvelope(
-      { target: 'socket', socketId: command.socketId },
-      true,
-      {
-        waitingForOpponent: true,
-        isSpectator: false,
-        playersJoined: room.players.length,
-        maxPlayers: 2,
-      },
-      [this.i18n.translate('ws.games.waitingOpponent', command.lang)],
-    );
-
-    const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-    if (room.players.length >= maxPlayers && (room.status === 'waiting' || room.status === 'started')) {
-      await this.tryStartConnectFourGameForEdge(room_id, command.lang);
-    }
-  }
-
-  private async tryStartConnectFourGameForEdge(room_id: string, lang: string): Promise<void> {
-    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
-    if (room.players.length < 2 || !room.players[0]?.playerId || !room.players[1]?.playerId || !room.players.every((player: any) => player.ready)) {
-      return;
-    }
-
-    const lease = await acquireGameStartLease(this.roomModel, room_id);
-    if (!lease) return;
-
-    const [p1id, p2id] = [room.players[0].playerId, room.players[1].playerId];
-    const paid: Types.ObjectId[] = [];
-    let createdGameId: Types.ObjectId | null = null;
-    const compensate = async (errKey: string, reason: string) => {
-      this.logger.error(`event=connect_four_edge_start_failed room=${room_id} reason=${reason}`);
-      for (const pid of paid) {
-        await this.userModel
-          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
-          .catch((e) => this.logger.error(`[ConnectFour] Edge refund failed | player=${pid}`, e));
-      }
-      if (createdGameId) {
-        await this.gameModel.deleteOne({ _id: createdGameId }).catch(() => null);
-      }
-      await releaseGameStartLease(this.roomModel, room_id, lease.token).catch(() => null);
-      for (const pid of [p1id, p2id]) {
-        await this.publishEdgeEnvelope(
-          { target: 'player', playerId: pid.toString() },
-          false,
-          {},
-          [this.i18n.translate(errKey, lang)],
-        );
-      }
-    };
-
-    const deduct1 = await this.userModel.findOneAndUpdate(
-      { _id: p1id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
-    if (!deduct1) return compensate('ws.games.insufficientBalance', 'p1_insufficient');
-    paid.push(p1id);
-
-    const deduct2 = await this.userModel.findOneAndUpdate(
-      { _id: p2id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
-    if (!deduct2) return compensate('ws.games.insufficientBalance', 'p2_insufficient');
-    paid.push(p2id);
-
-    try {
-      const created = await this.gameModel.create({
-        room_id: new Types.ObjectId(room_id),
-        player1_id: p1id,
-        player2_id: p2id,
-        board: createEmptyBoard(),
-        current_player: 1,
-        winning_cells: [],
-        turn_start_time: new Date(),
-        move_revision: 0,
-      });
-      createdGameId = created._id;
-    } catch (e) {
-      this.logger.error(`[ConnectFour] Edge game create failed | room=${room_id}`, e);
-      return compensate('ws.games.matchmakingError', 'game_create_failed');
-    }
-
-    const started = await publishGameStarted(this.roomModel, room_id, lease.token, { turn_start_time: new Date() });
-    if (!started) return compensate('ws.games.matchmakingError', 'start_lease_lost');
-
-    const timerSeconds = room.game_id?.turn_timer_seconds ?? 30;
-    const freshGame = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    const populatedRoom = await this.roomModel.findById(room_id).populate('game_id');
-    if (p1id) {
-      void this.turnDeadlines.schedule(
-        'connect-four',
-        room_id,
-        p1id.toString(),
-        initialTurnDeadlineSeconds(timerSeconds),
-      );
-    }
-
-    for (const playerNum of [1, 2] as const) {
-      const playerId = playerNum === 1 ? p1id.toString() : p2id.toString();
-      const state = await this.buildPublicState(populatedRoom, freshGame, playerNum, false);
-      await this.publishEdgeEnvelope(
-        { target: 'player', playerId },
-        true,
-        { ...state, waitingForOpponent: false, gameStarted: true },
-        [
-          playerNum === 1
-            ? this.i18n.translate('ws.games.yourTurn', lang)
-            : this.i18n.translate('ws.games.waitingOpponent', lang),
-        ],
-      );
-    }
-
-    if ((populatedRoom?.spectators?.length ?? 0) > 0) {
-      const spectatorState = await this.buildPublicState(populatedRoom, freshGame, null, true);
-      await this.publishEdgeEnvelope(
-        { target: 'spectators', roomId: room_id },
-        true,
-        { ...spectatorState, waitingForOpponent: false, gameStarted: true },
-        [this.i18n.translate('ws.games.gameStarted', lang)],
-      );
-    }
-
-    const gId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-    const populated = await this.roomModel
-      .findById(room_id)
-      .populate('game_id', '-created_at')
-      .populate('players.playerId', 'username')
-      .lean();
-    if (gId) this.roomsGateway.broadcastRoomUpdate(gId, 'roomUpdated', populated);
-  }
-
-  private async handleEdgeGetState(command: EdgeCommand): Promise<void> {
-    const room_id = command.roomId || command.payload?.room_id;
-    if (!room_id) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.invalidMessageFormat', command.lang)],
-      );
-    }
-    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.gameNotFound', command.lang)],
-      );
-    }
-    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    const isSpectator = room.spectators?.some((id: any) => id.toString() === command.playerId);
-    const playerNum = isSpectator ? 0 : this.resolvePlayerNumFromRoom(command.playerId, room);
-    const state = await this.buildPublicState(
-      room,
-      game,
-      isSpectator ? null : playerNum,
-      !!isSpectator,
-    );
-    await this.publishEdgeEnvelope(
-      { target: 'socket', socketId: command.socketId },
-      true,
-      { gameState: state },
-      [],
-    );
-  }
-
-  private async handleEdgeDropDisc(command: EdgeCommand): Promise<void> {
-    const room_id = command.roomId || command.payload?.room_id;
-    const col = Number(command.payload?.col);
-    if (!room_id || !Number.isInteger(col)) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.invalidMove', command.lang)],
-      );
-    }
-
-    const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.gameNotFound', command.lang)],
-      );
-    }
-
-    const playerNum = this.resolvePlayerNumFromRoom(command.playerId, room) as 1 | 2;
-    if (playerNum !== 1 && playerNum !== 2) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.notInRoom', command.lang)],
-      );
-    }
-    if (room.status === 'finished') {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.roomInactive', command.lang)],
-      );
-    }
-    if (room.status !== 'started') {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.gameNotFound', command.lang)],
-      );
-    }
-
-    const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.gameNotFound', command.lang)],
-      );
-    }
-    if (game.current_player !== playerNum) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.games.notYourTurn', command.lang)],
-      );
-    }
-
-    const expectedRevisionRaw = command.payload?.expectedRevision ?? command.payload?.moveRevision;
-    if (expectedRevisionRaw !== undefined && expectedRevisionRaw !== null) {
-      const expectedRevision = Number(expectedRevisionRaw);
-      if (
-        Number.isInteger(expectedRevision) &&
-        expectedRevision !== Number(game.move_revision ?? 0)
-      ) {
-        const state = await this.buildPublicState(room, game, playerNum, false);
-        return this.publishEdgeEnvelope(
-          { target: 'socket', socketId: command.socketId },
-          false,
-          { gameState: state, expectedRevision, moveRevision: game.move_revision ?? 0 },
-          [this.i18n.translate('ws.games.invalidMove', command.lang)],
-        );
-      }
-    }
-
-    const color = colorForPlayerNum(playerNum);
-    const board = coerceConnectFourBoard(game.board);
-    const result = dropDisc(board, col, color);
-    if (!result.ok) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        { col },
-        [this.i18n.translate('ws.games.invalidMove', command.lang)],
-      );
-    }
-
-    game.board = result.board;
-    game.turn_start_time = new Date();
-    game.last_move = {
-      userId: command.playerId,
-      row: result.row,
-      col: result.col,
-      color,
-      at: new Date(),
-    };
-
-    let finished = false;
-    let winnerNum: 1 | 2 | null = null;
-    let isDraw = false;
-    if (result.win.won) {
-      finished = true;
-      winnerNum = playerNum;
-      game.winning_cells = result.win.winningCells;
-    } else if (result.isDraw) {
-      finished = true;
-      isDraw = true;
-      game.winning_cells = [];
-    } else {
-      game.current_player = playerNum === 1 ? 2 : 1;
-    }
-    game.move_revision = (game.move_revision ?? 0) + 1;
-    game.markModified('board');
-    game.markModified('winning_cells');
-    game.markModified('last_move');
-    game.markModified('move_revision');
-
-    try {
-      await game.save();
-    } catch (err) {
-      this.logger.error(`event=connect_four_edge_save_failed room=${room_id}`, err);
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        { col },
-        [this.i18n.translate('ws.games.invalidMove', command.lang)],
-      );
-    }
-
-    const limit = room.game_id?.turn_timer_seconds || 30;
-    await this.turnDeadlines.cancel('connect-four', room_id);
-    if (finished) {
-      room.status = 'finished';
-      room.finished_at = new Date();
-      room.winner_reason = isDraw ? 'draw' : 'win';
-      room.winner = isDraw ? undefined : winnerNum === 1 ? game.player1_id : game.player2_id;
-    } else {
-      room.turn_start_time = new Date();
-      await room.save();
-      const nextPlayerId = game.current_player === 1 ? game.player1_id : game.player2_id;
-      await this.turnDeadlines.schedule('connect-four', room_id, nextPlayerId.toString(), limit);
-    }
-
-    const displayPrize = winnerDisplayedPrize(room.bet_amount, room.house_edge, room.players.length);
-    const lastMove = {
-      userId: command.playerId,
-      row: result.row,
-      col: result.col,
-      color,
-      at: new Date().toISOString(),
-    };
-    const stateVersion = await bumpGameStateVersion(this.redis, 'connect-four', room_id);
-    const turnDeadlineAt = computeTurnDeadlineAt(game.turn_start_time, limit);
-
-    for (const sPNum of [1, 2] as const) {
-      const playerId =
-        sPNum === 1 ? game.player1_id.toString() : game.player2_id.toString();
-      const isWinner = finished && !isDraw && winnerNum === sPNum;
-      const state = await this.buildPublicState(room, game, sPNum, false);
-      const message = finished
-        ? isDraw
-          ? this.i18n.translate('ws.games.drawGeneric', command.lang)
-          : isWinner
-            ? this.i18n.translate('ws.games.win', command.lang)
-            : this.i18n.translate('ws.games.lose', command.lang)
-        : sPNum === playerNum
-          ? this.i18n.translate('ws.games.moveAccepted', command.lang)
-          : this.i18n.translate('ws.games.opponentMoved', command.lang);
-
-      await this.publishEdgeEnvelope(
-        { target: 'player', playerId },
-        true,
-        {
-          ...state,
-          lastMove,
-          gameEnded: finished,
-          gameStarted: !finished,
-          youWon: isWinner,
-          outcome: finished ? (isDraw ? 'draw' : isWinner ? 'win' : 'lose') : '',
-          prize: isWinner ? displayPrize : 0,
-          reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
-          isDraw: finished && isDraw,
-          winnerUserId:
-            finished && !isDraw && winnerNum
-              ? winnerNum === 1
-                ? game.player1_id.toString()
-                : game.player2_id.toString()
-              : null,
-          stateVersion,
-          ...(turnDeadlineAt ? { turnDeadlineAt } : {}),
-        },
-        [message],
-      );
-    }
-
-    if ((room.spectators?.length ?? 0) > 0) {
-      const spectatorState = await this.buildPublicState(room, game, null, true);
-      await this.publishEdgeEnvelope(
-        { target: 'spectators', roomId: room_id },
-        true,
-        {
-          ...spectatorState,
-          lastMove,
-          gameEnded: finished,
-          gameStarted: !finished,
-          outcome: finished ? (isDraw ? 'draw' : 'win') : '',
-          reason: finished ? (isDraw ? 'draw' : 'win') : undefined,
-          isDraw: finished && isDraw,
-          winnerUserId:
-            finished && !isDraw && winnerNum
-              ? winnerNum === 1
-                ? game.player1_id.toString()
-                : game.player2_id.toString()
-              : null,
-          stateVersion,
-          ...(turnDeadlineAt ? { turnDeadlineAt } : {}),
-        },
-        [this.i18n.translate(finished ? 'ws.games.gameOver' : 'ws.games.opponentMoved', command.lang)],
-      );
-    }
-
-    if (finished) {
-      await this.finalizeConnectFourMatch(
-        room_id,
-        game,
-        isDraw ? { kind: 'draw' } : { kind: 'win', winnerNum: winnerNum! },
-      );
-    }
-  }
-
-  private async handleEdgeForfeit(command: EdgeCommand): Promise<void> {
-    const room_id = command.roomId || command.payload?.room_id;
-    if (!room_id || !command.playerId) {
-      return this.publishEdgeEnvelope(
-        { target: 'socket', socketId: command.socketId },
-        false,
-        {},
-        [this.i18n.translate('ws.invalidMessageFormat', command.lang)],
-      );
-    }
-    await this.grace.cancel('connect-four', command.playerId);
-    await this.executeForfeit(room_id, command.playerId);
-    await this.publishEdgeEnvelope(
-      { target: 'socket', socketId: command.socketId },
-      true,
-      { gameEnded: true, outcome: 'forfeit' },
-      [this.i18n.translate('ws.games.lose', command.lang)],
-    );
-  }
-
-  private async handleEdgeDisconnect(command: EdgeCommand): Promise<void> {
-    const room_id = command.roomId || command.payload?.room_id;
-    const player_id = command.playerId;
-    if (!room_id || !player_id) return;
-
-    const roomObjId = new Types.ObjectId(room_id);
-    const playerObjId = new Types.ObjectId(player_id);
-    const room = await this.roomModel.findOne({
-      _id: roomObjId,
-      $or: [{ 'players.playerId': playerObjId }, { spectators: playerObjId }],
-    });
-    if (!room || room.status === 'finished') return;
-
-    const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
-    if (isSpectator) {
-      const updated = await this.roomModel.findOneAndUpdate(
-        { _id: roomObjId },
-        { $pull: { spectators: playerObjId } },
-        { returnDocument: 'after' },
-      );
-      await this.publishEdgeEnvelope(
-        { target: 'room', roomId: room_id },
-        true,
-        { spectatorsCount: updated?.spectators?.length || 0 },
-        [],
-      );
-      return;
-    }
-
-    if (room.status === 'waiting' || (room.status === 'started' && !room.game_ready_at)) {
-      const updated = await this.roomModel.findOneAndUpdate(
-        { _id: roomObjId, 'players.playerId': playerObjId },
-        {
-          $pull: { players: { playerId: playerObjId } },
-          $set: { status: 'waiting', updated_at: new Date() },
-          $unset: { started_at: 1, game_ready_at: 1, start_lock: 1, start_locked_at: 1 },
-        },
-        { returnDocument: 'after' },
-      );
-      if (!updated) return;
-      const gameIdForLobby = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
-      if (updated.players.length === 0) {
-        await this.roomModel.findOneAndDelete({ _id: room_id, players: { $size: 0 } });
-        if (gameIdForLobby) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
-      } else if (gameIdForLobby) {
-        const populated = await this.roomModel
-          .findById(roomObjId)
-          .populate('game_id', '-created_at')
-          .populate('players.playerId', 'username')
-          .lean();
-        this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomUpdated', populated);
-      }
-      return;
-    }
-
-    if (room.status === 'started') {
-      const game = await this.gameModel.findOne({ room_id: roomObjId });
-      let remainingTurnSecs = 0;
-      if (game?.turn_start_time) {
-        const limit = (room.game_id?.turn_timer_seconds || 30) * 1000;
-        remainingTurnSecs = Math.ceil((limit - (Date.now() - game.turn_start_time.getTime())) / 1000);
-      }
-      const hasStartedPlay = room.players.some((player: any) => (player.moves?.length || 0) > 0);
-      await this.grace.start('connect-four', player_id, room_id, hasStartedPlay ? 30 : 60);
-    }
+    durableEmit(client, EVENT, { success, data, messages });
   }
 
   private async buildPublicState(
@@ -1006,6 +192,7 @@ export class ConnectFourGateway
     this.logger.log(`[ConnectFour] Connected: ${client.id}`);
   }
 
+  @ReliableDisconnectAction()
   async handleDisconnect(client: Socket) {
     clearTimer(client.id);
     const { room_id, player_id } = client.data;
@@ -1027,7 +214,7 @@ export class ConnectFourGateway
         { $pull: { spectators: playerObjId } },
         { returnDocument: 'after' },
       );
-      client.to(room_id).emit(EVENT, {
+      durableEmit(client.to(room_id), EVENT, {
         success: true,
         data: { spectatorsCount: updated?.spectators?.length || 0 },
         messages: [],
@@ -1055,7 +242,7 @@ export class ConnectFourGateway
         }
       } else {
         const sLang = this.getLang(client);
-        client.to(room_id).emit(EVENT, {
+        durableEmit(client.to(room_id), EVENT, {
           success: true,
           messages: [this.i18n.translate('ws.games.opponentLeft', sLang)],
           data: { opponentLeft: true, waitingForOpponent: true },
@@ -1088,6 +275,7 @@ export class ConnectFourGateway
     }
   }
 
+  @ReliableInternalAction()
   async executeForfeit(room_id: string, player_id: string) {
     const room = await this.roomModel
       .findOne({ _id: new Types.ObjectId(room_id), status: 'started' })
@@ -1106,7 +294,7 @@ export class ConnectFourGateway
     await room.save();
 
     const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(settlement));
+    await gameFinancialUpdate(this.userModel, 'findByIdAndUpdate', [winner_id, winnerBalanceUpdate(settlement)], room_id);
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -1123,7 +311,7 @@ export class ConnectFourGateway
         sIsSpectator,
       );
       const isWinner = !sIsSpectator && sPNum > 0 && room.players[sPNum - 1]?.playerId?.toString() === winner_id.toString();
-      (s as unknown as Socket).emit(EVENT, {
+      durableEmit((s as unknown as Socket), EVENT, {
         success: false,
         messages: sIsSpectator
           ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })]
@@ -1139,30 +327,12 @@ export class ConnectFourGateway
       });
     }
 
-    for (const sPNum of [1, 2] as const) {
-      const playerId = room.players[sPNum - 1]?.playerId?.toString();
-      if (!playerId) continue;
-      const state = await this.buildPublicState(room, game, sPNum, false);
-      const isWinner = playerId === winner_id.toString();
-      await this.publishEdgeEnvelope(
-        { target: 'player', playerId },
-        false,
-        {
-          ...state,
-          outcome: 'opponent_disconnected',
-          gameEnded: true,
-          winner: winner_id.toString(),
-          youWon: isWinner,
-          isSpectator: false,
-        },
-        [this.i18n.translate(isWinner ? 'ws.games.win' : 'ws.games.playerDisconnected', 'en')],
-      );
-    }
     const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();
     if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: room_id });
   }
 
   @SubscribeMessage('join')
+  @ReliableReadAction()
   async handleJoin(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id: string },
@@ -1213,7 +383,7 @@ export class ConnectFourGateway
     if (client.data.isSpectator) {
       if (room.status === 'started' && game) {
         const state = await this.buildPublicState(room, game, null, true);
-        client.to(room_id).emit(EVENT, {
+        durableEmit(client.to(room_id), EVENT, {
           success: true,
           data: { spectatorsCount: room.spectators?.length ?? 0 },
           messages: [],
@@ -1285,7 +455,7 @@ export class ConnectFourGateway
         ]);
       },
       notifyOthers: (joinerName) => {
-        client.to(room_id).emit(EVENT, {
+        durableEmit(client.to(room_id), EVENT, {
           success: true,
           messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: joinerName })],
           data: { opponentJoined: true, opponentName: joinerName },
@@ -1322,6 +492,7 @@ export class ConnectFourGateway
   }
 
   /** Idempotent start when both player sockets are connected and the room is still waiting. */
+  @ReliableInternalAction()
   private async tryStartConnectFourGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
@@ -1344,8 +515,7 @@ export class ConnectFourGateway
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=connect_four_start_failed room=${room_id} reason=${reason}`);
       for (const pid of paid) {
-        await this.userModel
-          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+        await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: pid }, { $inc: { balance: room.bet_amount } }], room_id)
           .catch((e) => this.logger.error(`[ConnectFour] Refund failed | player=${pid}`, e));
       }
       if (createdGameId) {
@@ -1355,28 +525,20 @@ export class ConnectFourGateway
       }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[ConnectFour] Room status reset failed | room=${room_id}`, e));
-      this.server.to(room_id).emit(EVENT, {
+      durableEmit(this.server.to(room_id), EVENT, {
         success: false,
         messages: [this.i18n.translate(errKey, lang)],
       });
     };
 
-    const deduct1 = await this.userModel.findOneAndUpdate(
-      { _id: p1id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
+    const deduct1 = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: p1id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { returnDocument: 'after' }], room_id);
     if (!deduct1) {
       await compensate('ws.games.insufficientBalance', 'p1_insufficient');
       return;
     }
     paid.push(p1id);
 
-    const deduct2 = await this.userModel.findOneAndUpdate(
-      { _id: p2id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
+    const deduct2 = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: p2id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { returnDocument: 'after' }], room_id);
     if (!deduct2) {
       await compensate('ws.games.insufficientBalance', 'p2_insufficient');
       return;
@@ -1433,7 +595,7 @@ export class ConnectFourGateway
           sIsSpectator ? null : sPNum,
           sIsSpectator,
         );
-        (s as unknown as Socket).emit(EVENT, {
+        durableEmit((s as unknown as Socket), EVENT, {
           success: true,
           data: {
             ...sState,
@@ -1473,6 +635,7 @@ export class ConnectFourGateway
   }
 
   @SubscribeMessage('get_state')
+  @ReliableReadAction()
   async handleGetState(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id: string },
@@ -1538,21 +701,15 @@ export class ConnectFourGateway
     } else if (outcome.kind === 'draw') {
       // Draw settlement (Halma-style): refund each player's stake. Bets were deducted at
       // match start; no house edge is applied on ties.
-      await this.userModel.updateOne(
-        { _id: game.player1_id },
-        { $inc: { balance: finishedRoom.bet_amount } },
-      );
-      await this.userModel.updateOne(
-        { _id: game.player2_id },
-        { $inc: { balance: finishedRoom.bet_amount } },
-      );
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: game.player1_id }, { $inc: { balance: finishedRoom.bet_amount } }], room_id);
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: game.player2_id }, { $inc: { balance: finishedRoom.bet_amount } }], room_id);
     } else if (!isTournament) {
       const settlement = calculateWinnerSettlement(
         finishedRoom.bet_amount,
         finishedRoom.house_edge,
         finishedRoom.players.length,
       );
-      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
     }
 
     const gameId =
@@ -1565,6 +722,7 @@ export class ConnectFourGateway
   }
 
   @SubscribeMessage('drop_disc')
+  @ReliableAction()
   async handleDropDisc(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id?: string; col: number },
@@ -1760,7 +918,7 @@ export class ConnectFourGateway
           msg = this.i18n.translate('ws.games.opponentMoved', info.sLang);
         }
 
-        (info.socket as unknown as Socket).emit(EVENT, {
+        durableEmit((info.socket as unknown as Socket), EVENT, {
           success: true,
           data: {
             ...sState,
@@ -1818,6 +976,7 @@ export class ConnectFourGateway
   }
 
   @SubscribeMessage('forfeit')
+  @ReliableAction()
   async handleForfeit(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id?: string },
@@ -1842,10 +1001,12 @@ export class ConnectFourGateway
     clearTimer(socket.id);
     const playerId = (socket.data?.player_id as string) || '';
     if (playerId) void this.turnDeadlines.schedule('connect-four', room_id, playerId, seconds);
+    if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') return;
     const t = setTimeout(() => void this.executeConnectFourTurnTimeout(room_id), seconds * 1000);
     turnTimers.set(socket.id, t);
   }
 
+  @ReliableInternalAction()
   private async executeConnectFourTurnTimeout(room_id: string): Promise<void> {
     await this.turnDeadlines.cancel('connect-four', room_id);
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -1869,7 +1030,7 @@ export class ConnectFourGateway
         room.players.length,
       );
       const displayPrize = settlement.netPrize;
-      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
 
       const sockets = await this.server.in(room_id).fetchSockets();
       const winnerUsername = await this.getCachedUsername(winnerId.toString());
@@ -1885,7 +1046,7 @@ export class ConnectFourGateway
           sIsSpectator ? null : sPNum,
           sIsSpectator,
         );
-        (s as unknown as Socket).emit(EVENT, {
+        durableEmit((s as unknown as Socket), EVENT, {
           success: true,
           data: {
             ...sState,
@@ -1906,34 +1067,6 @@ export class ConnectFourGateway
                   : this.i18n.translate('ws.games.timeoutLoss', sLang),
               ],
         });
-      }
-
-      for (const sPNum of [1, 2] as const) {
-        const playerId =
-          sPNum === 1 ? game.player1_id.toString() : game.player2_id.toString();
-        const isWinnerFound = sPNum === winnerNum;
-        const state = await this.buildPublicState(room, game, sPNum, false);
-        await this.publishEdgeEnvelope(
-          { target: 'player', playerId },
-          true,
-          {
-            ...state,
-            gameEnded: true,
-            outcome: isWinnerFound ? 'win' : 'timeout_loss',
-            youWon: isWinnerFound,
-            winner: winnerId.toString(),
-            winnerUserId: winnerId.toString(),
-            reason: 'timeout',
-            prize: isWinnerFound ? displayPrize : 0,
-            isSpectator: false,
-          },
-          [
-            this.i18n.translate(
-              isWinnerFound ? 'ws.games.timeoutWin' : 'ws.games.timeoutLoss',
-              'en',
-            ),
-          ],
-        );
       }
 
       const gameId = (room.game_id as any)?._id?.toString() || room.game_id?.toString();

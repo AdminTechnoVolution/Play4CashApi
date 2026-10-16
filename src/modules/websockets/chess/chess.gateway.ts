@@ -1,3 +1,6 @@
+import { ReliableDisconnectAction, registerReliableDisconnectHandler } from '../../../common/reliable-commands/reliable-commands';
+import { durableEmit, ReliableAction, ReliableInternalAction, ReliableReadAction } from '../../../common/reliable-commands/reliable-commands';
+import { gameFinancialUpdate } from '../../payments/game-finance';
 import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
@@ -88,7 +91,8 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     );
   }
 
-  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis); }
+  afterInit(server: Server) { applyWsAuth(server, this.config, this.redis);
+    registerReliableDisconnectHandler((server as any).name, data => this.handleDisconnect({ id: data.id, data: data.data, handshake: { query: {} }, to: (room: string) => (server as any).to(room).except(`player:${data.data.player_id}`) } as unknown as Socket)); }
 
   /** Compute castling availability for a given player */
   private getCastlingAvailable(board: Board, state: GameState, playerNum: 1 | 2) {
@@ -101,6 +105,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
   handleConnection(client: Socket) { this.logger.log(`[Chess] Connected: ${client.id}`); }
 
+  @ReliableDisconnectAction()
   async handleDisconnect(client: Socket) {
     clearTimer(client.id);
     const { room_id, player_id } = client.data;
@@ -115,7 +120,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
     if (isSpectator) {
       const updated = await this.roomModel.findOneAndUpdate({ _id: room_id }, { $pull: { spectators: playerObjId } }, { returnDocument: 'after' });
-      client.to(room_id).emit('chess', { success: true, data: { spectatorsCount: updated?.spectators?.length || 0 }, messages: [] });
+      durableEmit(client.to(room_id), 'chess', { success: true, data: { spectatorsCount: updated?.spectators?.length || 0 }, messages: [] });
       return;
     }
 
@@ -139,7 +144,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         if (gameIdForLobby) this.roomsGateway.broadcastRoomUpdate(gameIdForLobby, 'roomDeleted', { id: room_id });
       } else {
         const sLang = this.getLang(client);
-        client.to(room_id).emit('chess', { success: true, messages: [this.i18n.translate('ws.games.opponentLeft', sLang)], data: { opponentLeft: true, waitingForOpponent: true } });
+        durableEmit(client.to(room_id), 'chess', { success: true, messages: [this.i18n.translate('ws.games.opponentLeft', sLang)], data: { opponentLeft: true, waitingForOpponent: true } });
         // Phase D: refresh lobby player count.
         if (gameIdForLobby) {
           const populated = await this.roomModel
@@ -169,6 +174,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     }
   }
 
+  @ReliableInternalAction()
   private async executeForfeit(room_id: string, player_id: string) {
     const room = await this.roomModel.findOne({ _id: new Types.ObjectId(room_id), status: 'started' });
     if (!room) return;
@@ -189,14 +195,14 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     );
 
     const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(settlement));
+    await gameFinancialUpdate(this.userModel, 'findByIdAndUpdate', [winner_id, winnerBalanceUpdate(settlement)], room_id);
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const sockets = await this.server.in(room_id).fetchSockets();
     for (const s of sockets) {
       const sIsSpectator = (s as any).data.isSpectator || false;
       const sLang = this.getLang(s as unknown as Socket);
-      (s as unknown as Socket).emit('chess', {
+      durableEmit((s as unknown as Socket), 'chess', {
         success: false,
         messages: sIsSpectator ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })] : [this.i18n.translate('ws.games.playerDisconnected', sLang)],
         data: { outcome: 'opponent_disconnected', gameEnded: true, winner: sIsSpectator ? winnerUsername : winner_id, isSpectator: sIsSpectator }
@@ -207,6 +213,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   }
 
   @SubscribeMessage('join')
+  @ReliableReadAction()
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
     const player_id = client.data.player_id;
@@ -215,13 +222,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     // Phase B: cancel any open disconnect grace via the distributed service.
     await this.grace.cancel('chess', player_id);
 
-    if (!room_id) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
+    if (!room_id) return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (!room) return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
     if (room.status === 'finished') {
       agentDebugLog('chess.gateway.ts:handleJoin', 'finished_resync', { room_id, player_id, reason: room.winner_reason }, 'H4');
-      return client.emit('chess', {
+      return durableEmit(client, 'chess', {
         success: true,
         messages: [this.i18n.translate('ws.games.playerDisconnected', lang)],
         data: buildFinishedRoomSyncData(room, player_id),
@@ -230,7 +237,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const isMember = room.players.some((p: any) => p.playerId.toString() === player_id);
     const isSpectator = room.spectators?.some((id: any) => id.toString() === player_id);
-    if (!isMember && !isSpectator) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.notInRoom', lang)] });
+    if (!isMember && !isSpectator) return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.notInRoom', lang)] });
 
     await client.join(room_id);
     client.data.room_id = room_id;
@@ -254,7 +261,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
         const shotFrom = game.current_player === 1 ? player1 : player2;
 
-        client.emit('chess', { success: true, messages: [], data: {
+        durableEmit(client, 'chess', { success: true, messages: [], data: {
           board: game.board,
           yourTurn: false, turnTimerSeconds: 30,
           waitingForOpponent: false, 
@@ -269,10 +276,10 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
             player: m.player === 1 ? player1 : (m.player === 2 ? player2 : m.player)
           }))
         }});
-        client.to(room_id).emit('chess', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
+        durableEmit(client.to(room_id), 'chess', { success: true, data: { spectatorsCount: room.spectators.length }, messages: [] });
         return;
       } else {
-        return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+        return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
       }
     }
 
@@ -298,7 +305,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           this.startTimer(client, room_id, timerSeconds);
         }
 
-        return client.emit('chess', { success: true, messages: [], data: {
+        return durableEmit(client, 'chess', { success: true, messages: [], data: {
           board: currentBoard,
           yourTurn: isMyTurn, turnTimerSeconds: timerSeconds,
           waitingForOpponent: false, isPlayerOne: playerNum === 1, playingWhite: playerNum === 1, gameStarted: true, youWon: false, isSpectator: false,
@@ -307,7 +314,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       }
     }
 
-    client.emit('chess', { success: true, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)], data: { room_id, waitingForOpponent: true, isPlayerOne: playerNum === 1, isSpectator: false, playersJoined: room.players.length, maxPlayers: 2 } });
+    durableEmit(client, 'chess', { success: true, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)], data: { room_id, waitingForOpponent: true, isPlayerOne: playerNum === 1, isSpectator: false, playersJoined: room.players.length, maxPlayers: 2 } });
 
     const socketsInRoom = await this.server.in(room_id).fetchSockets();
     agentDebugLog('chess.gateway.ts:handleJoin', 'waiting_join', {
@@ -323,14 +330,14 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       joiningPlayerId: player_id,
       getUsername: (id) => this.getCachedUsername(id),
       notifyJoiner: (opponentName) => {
-        client.emit('chess', {
+        durableEmit(client, 'chess', {
           success: true,
           messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: opponentName })],
           data: { opponentJoined: true, opponentName },
         });
       },
       notifyOthers: (joinerName) => {
-        client.to(room_id).emit('chess', {
+        durableEmit(client.to(room_id), 'chess', {
           success: true,
           messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: joinerName })],
           data: { opponentJoined: true, opponentName: joinerName },
@@ -345,11 +352,13 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   }
 
   @SubscribeMessage('get_state')
+  @ReliableReadAction()
   async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     return this.handleJoin(client, payload);
   }
 
   /** Idempotent start when DB has two players; socket count must not gate start. */
+  @ReliableInternalAction()
   private async tryStartChessGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
@@ -374,8 +383,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=chess_start_failed room=${room_id} reason=${reason}`);
       for (const pid of paid) {
-        await this.userModel
-          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+        await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: pid }, { $inc: { balance: room.bet_amount } }], room_id)
           .catch((e) => this.logger.error(`[Chess] Refund failed | player=${pid}`, e));
       }
       if (createdGameId) {
@@ -385,27 +393,18 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[Chess] Room status reset failed | room=${room_id}`, e));
-      this.server
-        .to(room_id)
-        .emit('chess', { success: false, messages: [this.i18n.translate(errKey, lang)] });
+      durableEmit(this.server
+        .to(room_id), 'chess', { success: false, messages: [this.i18n.translate(errKey, lang)] });
     };
 
-    const deduct1 = await this.userModel.findOneAndUpdate(
-      { _id: p1id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
+    const deduct1 = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: p1id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { returnDocument: 'after' }], room_id);
     if (!deduct1) {
       await compensate('ws.games.insufficientBalance', 'p1_insufficient');
       return;
     }
     paid.push(p1id);
 
-    const deduct2 = await this.userModel.findOneAndUpdate(
-      { _id: p2id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
+    const deduct2 = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: p2id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { returnDocument: 'after' }], room_id);
     if (!deduct2) {
       await compensate('ws.games.insufficientBalance', 'p2_insufficient');
       return;
@@ -449,7 +448,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       const sIsSpectator = (s as any).data.isSpectator || false;
       const isFirst = sPNum === 1;
       const sLang = this.getLang(s as unknown as Socket);
-      (s as unknown as Socket).emit('chess', { success: true, data: { board, yourTurn: isFirst && !sIsSpectator, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false, isSpectator: sIsSpectator,
+      durableEmit((s as unknown as Socket), 'chess', { success: true, data: { board, yourTurn: isFirst && !sIsSpectator, turnTimerSeconds: timerSeconds, waitingForOpponent: false, isPlayerOne: isFirst, playingWhite: isFirst, gameStarted: true, youWon: false, isSpectator: sIsSpectator,
         castlingAvailable: this.getCastlingAvailable(board, initialState, sPNum as 1 | 2) },
         messages: sIsSpectator ? [this.i18n.translate('ws.games.gameStarted', sLang)] : [isFirst ? this.i18n.translate('ws.games.yourTurn', sLang) : this.i18n.translate('ws.games.waitingOpponent', sLang)] });
       if (isFirst) {
@@ -467,9 +466,10 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
 
   @SubscribeMessage('move')
+  @ReliableAction()
   async handleMove(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
     const lang = this.getLang(client);
-    if (client.data.isSpectator) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
+    if (client.data.isSpectator) return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.spectatorActionDenied', lang)] });
     const room_id = payload.room_id || client.data.room_id;
     this.logger.log(`[Chess] ♟ Move received | room=${room_id} | player=${client.data.player_id} | payload=${JSON.stringify(payload)}`);
     const { promotion } = payload;
@@ -485,12 +485,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     const playerNum = client.data.playerNum || 1;
     if (!room_id || !from || !to) {
       this.logger.warn(`[Chess] ❌ Invalid move payload (missing fields) | player=${client.data.player_id} | room_id=${room_id} | payload=${JSON.stringify(payload)} | socketRoom=${client.data.room_id}`);
-      return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
+      return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.invalidMove', lang)] });
     }
 
     const game = await this.chessGameModel.findOne({ room_id: new Types.ObjectId(room_id) });
-    if (!game) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
-    if (game.current_player !== playerNum) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
+    if (!game) return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (game.current_player !== playerNum) return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.notYourTurn', lang)] });
 
     const playerColor = playerNum === 1 ? COLORS.WHITE : COLORS.BLACK;
     const legalMoves = getLegalMoves(from.row, from.col, game.board, game.toObject() as any);
@@ -498,7 +498,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     if (!move) {
       const inCheck = isCheck(playerColor, game.board, game.toObject() as any);
       this.logger.warn(`[Chess] ❌ Illegal move | player=${client.data.player_id} | from=[${from.row},${from.col}] | to=[${to.row},${to.col}] | inCheck=${inCheck}`);
-      return client.emit('chess', {
+      return durableEmit(client, 'chess', {
         success: false,
         messages: [this.i18n.translate(inCheck ? 'ws.chess.illegalMoveInCheck' : 'ws.chess.illegalMove', lang)],
         data: { board: game.board, yourTurn: true, inCheck },
@@ -521,7 +521,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     await recordGameAuditAction(this.roomModel, room_id, client.data.player_id, 'move', { from, to });
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
-    if (!room) return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
+    if (!room) return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.gameNotFound', lang)] });
     
     const limit = room.game_id?.turn_timer_seconds || 30;
     const sockets = await this.server.in(room_id).fetchSockets();
@@ -539,7 +539,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     await room.save();
     
     if (room.status === 'finished') {
-      return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
+      return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.roomInactive', lang)] });
     }
 
     if (result.finished) {
@@ -552,7 +552,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           room.house_edge,
           room.players.length,
         );
-        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+        await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
       }
       await room.save();
       if (result.winner) {
@@ -618,7 +618,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         msg = inCheckNow ? this.i18n.translate('ws.chess.check', sLang) : (s.id === client.id ? this.i18n.translate('ws.games.moveAccepted', sLang) : this.i18n.translate('ws.games.opponentMoved', sLang));
       }
 
-      (s as unknown as Socket).emit('chess', {
+      durableEmit((s as unknown as Socket), 'chess', {
         success: true,
         data: await enrichGamePayload(this.redis, 'chess', room_id, sData, {
           turnStart: room.turn_start_time,
@@ -630,9 +630,10 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   }
 
   @SubscribeMessage('end_turn')
+  @ReliableAction()
   async handleEndTurn(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
-    return client.emit('chess', { success: false, messages: [this.i18n.translate('ws.games.chessAutoTurn', lang)] });
+    return durableEmit(client, 'chess', { success: false, messages: [this.i18n.translate('ws.games.chessAutoTurn', lang)] });
   }
 
 
@@ -640,10 +641,12 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     clearTimer(socket.id);
     const playerId = (socket.data.player_id as string) || '';
     if (playerId) void this.turnDeadlines.schedule('chess', room_id, playerId, seconds);
+    if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') return;
     const t = setTimeout(() => void this.executeTurnTimeout(room_id, socket.id), seconds * 1000);
     turnTimers.set(socket.id, t);
   }
 
+  @ReliableInternalAction()
   private async executeTurnTimeout(room_id: string, socketId?: string): Promise<void> {
     if (socketId) clearTimer(socketId);
     await this.turnDeadlines.cancel('chess', room_id);
@@ -666,7 +669,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           room.players.length,
         );
         const displayPrize = settlement.netPrize;
-        await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+        await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
         
         const sockets = await this.server.in(room_id).fetchSockets();
         const winnerUsername = await this.getCachedUsername(winnerId.toString());
@@ -675,7 +678,7 @@ export class ChessGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
           const isWinnerFound = (s as any).data.playerNum === winnerNum;
           const sLang = this.getLang(s as unknown as Socket);
 
-          (s as unknown as Socket).emit('chess', {
+          durableEmit((s as unknown as Socket), 'chess', {
             success: true,
             data: {
               gameEnded: true, outcome: isWinnerFound ? 'win' : 'timeout_loss', youWon: isWinnerFound && !sIsSpectator,

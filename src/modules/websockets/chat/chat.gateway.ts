@@ -1,3 +1,4 @@
+import { durableEmit } from '../../../common/reliable-commands/reliable-commands';
 import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
@@ -68,17 +69,17 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   /** Join a room to send/receive greetings */
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
-    if (!payload?.room_id) return client.emit('chat', { success: false, messages: ['Missing room_id'] });
+    if (!payload?.room_id) return durableEmit(client, 'chat', { success: false, messages: ['Missing room_id'] });
     await client.join(payload.room_id);
     client.data.room_id = payload.room_id;
-    client.emit('chat', { success: true, messages: [], data: { joined: true, room_id: payload.room_id } });
+    durableEmit(client, 'chat', { success: true, messages: [], data: { joined: true, room_id: payload.room_id } });
   }
 
   /** Send a greeting to all other players in the room, each in their own language */
   @SubscribeMessage('greeting')
   async handleGreeting(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string; greeting_id: string }) {
     if (!payload?.room_id || !payload?.greeting_id) {
-      return client.emit('chat', { success: false, messages: ['Missing room_id or greeting_id'] });
+      return durableEmit(client, 'chat', { success: false, messages: ['Missing room_id or greeting_id'] });
     }
 
     const { room_id, greeting_id } = payload;
@@ -87,7 +88,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     // Look up the greeting (full multi-language object)
     const greeting = await this.greetingModel.findById(greeting_id).lean();
     if (!greeting || !greeting.active) {
-      return client.emit('chat', { success: false, messages: ['ws.chat.greetingNotFound'] });
+      return durableEmit(client, 'chat', { success: false, messages: ['ws.chat.greetingNotFound'] });
     }
 
     // Look up sender username
@@ -105,7 +106,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       const recipientLang = this.getLang(s as unknown as Socket);
       const localizedText = greeting.text?.[recipientLang] || greeting.text?.en || '';
 
-      (s as unknown as Socket).emit('chat', {
+      durableEmit((s as unknown as Socket), 'chat', {
         success: true,
         data: {
           type: 'greeting',
@@ -119,7 +120,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     // Confirm to sender
     const senderLang = this.getLang(client);
-    client.emit('chat', {
+    durableEmit(client, 'chat', {
       success: true,
       data: {
         type: 'greeting_sent',
