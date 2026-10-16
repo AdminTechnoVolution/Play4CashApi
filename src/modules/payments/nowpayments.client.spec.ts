@@ -9,6 +9,13 @@ describe('NOWPayments sandbox requests', () => {
     await new NowPaymentsClient(new ConfigService(base)).createDeposit('order', '10.000000', 'usdttrc20', 'https://gateway.test/ipn');
     expect(request).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ case: 'success', order_id: 'order' }) }));
   });
+  it('omits outcome_currency, which NOWPayments rejects on /payment', async () => {
+    const request = jest.spyOn(axios, 'request').mockResolvedValue({ data: { payment_id: '1' } });
+    await new NowPaymentsClient(new ConfigService(base)).createDeposit('order', '10.000000', 'usdttrc20', 'https://gateway.test/ipn');
+    const data = (request.mock.calls[0][0] as { data: Record<string, unknown> }).data;
+    expect(data).toMatchObject({ price_currency: 'usdttrc20', pay_currency: 'usdttrc20' });
+    expect(data).not.toHaveProperty('outcome_currency');
+  });
   it.each(['common', 'failed', 'partially_paid'])('supports documented sandbox case %s', async value => {
     const request = jest.spyOn(axios, 'request').mockResolvedValue({ data: {} });
     await new NowPaymentsClient(new ConfigService({ ...base, NOWPAYMENTS_SANDBOX_CASE: value })).createDeposit('order', '10', 'usdttrc20', 'https://gateway.test/ipn');

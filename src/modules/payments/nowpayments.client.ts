@@ -78,7 +78,9 @@ export class NowPaymentsClient {
   minimum(currency: string) { return this.request('GET', '/min-amount', { currency_from: currency, currency_to: currency }); }
   createDeposit(orderId: string, amount: string, currency: string, callback: string) {
     return this.request('POST', '/payment', { order_id: orderId, price_amount: amount,
-      price_currency: currency, pay_currency: currency, outcome_currency: currency,
+      // NOWPayments rejects outcome_currency on /payment (400 "outcome_currency is not allowed"); it settles in
+      // pay_currency by default, and reconcileDeposit still refuses to credit any other outcome_currency.
+      price_currency: currency, pay_currency: currency,
       ipn_callback_url: callback, is_fee_paid_by_user: true,
       // NOWPayments sandbox emulates payment processing for this scenario; no chain funds sent.
       case: this.sandboxCase() });
