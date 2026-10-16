@@ -64,7 +64,9 @@ export class PaymentsService implements OnModuleInit {
     const response = await this.provider.merchantCoins();
     const coins: string[] = response.selectedCurrencies ?? response.currencies ?? [];
     if (!Array.isArray(coins) || coins.some(c => typeof c !== 'string')) throw new Error('INVALID_MERCHANT_COINS');
-    return Object.entries(configured).filter(([, code]) => coins.includes(code)).map(([network, currency]) => ({ network, currency, asset: 'USDT' }));
+    // /merchant/coins returns uppercase tickers (USDTTRC20); our codes are lowercase.
+    const enabled = new Set(coins.map(c => c.toLowerCase()));
+    return Object.entries(configured).filter(([, code]) => enabled.has(code)).map(([network, currency]) => ({ network, currency, asset: 'USDT' }));
   }
   async currency(network: string): Promise<string> {
     const found = (await this.networks()).find(n => n.network === network);

@@ -89,7 +89,7 @@ suite('MongoDB financial transactions and restart recovery', () => {
     const defaults = new ConfigService({});
     const policy = new PaymentsPolicy(defaults, db);
     const service = new PaymentsService(db, ledger, provider, policy, defaults, email);
-    provider.merchantCoins.mockResolvedValueOnce({ selectedCurrencies: ['btc', 'usdttrc20'] });
+    provider.merchantCoins.mockResolvedValueOnce({ selectedCurrencies: ['BTC', 'USDTTRC20'] });
     expect(await service.networks()).toEqual([{ network: 'TRC20', currency: 'usdttrc20', asset: 'USDT' }]);
   });
   it('records a provider-rejected deposit without credit or resend', async () => {
