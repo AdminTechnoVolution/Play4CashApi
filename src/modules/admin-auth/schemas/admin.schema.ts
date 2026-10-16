@@ -14,7 +14,7 @@ export class Admin {
   @Prop({ required: true, lowercase: true, trim: true, immutable: true })
   email: string;
 
-  @Prop({ trim: true, sparse: true })
+  @Prop({ trim: true })
   google_subject?: string;
 
   @Prop({ required: true, trim: true })
@@ -38,5 +38,5 @@ export const AdminSchema = SchemaFactory.createForClass(Admin);
 AdminSchema.index({ email: 1 }, { unique: true });
 AdminSchema.index(
   { google_subject: 1 },
-  { unique: true, sparse: true, partialFilterExpression: { google_subject: { $type: 'string' } } },
+  { unique: true, partialFilterExpression: { google_subject: { $type: 'string' } } },
 );
