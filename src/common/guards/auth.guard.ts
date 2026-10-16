@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   UnauthorizedException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
@@ -41,9 +42,10 @@ export class AuthGuard implements CanActivate {
 
     const authHeader: string = request.headers['authorization'] || '';
     const cookieToken = readCookieFromHeader(request.headers.cookie, accessCookieName(this.config));
-    const token = cookieToken || (authHeader.startsWith('Bearer ')
+    // Match the gateway: a refreshed explicit bearer token takes precedence over a stale cookie.
+    const token = authHeader.startsWith('Bearer ')
       ? authHeader.slice(7)
-      : authHeader);
+      : cookieToken || authHeader;
 
     if (!token) throw new UnauthorizedException('ERROR_AUTH');
 
@@ -62,8 +64,14 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('ERROR_AUTH');
     }
 
-    const exists = await redisSessionExists(this.redis, `${REDIS_KEY_ACCESS_TOKEN}${token}`);
-    if (!exists) throw new UnauthorizedException('ERROR_AUTH');
+    if (this.redis.isReady === false) throw new ServiceUnavailableException('AUTH_SERVICE_UNAVAILABLE');
+    let exists: boolean;
+    try { exists = await redisSessionExists(this.redis, `${REDIS_KEY_ACCESS_TOKEN}${token}`); }
+    catch { throw new ServiceUnavailableException('AUTH_SERVICE_UNAVAILABLE'); }
+    if (!exists) {
+      if (this.redis.isReady === false) throw new ServiceUnavailableException('AUTH_SERVICE_UNAVAILABLE');
+      throw new UnauthorizedException('ERROR_AUTH');
+    }
 
     request.user = payload;
     request.token = token;
