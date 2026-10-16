@@ -66,6 +66,9 @@ export class UserService {
     const configLookupMs = Number(process.hrtime.bigint() - configLookupStart) / 1_000_000;
 
     const profile = user as any;
+    for (const field of ['balance', 'total_recharged', 'total_witdrawal', 'total_won']) {
+      if (profile[field] != null) profile[field] = String(profile[field]);
+    }
     profile.limits = { daily_withdrawal: withdrawal_daily_limit };
     logSlowEvent(this.logger, 'user_profile_trace', startedAt, 50, {
       user_lookup_ms: userLookupMs.toFixed(1),

@@ -76,7 +76,7 @@ export class TournamentMatchService {
     match.room_id = room._id as Types.ObjectId;
     match.status = TournamentMatchStatus.READY;
     await match.save();
-    void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
+    await this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
     return room._id as Types.ObjectId;
   }
 
@@ -120,6 +120,8 @@ export class TournamentMatchService {
     winnerId: Types.ObjectId,
     reason: string,
   ): Promise<void> {
+    const currentTournament = await this.tournamentModel.findById(match.tournament_id).select('status');
+    if (!currentTournament || currentTournament.status === TournamentStatus.CANCELLED) return;
     if (match.status === TournamentMatchStatus.FINISHED || match.status === TournamentMatchStatus.FORFEITED) {
       return;
     }
@@ -178,7 +180,7 @@ export class TournamentMatchService {
 
     if (completedMatch.round_name === TournamentMatchRoundName.GRAND_FINAL) {
       await this.settlement.settle(tournament, completedMatch.winner_user_id!, completedMatch.loser_user_id!);
-      void this.tournamentsGateway.emitMatchUpdate(tournamentId.toString());
+      await this.tournamentsGateway.emitMatchUpdate(tournamentId.toString());
       return;
     }
 
@@ -227,7 +229,7 @@ export class TournamentMatchService {
             decisive.winner_user_id as Types.ObjectId,
             (decisive.loser_user_id ?? decisive.winner_user_id) as Types.ObjectId,
           );
-          void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
+          await this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
         }
         return;
       }
@@ -239,7 +241,7 @@ export class TournamentMatchService {
         Date.now() + fresh.between_rounds_pause_seconds * 1000,
       );
       await fresh.save();
-      void this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
+      await this.tournamentsGateway.emitMatchUpdate(fresh._id.toString());
       return;
     }
 
@@ -301,6 +303,6 @@ export class TournamentMatchService {
         ? TournamentStatus.FINALS_RUNNING
         : TournamentStatus.RUNNING;
     await tournament.save();
-    void this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
+    await this.tournamentsGateway.emitMatchUpdate(tournament._id.toString());
   }
 }

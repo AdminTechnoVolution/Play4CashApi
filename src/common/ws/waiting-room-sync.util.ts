@@ -5,6 +5,7 @@
  */
 
 import * as fs from 'fs';
+import { outsideTransaction } from '../reliable-commands/context';
 
 const DEBUG_LOG = '/Users/darricordoba/Documents/GitHub/Play4CashPWA/.cursor/debug-83380c.log';
 const DEBUG_SESSION_ID = '83380c';
@@ -81,7 +82,9 @@ export function scheduleWaitingRoomReconcile(
     roomId,
     setTimeout(() => {
       reconcileTimers.delete(roomId);
-      void fn();
+      outsideTransaction(() => { void Promise.resolve().then(fn).catch(() => {
+        // A later join/state request retries; no rejected background promise may terminate the API.
+      }); });
     }, delayMs),
   );
 }
@@ -118,10 +121,8 @@ export async function emitDbOpponentJoinedIfPresent(options: {
   );
   if (!opponent?.playerId) return;
 
-  const [oppName, joinerName] = await Promise.all([
-    options.getUsername(opponent.playerId.toString()),
-    options.getUsername(options.joiningPlayerId),
-  ]);
+  const oppName = await options.getUsername(opponent.playerId.toString());
+  const joinerName = await options.getUsername(options.joiningPlayerId);
 
   options.notifyJoiner(oppName);
   options.notifyOthers(joinerName);

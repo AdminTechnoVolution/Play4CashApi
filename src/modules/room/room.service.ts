@@ -1,3 +1,10 @@
+import { validateFleet } from '../naval-battle/placement.validation';
+import { ReliableRoomServiceAction, durableEmit } from '../../common/reliable-commands/reliable-commands';
+import { assertFinanceEligibility } from '../payments/eligibility';
+import { gameFinancialUpdate } from '../payments/game-finance';
+import { positiveMoney, bsonMoney } from '../payments/money';
+import { LedgerService } from '../payments/ledger.service';
+import Decimal from 'decimal.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -222,15 +229,20 @@ export class RoomService {
   async createRoom(
     userId: string,
     gameId: string,
-    betAmount: number,
+    betAmount: number | string,
     isPublic: boolean,
     name?: string,
     playerLimit?: number,
     lang = 'en',
   ): Promise<RoomDocument> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') await assertFinanceEligibility(this.userModel.db, userId);
     const game = await this.gameModel.findById(gameId);
     if (!game) throw new BusinessException('ERROR_NOT_FOUND', 404);
-    if (betAmount < game.min_bet) throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
+    if (process.env.FINANCE_V2_ENABLED === 'true' && !['chess', 'connect-four', 'connect4', 'domino', 'halma', 'uno', 'naval-battle', 'battleship'].includes(game.socket_code)) {
+      throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
+    }
+    const stake = positiveMoney(String(betAmount));
+    if (new Decimal(stake).lt(String(game.min_bet)) || new Decimal(stake).lt('1')) throw new BusinessException('ERROR_BAD_REQUEST_RESPONSE', 400);
 
     const effectivePlayerLimit = playerLimit ?? game.max_players;
     if (effectivePlayerLimit < game.min_players || effectivePlayerLimit > game.max_players) {
@@ -238,7 +250,9 @@ export class RoomService {
     }
 
     const user = await this.userModel.findById(userId);
-    if (!user || user.balance < betAmount) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
+    const available = process.env.FINANCE_V2_ENABLED === 'true'
+      ? (await new LedgerService(this.userModel.db).balances(userId)).available : String(user?.balance ?? '0');
+    if (!user || new Decimal(available).lt(stake)) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
 
     const code = randomBytes(8).toString('hex');
 
@@ -248,7 +262,8 @@ export class RoomService {
         name: name || undefined,
         code,
         game_id: new Types.ObjectId(gameId),
-        bet_amount: betAmount,
+        bet_amount: Number(stake),
+        bet_amount_decimal: bsonMoney(stake),
         house_edge: game.house_edge,
         public: isPublic,
         player_limit: effectivePlayerLimit,
@@ -280,6 +295,7 @@ export class RoomService {
   // ── JOIN ROOM ───────────────────────────────────────────────────────────────
 
   async joinRoom(userId: string, roomId: string, lang = 'en'): Promise<RoomDocument> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') await assertFinanceEligibility(this.userModel.db, userId);
     this.logger.log(`event=room_join_requested room=${roomId} user=${userId}`);
     const roomInfo = await this.roomModel
       .findById(roomId)
@@ -406,6 +422,7 @@ export class RoomService {
 
   // ── SET READY ───────────────────────────────────────────────────────────────
 
+  @ReliableRoomServiceAction()
   async setReady(userId: string, roomId: string, ready: boolean, lang = 'en'): Promise<RoomDocument> {
     const room = await this.roomModel.findById(roomId).populate('game_id', 'max_players');
     if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
@@ -430,6 +447,9 @@ export class RoomService {
   // ── DELETE ROOM ─────────────────────────────────────────────────────────────
 
   async deleteRoom(roomId: string): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true' || process.env.RELIABLE_COMMANDS_ENABLED === 'true') {
+      throw new BusinessException('ROOM_HISTORY_IMMUTABLE', 409);
+    }
     const room = await this.roomModel.findByIdAndDelete(roomId);
     if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
     const gameId = (room as any).game_id?.toString();
@@ -439,6 +459,7 @@ export class RoomService {
 
   // ── LEAVE ROOM ──────────────────────────────────────────────────────────────
 
+  @ReliableRoomServiceAction()
   async leaveRoom(userId: string, roomId: string, lang = 'en'): Promise<any> {
     const roomInfo = await this.roomModel.findOne({
       _id: new Types.ObjectId(roomId),
@@ -449,6 +470,14 @@ export class RoomService {
     }).populate('game_id');
     if (!roomInfo) throw new BusinessException('ERROR_AUTH', 403);
     if (roomInfo.status === RoomStatus.FINISHED) return roomInfo;
+    if (process.env.RELIABLE_COMMANDS_ENABLED === 'true' && roomInfo.status === RoomStatus.WAITING
+      && roomInfo.players.length === 1 && roomInfo.players[0].playerId.toString() === userId) {
+      const finished = await this.roomModel.findOneAndUpdate({ _id: roomInfo._id, status: RoomStatus.WAITING },
+        { $set: { status: RoomStatus.FINISHED, winner_reason: 'empty_waiting_room', finished_at: new Date() } }, { new: true });
+      if (finished) this.roomsGateway.broadcastRoomUpdate(roomInfo.game_id?._id?.toString() ?? roomInfo.game_id?.toString(), 'roomDeleted', { id: roomId });
+      this.invalidateReadCaches();
+      return finished;
+    }
 
     const isSpectator = roomInfo.spectators?.some((id: any) => id.toString() === userId);
       if (isSpectator) {
@@ -511,7 +540,7 @@ export class RoomService {
 
         for (const p of allPlacements) {
           if (refundAmount > 0) {
-            await this.userModel.updateOne({ _id: p.player_id }, { $inc: { balance: refundAmount } });
+            await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: p.player_id }, { $inc: { balance: refundAmount } }], roomId);
           }
         }
         await this.placementModel.deleteMany({ room_id: roomOid });
@@ -600,7 +629,7 @@ export class RoomService {
             numPlayersAtStart,
           );
           const displayPrize = settlement.netPrize;
-          await this.userModel.updateOne({ _id: winner_id }, winnerBalanceUpdate(settlement));
+          await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winner_id }, winnerBalanceUpdate(settlement)], roomId);
 
           const gameId = (roomInfo.game_id as any)?._id?.toString() || (roomInfo.game_id as any)?.toString();
           if (gameId) this.roomsGateway.broadcastRoomUpdate(gameId, 'roomDeleted', { id: roomId });
@@ -636,40 +665,9 @@ export class RoomService {
 
   // ── BATTLESHIP PLACEMENT ────────────────────────────────────────────────────
 
+  @ReliableRoomServiceAction()
   async saveBattleshipPlacement(userId: string, roomId: string, ships: any[], lang = 'en'): Promise<any> {
-    const SHIP_SIZES = { carrier: 5, battleship: 4, cruiser: 3, submarine: 3, destroyer: 2 };
-    const REQUIRED_TYPES = Object.keys(SHIP_SIZES);
-
-    // 1. Validation Logic
-    const types = ships.map(s => s.type);
-    const typeSet = new Set(types);
-    for (const t of REQUIRED_TYPES) {
-      if (!typeSet.has(t)) throw new BusinessException(`Missing ship type: ${t}`, 400);
-    }
-    if (types.length !== typeSet.size) throw new BusinessException('Duplicate ship types', 400);
-
-    const allCellKeys: string[] = [];
-    for (const ship of ships) {
-      if (ship.cells && ship.cells.length > 0 && (ship.startRow === undefined || ship.startCol === undefined || ship.isHorizontal === undefined)) {
-        ship.startRow = ship.cells[0][0];
-        ship.startCol = ship.cells[0][1];
-        if (ship.cells.length > 1) {
-          ship.isHorizontal = ship.cells[0][0] === ship.cells[1][0];
-        } else {
-          ship.isHorizontal = true;
-        }
-      }
-
-      const expectedSize = SHIP_SIZES[ship.type as keyof typeof SHIP_SIZES];
-      if (ship.cells.length !== expectedSize) throw new BusinessException(`Ship "${ship.type}" must have ${expectedSize} cells`, 400);
-      for (const cell of ship.cells) {
-        if (!Array.isArray(cell) || cell.length !== 2 || cell[0] < 0 || cell[0] > 9 || cell[1] < 0 || cell[1] > 9) {
-          throw new BusinessException(`Invalid cell in ship "${ship.type}"`, 400);
-        }
-        allCellKeys.push(`${cell[0]},${cell[1]}`);
-      }
-    }
-    if (new Set(allCellKeys).size !== allCellKeys.length) throw new BusinessException('Ships overlap', 400);
+    ships = validateFleet(ships);
 
     // 2. Room & Status
     const room = await this.roomModel.findById(roomId).populate('game_id');
@@ -681,17 +679,14 @@ export class RoomService {
     const player = room.players.find((p: any) => p.playerId.toString() === userId);
     if (!player) throw new BusinessException('ERROR_AUTH', 403);
 
+    if (!['naval-battle', 'battleship'].includes((room.game_id as any)?.socket_code)) throw new BusinessException('WRONG_GAME_NAMESPACE', 400);
+
     // 3. Save vs Deduct
     let placement = await this.placementModel.findOne({ room_id: roomId, player_id: userId });
     if (placement) {
-      placement.ships = ships;
-      await placement.save();
+      throw new BusinessException('ws.games.shipsAlreadyPlaced', 409);
     } else {
-      const user = await this.userModel.findOneAndUpdate(
-        { _id: userId, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { new: true },
-      );
+      const user = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: userId, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { new: true }], roomId);
       if (!user) throw new BusinessException('ERROR_GAME_INSUFFICIENT_BALANCE', 400);
       placement = await this.placementModel.create({ room_id: roomId, player_id: userId, ships, status: 'placed' });
     }
@@ -748,7 +743,7 @@ export class RoomService {
         for (const s of socketsInRoom) {
           const socketPlayerId = (s as any).data.player_id;
           const isP1 = socketPlayerId === p1Id;
-          (s as unknown as any).emit('naval-battle', {
+          durableEmit((s as unknown as any), 'naval-battle', {
             success: true,
             data: { yourTurn: isP1, turnTimerSeconds: timerSeconds, waitingForOpponent: false, gameStarted: true },
             messages: [isP1 ? 'Opponent is ready. Your turn — fire!' : 'Enemy ships detected. Waiting for opponent to fire.']
@@ -808,19 +803,19 @@ export class RoomService {
     for (const s of sockets) {
       if (s.data?.player_id !== excludeUserId) {
         const isSpectator = (s as any).data?.isSpectator || false;
-        s.emit(eventName, isSpectator ? spectatorPayload : playerPayload);
+        durableEmit(s, eventName, isSpectator ? spectatorPayload : playerPayload);
       }
     }
   }
 
   /** Helper to emit to ALL sockets in a room */
   private async serverBroadcast(roomId: string, payload: any) {
-    this.navalBattleGateway.server.to(roomId).emit('naval-battle', payload);
-    this.halmaGateway.server.to(roomId).emit('halma', payload);
-    this.chessGateway.server.to(roomId).emit('chess', payload);
-    this.dominoGateway.server.to(roomId).emit('domino', payload);
-    this.unoGateway.server.to(roomId).emit('uno', payload);
-    this.connectFourGateway.server.to(roomId).emit('connect-four', payload);
+    durableEmit(this.navalBattleGateway.server.to(roomId), 'naval-battle', payload);
+    durableEmit(this.halmaGateway.server.to(roomId), 'halma', payload);
+    durableEmit(this.chessGateway.server.to(roomId), 'chess', payload);
+    durableEmit(this.dominoGateway.server.to(roomId), 'domino', payload);
+    durableEmit(this.unoGateway.server.to(roomId), 'uno', payload);
+    durableEmit(this.connectFourGateway.server.to(roomId), 'connect-four', payload);
   }
 
   private invalidateReadCaches(): void {

@@ -11,7 +11,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
       provide: REDIS_CLIENT,
       inject: [ConfigService],
       useFactory: async (config: ConfigService) => {
-        const client = createClient({ url: config.get<string>('redisUri') });
+        const client = createClient({ url: config.get<string>('redisUri'), disableOfflineQueue: true, commandsQueueMaxLength: 4096 });
         client.on('error', (err) => console.error('[Redis] Error:', err));
         await client.connect();
         return client;

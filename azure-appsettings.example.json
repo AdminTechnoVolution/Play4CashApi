@@ -1,0 +1,182 @@
+[
+  {
+    "name": "NODE_ENV",
+    "value": "production",
+    "slotSetting": false
+  },
+  {
+    "name": "FINANCE_V2_ENABLED",
+    "value": "true",
+    "slotSetting": false
+  },
+  {
+    "name": "RELIABLE_COMMANDS_ENABLED",
+    "value": "true",
+    "slotSetting": false
+  },
+  {
+    "name": "SOCKET_IO_REDIS_ADAPTER",
+    "value": "true",
+    "slotSetting": false
+  },
+  {
+    "name": "PAYMENTS_WORKER",
+    "value": "false",
+    "slotSetting": false
+  },
+  {
+    "name": "PAYMENTS_DEPOSITS_ENABLED",
+    "value": "true",
+    "slotSetting": false
+  },
+  {
+    "name": "PAYMENTS_WITHDRAWALS_ENABLED",
+    "value": "true",
+    "slotSetting": false
+  },
+  {
+    "name": "NOWPAYMENTS_BASE_URL",
+    "value": "https://api-sandbox.nowpayments.io/v1",
+    "slotSetting": false
+  },
+  {
+    "name": "ENABLE_SWAGGER",
+    "value": "false",
+    "slotSetting": false
+  },
+  {
+    "name": "ENABLE_FAKE_LOGIN",
+    "value": "false",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_ISSUER",
+    "value": "play4cash-api",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_AUDIENCE",
+    "value": "play4cash-clients",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_ACCESS_TOKEN_TTL_SECS",
+    "value": "3600",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_REFRESH_TOKEN_TTL_SECS",
+    "value": "86400",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_ISSUER",
+    "value": "play4cash-api",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_AUDIENCE",
+    "value": "play4cash-admin",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_ACCESS_TOKEN_TTL_SECS",
+    "value": "1800",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_REFRESH_TOKEN_TTL_SECS",
+    "value": "28800",
+    "slotSetting": false
+  },
+  {
+    "name": "EMAIL_VERIFICATION_EXPIRY_MINUTES",
+    "value": "60",
+    "slotSetting": false
+  },
+  {
+    "name": "GATEWAY_TRUST_HEADER_NAME",
+    "value": "x-gateway-internal",
+    "slotSetting": false
+  },
+  {
+    "name": "MONGO_URI",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "REDIS_URI",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "ALLOWED_ORIGINS",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "SOCKET_ORIGIN",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_SECRET_KEY",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_SECRET_KEY",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "GATEWAY_INTERNAL_SECRET",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "GOOGLE_CLIENT_ID",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "GOOGLE_ADMIN_CLIENT_ID",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "EMAIL_SERVICE",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "EMAIL_FROM",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "EMAIL_PASS",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "NOWPAYMENTS_API_KEY",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "NOWPAYMENTS_IPN_SECRET",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "NOWPAYMENTS_IPN_URL",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "FINANCE_ADMIN_TOTP_SECRETS",
+    "value": "",
+    "slotSetting": false
+  }
+]

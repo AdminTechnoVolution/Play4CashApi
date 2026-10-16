@@ -205,6 +205,7 @@ export class GameAuditService {
   }
 
   async reverse(roomId: string, playerId: string, adminId: string, reason: string, override = false) {
+    if (process.env.FINANCE_V2_ENABLED === 'true') throw new BusinessException('USE_MFA_LEDGER_ADJUSTMENT', 409);
     if (![roomId, playerId, adminId].every(Types.ObjectId.isValid)) {
       throw new BusinessException('ERROR_NOT_FOUND', 404);
     }

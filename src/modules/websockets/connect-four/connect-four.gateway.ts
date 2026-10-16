@@ -1,3 +1,6 @@
+import { ReliableDisconnectAction, registerReliableDisconnectHandler } from '../../../common/reliable-commands/reliable-commands';
+import { durableEmit, ReliableAction, ReliableInternalAction, ReliableReadAction } from '../../../common/reliable-commands/reliable-commands';
+import { gameFinancialUpdate } from '../../payments/game-finance';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -90,6 +93,7 @@ export class ConnectFourGateway
 
   afterInit(server: Server) {
     applyWsAuth(server, this.config, this.redis);
+    registerReliableDisconnectHandler((server as any).name, data => this.handleDisconnect({ id: data.id, data: data.data, handshake: { query: {} }, to: (room: string) => (server as any).to(room).except(`player:${data.data.player_id}`) } as unknown as Socket));
   }
 
   private getLang(client: Socket): string {
@@ -105,7 +109,7 @@ export class ConnectFourGateway
   }
 
   private emit(client: Socket, success: boolean, data: Record<string, unknown>, messages: string[]) {
-    client.emit(EVENT, { success, data, messages });
+    durableEmit(client, EVENT, { success, data, messages });
   }
 
   private async buildPublicState(
@@ -188,6 +192,7 @@ export class ConnectFourGateway
     this.logger.log(`[ConnectFour] Connected: ${client.id}`);
   }
 
+  @ReliableDisconnectAction()
   async handleDisconnect(client: Socket) {
     clearTimer(client.id);
     const { room_id, player_id } = client.data;
@@ -209,7 +214,7 @@ export class ConnectFourGateway
         { $pull: { spectators: playerObjId } },
         { returnDocument: 'after' },
       );
-      client.to(room_id).emit(EVENT, {
+      durableEmit(client.to(room_id), EVENT, {
         success: true,
         data: { spectatorsCount: updated?.spectators?.length || 0 },
         messages: [],
@@ -237,7 +242,7 @@ export class ConnectFourGateway
         }
       } else {
         const sLang = this.getLang(client);
-        client.to(room_id).emit(EVENT, {
+        durableEmit(client.to(room_id), EVENT, {
           success: true,
           messages: [this.i18n.translate('ws.games.opponentLeft', sLang)],
           data: { opponentLeft: true, waitingForOpponent: true },
@@ -270,6 +275,7 @@ export class ConnectFourGateway
     }
   }
 
+  @ReliableInternalAction()
   async executeForfeit(room_id: string, player_id: string) {
     const room = await this.roomModel
       .findOne({ _id: new Types.ObjectId(room_id), status: 'started' })
@@ -288,7 +294,7 @@ export class ConnectFourGateway
     await room.save();
 
     const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.findByIdAndUpdate(winner_id, winnerBalanceUpdate(settlement));
+    await gameFinancialUpdate(this.userModel, 'findByIdAndUpdate', [winner_id, winnerBalanceUpdate(settlement)], room_id);
 
     const winnerUsername = await this.getCachedUsername(winner_id.toString());
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -305,7 +311,7 @@ export class ConnectFourGateway
         sIsSpectator,
       );
       const isWinner = !sIsSpectator && sPNum > 0 && room.players[sPNum - 1]?.playerId?.toString() === winner_id.toString();
-      (s as unknown as Socket).emit(EVENT, {
+      durableEmit((s as unknown as Socket), EVENT, {
         success: false,
         messages: sIsSpectator
           ? [this.i18n.translate('ws.games.winsForfeit', sLang, { username: winnerUsername })]
@@ -326,6 +332,7 @@ export class ConnectFourGateway
   }
 
   @SubscribeMessage('join')
+  @ReliableReadAction()
   async handleJoin(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id: string },
@@ -376,7 +383,7 @@ export class ConnectFourGateway
     if (client.data.isSpectator) {
       if (room.status === 'started' && game) {
         const state = await this.buildPublicState(room, game, null, true);
-        client.to(room_id).emit(EVENT, {
+        durableEmit(client.to(room_id), EVENT, {
           success: true,
           data: { spectatorsCount: room.spectators?.length ?? 0 },
           messages: [],
@@ -448,7 +455,7 @@ export class ConnectFourGateway
         ]);
       },
       notifyOthers: (joinerName) => {
-        client.to(room_id).emit(EVENT, {
+        durableEmit(client.to(room_id), EVENT, {
           success: true,
           messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username: joinerName })],
           data: { opponentJoined: true, opponentName: joinerName },
@@ -485,6 +492,7 @@ export class ConnectFourGateway
   }
 
   /** Idempotent start when both player sockets are connected and the room is still waiting. */
+  @ReliableInternalAction()
   private async tryStartConnectFourGame(room_id: string, lang: string): Promise<void> {
     const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds');
     if (!room || (room.status !== 'waiting' && room.status !== 'started')) return;
@@ -507,8 +515,7 @@ export class ConnectFourGateway
     const compensate = async (errKey: string, reason: string) => {
       this.logger.error(`event=connect_four_start_failed room=${room_id} reason=${reason}`);
       for (const pid of paid) {
-        await this.userModel
-          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+        await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: pid }, { $inc: { balance: room.bet_amount } }], room_id)
           .catch((e) => this.logger.error(`[ConnectFour] Refund failed | player=${pid}`, e));
       }
       if (createdGameId) {
@@ -518,28 +525,20 @@ export class ConnectFourGateway
       }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[ConnectFour] Room status reset failed | room=${room_id}`, e));
-      this.server.to(room_id).emit(EVENT, {
+      durableEmit(this.server.to(room_id), EVENT, {
         success: false,
         messages: [this.i18n.translate(errKey, lang)],
       });
     };
 
-    const deduct1 = await this.userModel.findOneAndUpdate(
-      { _id: p1id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
+    const deduct1 = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: p1id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { returnDocument: 'after' }], room_id);
     if (!deduct1) {
       await compensate('ws.games.insufficientBalance', 'p1_insufficient');
       return;
     }
     paid.push(p1id);
 
-    const deduct2 = await this.userModel.findOneAndUpdate(
-      { _id: p2id, balance: { $gte: room.bet_amount } },
-      { $inc: { balance: -room.bet_amount } },
-      { returnDocument: 'after' },
-    );
+    const deduct2 = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: p2id, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { returnDocument: 'after' }], room_id);
     if (!deduct2) {
       await compensate('ws.games.insufficientBalance', 'p2_insufficient');
       return;
@@ -596,7 +595,7 @@ export class ConnectFourGateway
           sIsSpectator ? null : sPNum,
           sIsSpectator,
         );
-        (s as unknown as Socket).emit(EVENT, {
+        durableEmit((s as unknown as Socket), EVENT, {
           success: true,
           data: {
             ...sState,
@@ -636,6 +635,7 @@ export class ConnectFourGateway
   }
 
   @SubscribeMessage('get_state')
+  @ReliableReadAction()
   async handleGetState(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id: string },
@@ -701,21 +701,15 @@ export class ConnectFourGateway
     } else if (outcome.kind === 'draw') {
       // Draw settlement (Halma-style): refund each player's stake. Bets were deducted at
       // match start; no house edge is applied on ties.
-      await this.userModel.updateOne(
-        { _id: game.player1_id },
-        { $inc: { balance: finishedRoom.bet_amount } },
-      );
-      await this.userModel.updateOne(
-        { _id: game.player2_id },
-        { $inc: { balance: finishedRoom.bet_amount } },
-      );
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: game.player1_id }, { $inc: { balance: finishedRoom.bet_amount } }], room_id);
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: game.player2_id }, { $inc: { balance: finishedRoom.bet_amount } }], room_id);
     } else if (!isTournament) {
       const settlement = calculateWinnerSettlement(
         finishedRoom.bet_amount,
         finishedRoom.house_edge,
         finishedRoom.players.length,
       );
-      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
     }
 
     const gameId =
@@ -728,6 +722,7 @@ export class ConnectFourGateway
   }
 
   @SubscribeMessage('drop_disc')
+  @ReliableAction()
   async handleDropDisc(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id?: string; col: number },
@@ -923,7 +918,7 @@ export class ConnectFourGateway
           msg = this.i18n.translate('ws.games.opponentMoved', info.sLang);
         }
 
-        (info.socket as unknown as Socket).emit(EVENT, {
+        durableEmit((info.socket as unknown as Socket), EVENT, {
           success: true,
           data: {
             ...sState,
@@ -981,6 +976,7 @@ export class ConnectFourGateway
   }
 
   @SubscribeMessage('forfeit')
+  @ReliableAction()
   async handleForfeit(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id?: string },
@@ -1005,10 +1001,12 @@ export class ConnectFourGateway
     clearTimer(socket.id);
     const playerId = (socket.data?.player_id as string) || '';
     if (playerId) void this.turnDeadlines.schedule('connect-four', room_id, playerId, seconds);
+    if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') return;
     const t = setTimeout(() => void this.executeConnectFourTurnTimeout(room_id), seconds * 1000);
     turnTimers.set(socket.id, t);
   }
 
+  @ReliableInternalAction()
   private async executeConnectFourTurnTimeout(room_id: string): Promise<void> {
     await this.turnDeadlines.cancel('connect-four', room_id);
     const game = await this.gameModel.findOne({ room_id: new Types.ObjectId(room_id) });
@@ -1032,7 +1030,7 @@ export class ConnectFourGateway
         room.players.length,
       );
       const displayPrize = settlement.netPrize;
-      await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+      await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
 
       const sockets = await this.server.in(room_id).fetchSockets();
       const winnerUsername = await this.getCachedUsername(winnerId.toString());
@@ -1048,7 +1046,7 @@ export class ConnectFourGateway
           sIsSpectator ? null : sPNum,
           sIsSpectator,
         );
-        (s as unknown as Socket).emit(EVENT, {
+        durableEmit((s as unknown as Socket), EVENT, {
           success: true,
           data: {
             ...sState,

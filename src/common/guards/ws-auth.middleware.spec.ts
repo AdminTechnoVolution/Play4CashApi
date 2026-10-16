@@ -40,6 +40,8 @@ function makeSocket(handshake: Partial<Socket['handshake']>): Socket {
   return {
     handshake: { auth: {}, query: {}, headers: {}, ...handshake },
     data: {} as Record<string, unknown>,
+    join: jest.fn().mockResolvedValue(undefined),
+    use: jest.fn(),
   } as unknown as Socket;
 }
 
@@ -130,12 +132,20 @@ describe('applyWsAuth', () => {
     expect(exists).toHaveBeenCalledWith(expect.stringContaining(token));
   });
 
+  it('rejects tokens in URL query parameters', async () => {
+    const { server, getMiddleware } = captureServerMiddleware();
+    applyWsAuth(server, makeConfig(), { exists: jest.fn().mockResolvedValue(1) });
+    const next = jest.fn();
+    await getMiddleware()(makeSocket({ query: { token: signAccess() } }), next);
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ message: 'ERROR_AUTH' }));
+  });
+
   it('passes a valid token and populates socket.data', async () => {
     const { server, getMiddleware } = captureServerMiddleware();
     applyWsAuth(server, makeConfig(), { exists: jest.fn().mockResolvedValue(1) });
 
     const token = signAccess({ id: 'u-xyz' });
-    const socket = makeSocket({ query: { token } });
+    const socket = makeSocket({ auth: { token } });
     const next = jest.fn();
     await getMiddleware()(socket, next);
 

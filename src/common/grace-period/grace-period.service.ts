@@ -1,3 +1,4 @@
+import { commandContext, deferTransactionWrite } from '../reliable-commands/context';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
@@ -59,6 +60,7 @@ export class GracePeriodService {
    * Caller is responsible for clamping `ttlSec` to `MIN_GRACE_SECS`.
    */
   async start(gameName: string, playerId: string, roomId: string, ttlSec: number): Promise<void> {
+    if (deferTransactionWrite(() => this.start(gameName, playerId, roomId, ttlSec))) return;
     const clampedTtl = Math.max(GracePeriodService.MIN_GRACE_SECS, Math.ceil(ttlSec));
     const expiresAt = new Date(Date.now() + clampedTtl * 1000);
     try {
@@ -78,11 +80,13 @@ export class GracePeriodService {
       );
     } catch (err) {
       this.logger.error(`[Grace] start failed | game=${gameName} player=${playerId}`, err);
+      if (commandContext.getStore()) throw err;
     }
   }
 
   /** Cancel a grace period (e.g. player reconnected). No-op if none existed. */
   async cancel(gameName: string, playerId: string): Promise<void> {
+    if (deferTransactionWrite(() => this.cancel(gameName, playerId))) return;
     try {
       const result = await this.graceModel.deleteOne({ game_name: gameName, player_id: playerId });
       if (result?.deletedCount && result.deletedCount > 0) {
@@ -90,6 +94,7 @@ export class GracePeriodService {
       }
     } catch (err) {
       this.logger.error(`[Grace] cancel failed | game=${gameName} player=${playerId}`, err);
+      if (commandContext.getStore()) throw err;
     }
   }
 
@@ -105,8 +110,8 @@ export class GracePeriodService {
       let next: GracePeriodDocument | null = null;
       try {
         next = await this.graceModel.findOneAndUpdate(
-          { expires_at: { $lte: new Date() }, processing: false },
-          { $set: { processing: true } },
+          { expires_at: { $lte: new Date() }, ...(process.env.RELIABLE_COMMANDS_ENABLED === 'true' ? { $or: [{ processing: false }, { processing: true, processing_at: { $lte: new Date(Date.now() - 30000) } }] } : { processing: false }) },
+          { $set: { processing: true, processing_at: new Date() } },
           { returnDocument: 'after' },
         );
       } catch (err) {
@@ -129,11 +134,13 @@ export class GracePeriodService {
         return;
       }
 
+      let succeeded = false;
       try {
         this.logger.log(
           `event=grace_expired game=${next.game_name} player=${next.player_id} room=${next.room_id}`,
         );
         await handler(next.player_id, next.room_id);
+        succeeded = true;
       } catch (err) {
         this.logger.error(
           `[Grace] handler failed | game=${next.game_name} player=${next.player_id}`,
@@ -143,7 +150,11 @@ export class GracePeriodService {
       // Always remove the row — even on handler error — to avoid retrying a forfeit
       // that may have partially completed (idempotent forfeit logic in the gateway is
       // the right place to safeguard re-runs if we ever need them).
-      await this.graceModel.deleteOne({ _id: next._id }).catch(() => {});
+      if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') {
+        const held = { _id: next._id, processing: true, expires_at: next.expires_at, processing_at: next.processing_at };
+        if (succeeded) await this.graceModel.deleteOne(held);
+        else await this.graceModel.updateOne(held, { $set: { processing: false, expires_at: new Date(Date.now() + 5000) } });
+      } else await this.graceModel.deleteOne({ _id: next._id }).catch(() => {});
     }
   }
 }

@@ -1,3 +1,4 @@
+import { refundCancelledParticipant } from '../../payments/tournament-finance';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -26,6 +27,7 @@ export class TournamentLedgerService {
     amount: number,
     idempotencyKey: string,
   ): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') throw new Error('USE_ATOMIC_TOURNAMENT_FINANCE');
     const existing = await this.txModel.findOne({ idempotency_key: idempotencyKey });
     if (existing) return;
 
@@ -55,6 +57,7 @@ export class TournamentLedgerService {
     amount: number,
     idempotencyKey: string,
   ): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') return refundCancelledParticipant(this.userModel.db, String(tournamentId), String(userId));
     const existing = await this.txModel.findOne({ idempotency_key: idempotencyKey });
     if (existing) return;
 
@@ -77,6 +80,7 @@ export class TournamentLedgerService {
     type: TournamentTransactionType.FIRST_PLACE_PRIZE | TournamentTransactionType.SECOND_PLACE_PRIZE,
     idempotencyKey: string,
   ): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') throw new Error('USE_ATOMIC_TOURNAMENT_FINANCE');
     const existing = await this.txModel.findOne({ idempotency_key: idempotencyKey });
     if (existing) return;
 
@@ -97,6 +101,7 @@ export class TournamentLedgerService {
     amount: number,
     idempotencyKey: string,
   ): Promise<void> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') return;
     const existing = await this.txModel.findOne({ idempotency_key: idempotencyKey });
     if (existing) return;
 

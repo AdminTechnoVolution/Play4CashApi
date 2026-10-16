@@ -1,3 +1,4 @@
+import { durableEmit } from '../../../common/reliable-commands/reliable-commands';
 import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
@@ -32,7 +33,7 @@ export class RpsGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   @SubscribeMessage('join')
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { game_id: string; bet_amount: number }) {
     if (!payload?.game_id) {
-      client.emit('rps', { success: false, messages: ['Missing game_id'] });
+      durableEmit(client, 'rps', { success: false, messages: ['Missing game_id'] });
       return;
     }
 
@@ -51,12 +52,12 @@ export class RpsGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       await player1.join(roomId);
       await player2.join(roomId);
 
-      this.server.to(roomId).emit('rps', {
+      durableEmit(this.server.to(roomId), 'rps', {
         success: true, messages: [],
         data: { event: 'match_found', room_id: roomId },
       });
     } else {
-      client.emit('rps', { success: true, messages: [], data: { event: 'queued' } });
+      durableEmit(client, 'rps', { success: true, messages: [], data: { event: 'queued' } });
     }
   }
 }

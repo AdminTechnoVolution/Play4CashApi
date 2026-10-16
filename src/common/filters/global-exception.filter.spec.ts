@@ -30,6 +30,7 @@ function makeResponse(): MockResponse {
 
 function makeHost(req: Record<string, unknown>, res: MockResponse): ArgumentsHost {
   return {
+    getType: () => 'http',
     switchToHttp: () => ({
       getResponse: <T>() => res as unknown as T,
       getRequest: <T>() => req as unknown as T,

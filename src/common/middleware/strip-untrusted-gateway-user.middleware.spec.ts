@@ -64,7 +64,7 @@ describe('strip-untrusted-gateway-user.middleware', () => {
         'gateway.trustSecret': '',
         'gateway.trustedIps': ['10.0.0.5'],
       }),
-      { headers: { 'x-gateway-user': 'real' }, ip: '10.0.0.5' },
+      { headers: { 'x-gateway-user': 'real' }, socket: { remoteAddress: '10.0.0.5' } },
     );
     expect(r.headers['x-gateway-user']).toBe('real');
   });
@@ -81,15 +81,24 @@ describe('strip-untrusted-gateway-user.middleware', () => {
     expect(r.headers['x-gateway-user']).toBeUndefined();
   });
 
-  it('falls back to socket.remoteAddress when req.ip is missing', () => {
+  it('uses the physical peer instead of a forwarded IP', () => {
     const r = run(
       configMock({
         'gateway.trustHeaderName': 'x-gateway-internal',
         'gateway.trustSecret': '',
         'gateway.trustedIps': ['10.0.0.5'],
       }),
-      { headers: { 'x-gateway-user': 'real' }, socket: { remoteAddress: '10.0.0.5' } },
+      { headers: { 'x-gateway-user': 'real' }, ip: '203.0.113.1', socket: { remoteAddress: '10.0.0.5' } },
     );
     expect(r.headers['x-gateway-user']).toBe('real');
+  });
+
+  it('rejects spoofed forwarded identity and country', () => {
+    const r = run(configMock({ 'gateway.trustedIps': ['10.0.0.5'] }), {
+      headers: { 'x-gateway-user': 'spoof', 'x-p4c-geo-country': 'CO' },
+      ip: '10.0.0.5', socket: { remoteAddress: '203.0.113.1' },
+    });
+    expect(r.headers['x-gateway-user']).toBeUndefined();
+    expect((r as ReqLike & { gatewayGeoCountry?: string }).gatewayGeoCountry).toBeUndefined();
   });
 });

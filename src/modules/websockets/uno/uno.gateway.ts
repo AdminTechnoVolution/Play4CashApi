@@ -1,3 +1,6 @@
+import { ReliableDisconnectAction, registerReliableDisconnectHandler } from '../../../common/reliable-commands/reliable-commands';
+import { durableEmit, ReliableAction, ReliableInternalAction, ReliableReadAction } from '../../../common/reliable-commands/reliable-commands';
+import { gameFinancialUpdate } from '../../payments/game-finance';
 import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
@@ -127,12 +130,14 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
   afterInit(server: Server) {
     applyWsAuth(server, this.config, this.redis);
+    registerReliableDisconnectHandler((server as any).name, data => this.handleDisconnect({ id: data.id, data: data.data, handshake: { query: {} }, to: (room: string) => (server as any).to(room).except(`player:${data.data.player_id}`) } as unknown as Socket));
   }
 
   handleConnection(client: Socket) {
     this.logger.log(`[UNO] Connected: ${client.id}`);
   }
 
+  @ReliableDisconnectAction()
   async handleDisconnect(client: Socket) {
     clearTimer(client.id);
     const { room_id, player_id } = client.data;
@@ -154,7 +159,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         { $pull: { spectators: playerObjId } },
         { returnDocument: 'after' },
       );
-      client.to(room_id).emit('uno', {
+      durableEmit(client.to(room_id), 'uno', {
         success: true,
         data: { spectatorsCount: updated?.spectators?.length || 0 },
         messages: [],
@@ -185,7 +190,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         const username = await this.getCachedUsername(player_id);
         const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
         const lang = this.getLang(client);
-        client.to(room_id).emit('uno', {
+        durableEmit(client.to(room_id), 'uno', {
           success: true,
           data: {
             opponentLeft: true,
@@ -240,6 +245,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('join')
+  @ReliableReadAction()
   async handleJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     const lang = this.getLang(client);
     const player_id = client.data.player_id;
@@ -250,7 +256,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     await this.grace.cancel('uno', player_id);
 
     if (!room_id) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.invalidMessageFormat'],
       });
@@ -258,19 +264,19 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'socket_code turn_timer_seconds max_players');
     if (!room) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.gameNotFound'],
       });
     }
     if ((room.game_id as any)?.socket_code !== UNO_SOCKET_CODE) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.uno.wrongGame'],
       });
     }
     if (room.status === 'finished') {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: true,
         messages: ['ws.games.playerDisconnected'],
         data: buildFinishedRoomSyncData(room, player_id),
@@ -294,7 +300,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     }
 
     if (!isMember) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.notInRoom'],
       });
@@ -308,7 +314,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       return;
     }
 
-    client.emit('uno', {
+    durableEmit(client, 'uno', {
       success: true,
       data: {
         waitingForOpponent: true,
@@ -325,7 +331,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       joiningPlayerId: player_id,
       getUsername: (id) => this.getCachedUsername(id),
       notifyJoiner: (opponentName) => {
-        client.emit('uno', {
+        durableEmit(client, 'uno', {
           success: true,
           data: {
             opponentJoined: true,
@@ -338,7 +344,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         });
       },
       notifyOthers: (joinerName) => {
-        client.to(room_id).emit('uno', {
+        durableEmit(client.to(room_id), 'uno', {
           success: true,
           data: {
             opponentJoined: true,
@@ -376,11 +382,13 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('get_state')
+  @ReliableReadAction()
   async handleGetState(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id: string }) {
     return this.handleJoin(client, payload);
   }
 
   /** Idempotent start when the room is full and still waiting */
+  @ReliableInternalAction()
   private async tryStartUnoGame(room_id: string, lang: string) {
     // Phase C: gate on the persisted player count, not the socket count. A single
     // user opening multiple tabs can satisfy `socketsInRoom.length >= maxPlayers`
@@ -412,11 +420,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     let createdGameId: Types.ObjectId | null = null;
     let allPaid = true;
     for (const pid of playerIds) {
-      const deducted = await this.userModel.findOneAndUpdate(
-        { _id: pid, balance: { $gte: room.bet_amount } },
-        { $inc: { balance: -room.bet_amount } },
-        { returnDocument: 'after' },
-      );
+      const deducted = await gameFinancialUpdate(this.userModel, 'findOneAndUpdate', [{ _id: pid, balance: { $gte: room.bet_amount } }, { $inc: { balance: -room.bet_amount } }, { returnDocument: 'after' }], room_id);
       if (!deducted) {
         allPaid = false;
         break;
@@ -424,9 +428,9 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       paid.push(pid);
     }
     if (!allPaid) {
-      for (const pid of paid) await this.userModel.updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } });
+      for (const pid of paid) await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: pid }, { $inc: { balance: room.bet_amount } }], room_id);
       await releaseGameStartLease(this.roomModel, room_id, lease.token);
-      this.server.to(room_id).emit('uno', {
+      durableEmit(this.server.to(room_id), 'uno', {
         success: false,
         messages: ['ws.games.insufficientBalance'],
       });
@@ -441,8 +445,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const compensate = async (reason: string, errKey: string) => {
       this.logger.error(`event=uno_start_failed room=${room_id} reason=${reason}`);
       for (const pid of paid) {
-        await this.userModel
-          .updateOne({ _id: pid }, { $inc: { balance: room.bet_amount } })
+        await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: pid }, { $inc: { balance: room.bet_amount } }], room_id)
           .catch((e) => this.logger.error(`[UNO] Refund failed | player=${pid}`, e));
       }
       if (createdGameId) {
@@ -452,7 +455,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       }
       await releaseGameStartLease(this.roomModel, room_id, lease.token)
         .catch((e) => this.logger.error(`[UNO] Room status reset failed | room=${room_id}`, e));
-      this.server.to(room_id).emit('uno', {
+      durableEmit(this.server.to(room_id), 'uno', {
         success: false,
         messages: [errKey],
       });
@@ -531,7 +534,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       const isSpectator = (s as any).data.isSpectator || false;
       const isMyTurn = !isSpectator && pid === currentTurnId;
       const data = await this.buildUnoPayloadSync(game, room, pid, isSpectator, timerSec, currentTurnUsername);
-      (s as unknown as Socket).emit('uno', {
+      durableEmit((s as unknown as Socket), 'uno', {
         success: true,
         data: { ...data, gameStarted: true },
         messages: [
@@ -557,21 +560,22 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('sync')
+  @ReliableReadAction()
   async handleSync(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id?: string }) {
     const lang = this.getLang(client);
     const room_id = payload?.room_id || client.data.room_id;
     const player_id = client.data.player_id;
     if (!room_id) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
 
     const room = await this.roomModel.findById(room_id).populate('game_id', 'socket_code turn_timer_seconds max_players');
     if (!room) {
-      return client.emit('uno', { success: false, messages: ['ws.games.gameNotFound'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.games.gameNotFound'] });
     }
     const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
     if (!game || room.status !== 'started') {
-      return client.emit('uno', { success: false, messages: ['ws.games.roomInactive'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.games.roomInactive'] });
     }
 
     const timerSec = (room.game_id as any)?.turn_timer_seconds ?? 45;
@@ -579,6 +583,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('play_card')
+  @ReliableAction()
   async handlePlayCard(
     @ConnectedSocket() client: Socket,
     @MessageBody()
@@ -586,7 +591,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.spectatorActionDenied'],
       });
@@ -594,18 +599,18 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const room_id = payload?.room_id || client.data.room_id;
     const player_id = client.data.player_id;
     if (room_id === undefined || room_id === null || payload?.card_index === undefined || payload?.card_index === null) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
     const cardIndex = Number(payload.card_index);
     if (!Number.isInteger(cardIndex) || cardIndex < 0) {
-      return client.emit('uno', { success: false, messages: ['ws.uno.invalidCard'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.uno.invalidCard'] });
     }
 
     let chosen: UnoColor | undefined;
     if (payload.chosen_color) {
       const c = String(payload.chosen_color).toUpperCase();
       if (!['R', 'G', 'B', 'Y'].includes(c)) {
-        return client.emit('uno', { success: false, messages: ['ws.uno.chosenColorRequired'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.uno.chosenColorRequired'] });
       }
       chosen = c as UnoColor;
     }
@@ -615,11 +620,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     await this.runWithRetry(async () => {
       const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
       if (!room || room.status !== 'started') {
-        return client.emit('uno', { success: false, messages: ['ws.games.roomInactive'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.roomInactive'] });
       }
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) {
-        return client.emit('uno', { success: false, messages: ['ws.games.gameNotFound'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.gameNotFound'] });
       }
 
       const engine = this.gameToEngine(game);
@@ -631,7 +636,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         winnerId = r.winnerId;
       } catch (e: any) {
         const key = this.unoReasonToMessageKey(e?.message || '');
-        return client.emit('uno', { success: false, messages: [key] });
+        return durableEmit(client, 'uno', { success: false, messages: [key] });
       }
 
       this.applyEngineToGame(game, nextState);
@@ -648,10 +653,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('call_uno')
+  @ReliableAction()
   async handleCallUno(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id?: string }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.spectatorActionDenied'],
       });
@@ -659,17 +665,17 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const room_id = payload?.room_id || client.data.room_id;
     const player_id = client.data.player_id;
     if (!room_id) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
 
     await this.runWithRetry(async () => {
       const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
       if (!room || room.status !== 'started') {
-        return client.emit('uno', { success: false, messages: ['ws.games.roomInactive'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.roomInactive'] });
       }
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) {
-        return client.emit('uno', { success: false, messages: ['ws.games.gameNotFound'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.gameNotFound'] });
       }
 
       const engine = this.gameToEngine(game);
@@ -678,7 +684,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         nextState = applyCallUno(engine, player_id);
       } catch (e: any) {
         const key = this.unoReasonToMessageKey(e?.message || '');
-        return client.emit('uno', { success: false, messages: [key] });
+        return durableEmit(client, 'uno', { success: false, messages: [key] });
       }
 
       this.applyEngineToGameNoTurnReset(game, nextState);
@@ -688,13 +694,14 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('challenge_uno_miss')
+  @ReliableAction()
   async handleChallengeUnoMiss(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id?: string; offender_id: string },
   ) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.spectatorActionDenied'],
       });
@@ -703,17 +710,17 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const player_id = client.data.player_id;
     const offender_id = payload?.offender_id;
     if (!room_id || !offender_id) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
 
     await this.runWithRetry(async () => {
       const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
       if (!room || room.status !== 'started') {
-        return client.emit('uno', { success: false, messages: ['ws.games.roomInactive'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.roomInactive'] });
       }
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) {
-        return client.emit('uno', { success: false, messages: ['ws.games.gameNotFound'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.gameNotFound'] });
       }
 
       const engine = this.gameToEngine(game);
@@ -725,11 +732,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         success = r.success;
       } catch (e: any) {
         const key = this.unoReasonToMessageKey(e?.message || '');
-        return client.emit('uno', { success: false, messages: [key] });
+        return durableEmit(client, 'uno', { success: false, messages: [key] });
       }
 
       if (!success) {
-        return client.emit('uno', {
+        return durableEmit(client, 'uno', {
           success: false,
           messages: ['ws.uno.challengeFail'],
         });
@@ -750,10 +757,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    * sent it, the next round starts immediately (skipping the auto-start countdown).
    */
   @SubscribeMessage('start_next_round')
+  @ReliableAction()
   async handleStartNextRound(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id?: string }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.spectatorActionDenied'],
       });
@@ -761,7 +769,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const room_id = payload?.room_id || client.data.room_id;
     const player_id = client.data.player_id;
     if (!room_id) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
 
     let everyoneReady = false;
@@ -796,13 +804,14 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('take_draw_stack')
+  @ReliableAction()
   async handleTakeDrawStack(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { room_id?: string },
   ) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.spectatorActionDenied'],
       });
@@ -810,17 +819,17 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const room_id = payload?.room_id || client.data.room_id;
     const player_id = client.data.player_id;
     if (!room_id) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
 
     await this.runWithRetry(async () => {
       const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
       if (!room || room.status !== 'started') {
-        return client.emit('uno', { success: false, messages: ['ws.games.roomInactive'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.roomInactive'] });
       }
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) {
-        return client.emit('uno', { success: false, messages: ['ws.games.gameNotFound'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.gameNotFound'] });
       }
 
       const engine = this.gameToEngine(game);
@@ -829,7 +838,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         nextState = applyTakeDrawStack(engine, player_id).state;
       } catch (e: any) {
         const key = this.unoReasonToMessageKey(e?.message || '');
-        return client.emit('uno', { success: false, messages: [key] });
+        return durableEmit(client, 'uno', { success: false, messages: [key] });
       }
 
       this.applyEngineToGame(game, nextState);
@@ -840,10 +849,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('draw_one')
+  @ReliableAction()
   async handleDrawOne(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id?: string }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.spectatorActionDenied'],
       });
@@ -851,17 +861,17 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const room_id = payload?.room_id || client.data.room_id;
     const player_id = client.data.player_id;
     if (!room_id) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
 
     await this.runWithRetry(async () => {
       const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
       if (!room || room.status !== 'started') {
-        return client.emit('uno', { success: false, messages: ['ws.games.roomInactive'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.roomInactive'] });
       }
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) {
-        return client.emit('uno', { success: false, messages: ['ws.games.gameNotFound'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.gameNotFound'] });
       }
 
       const engine = this.gameToEngine(game);
@@ -870,7 +880,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         nextState = applyDrawOne(engine, player_id).state;
       } catch (e: any) {
         const key = this.unoReasonToMessageKey(e?.message || '');
-        return client.emit('uno', { success: false, messages: [key] });
+        return durableEmit(client, 'uno', { success: false, messages: [key] });
       }
 
       this.applyEngineToGame(game, nextState);
@@ -881,10 +891,11 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   @SubscribeMessage('pass')
+  @ReliableAction()
   async handlePass(@ConnectedSocket() client: Socket, @MessageBody() payload: { room_id?: string }) {
     const lang = this.getLang(client);
     if (client.data.isSpectator) {
-      return client.emit('uno', {
+      return durableEmit(client, 'uno', {
         success: false,
         messages: ['ws.games.spectatorActionDenied'],
       });
@@ -892,17 +903,17 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const room_id = payload?.room_id || client.data.room_id;
     const player_id = client.data.player_id;
     if (!room_id) {
-      return client.emit('uno', { success: false, messages: ['ws.invalidMessageFormat'] });
+      return durableEmit(client, 'uno', { success: false, messages: ['ws.invalidMessageFormat'] });
     }
 
     await this.runWithRetry(async () => {
       const room = await this.roomModel.findById(room_id).populate('game_id', 'turn_timer_seconds max_players');
       if (!room || room.status !== 'started') {
-        return client.emit('uno', { success: false, messages: ['ws.games.roomInactive'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.roomInactive'] });
       }
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) {
-        return client.emit('uno', { success: false, messages: ['ws.games.gameNotFound'] });
+        return durableEmit(client, 'uno', { success: false, messages: ['ws.games.gameNotFound'] });
       }
 
       const engine = this.gameToEngine(game);
@@ -911,7 +922,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         nextState = applyPassTurn(engine, player_id);
       } catch (e: any) {
         const key = this.unoReasonToMessageKey(e?.message || '');
-        return client.emit('uno', { success: false, messages: [key] });
+        return durableEmit(client, 'uno', { success: false, messages: [key] });
       }
 
       this.applyEngineToGame(game, nextState);
@@ -1078,7 +1089,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         primaryMsg = isMyTurn ? 'ws.games.yourTurn' : 'ws.uno.stateUpdated';
       }
 
-      (s as unknown as Socket).emit('uno', {
+      durableEmit((s as unknown as Socket), 'uno', {
         success: true,
         data: { ...payload, ...extraData, gameStarted: true },
         messages: [primaryMsg],
@@ -1162,7 +1173,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     room.winner_reason = 'win';
     room.finished_at = new Date();
     const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
-    await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+    await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
     game.match_winner_id = winnerId;
     game.between_rounds = false;
     game.next_round_starts_at = null;
@@ -1183,7 +1194,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       const sSpectator = (s as any).data.isSpectator || false;
       const payload = await this.buildUnoPayloadSync(game, room, pid, sSpectator, timerSec, currentTurnUsername);
       const isWinner = !sSpectator && pid === winnerId;
-      (s as unknown as Socket).emit('uno', {
+      durableEmit((s as unknown as Socket), 'uno', {
         success: true,
         data: {
           ...payload,
@@ -1217,7 +1228,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       const sSpectator = (s as any).data.isSpectator || false;
       const payload = await this.buildUnoPayloadSync(game, room, pid, sSpectator, timerSec, winnerName);
       const wonRound = !sSpectator && pid === winnerId;
-      (s as unknown as Socket).emit('uno', {
+      durableEmit((s as unknown as Socket), 'uno', {
         success: true,
         data: {
           ...payload,
@@ -1426,7 +1437,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       messages = ['ws.uno.matchWinner'];
     }
 
-    client.emit('uno', { success: true, data: { ...payload, ...extra }, messages });
+    durableEmit(client, 'uno', { success: true, data: { ...payload, ...extra }, messages });
 
     // Arm a fresh turn timer on the server if the reconnected client owns the
     // current turn and the match is actively in play.
@@ -1510,6 +1521,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     if (!player_id) return;
     clearTimer(socket.id);
     void this.turnDeadlines.schedule('uno', room_id, player_id, seconds);
+    if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') return;
     const t = setTimeout(async () => {
       const game = await this.unoModel.findOne({ room_id: new Types.ObjectId(room_id) });
       if (!game) return;
@@ -1523,7 +1535,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       const matchEnds = remainingAfterTimeout <= 1;
 
       const lang = this.getLang(socket);
-      socket.emit('uno', {
+      durableEmit(socket, 'uno', {
         success: true,
         data: {
           gameEnded: matchEnds,
@@ -1549,6 +1561,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     turnTimers.set(socket.id, t);
   }
 
+  @ReliableInternalAction()
   public async eliminatePlayer(room_id: string, player_id: string, reason: 'forfeit' | 'timeout') {
     await this.runWithRetry(async () => {
       await this.redis.del(`grace_period:uno:${player_id}`);
@@ -1592,7 +1605,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         if (winnerId) {
           room.winner = new Types.ObjectId(winnerId);
           const settlement = calculateWinnerSettlement(room.bet_amount, room.house_edge, room.players.length);
-          await this.userModel.updateOne({ _id: winnerId }, winnerBalanceUpdate(settlement));
+          await gameFinancialUpdate(this.userModel, 'updateOne', [{ _id: winnerId }, winnerBalanceUpdate(settlement)], room_id);
           // Surface match-end state to the schema so reconnecting clients see the right
           // payload (Phase 3 forfeit policy: any disconnect that leaves a sole survivor
           // ends the entire match, not just the round).
@@ -1641,7 +1654,7 @@ export class UnoGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
           msg = 'ws.domino.playerEliminated';
         }
 
-        (s as unknown as Socket).emit('uno', {
+        durableEmit((s as unknown as Socket), 'uno', {
           success: true,
           data: {
             ...payload,

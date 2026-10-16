@@ -1,17 +1,18 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post } from '@nestjs/common';
+import { CommandProtocolGuard } from '../../common/guards/command-protocol.guard';
+import { BadRequestException, Body, Controller, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { RoomService } from './room.service';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../../common/decorators/current-user.decorator';
-import { IsBoolean, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
 import { BattleshipPlacementDto } from './dtos/battleship-placement.dto';
 
 class CreateRoomDto {
   @ApiProperty() @IsString() game_id: string;
-  @ApiProperty() @IsNumber() @Min(1) bet_amount: number;
+  @ApiProperty({ type: String }) @IsString() @Matches(/^\d{1,18}(\.\d{1,6})?$/) bet_amount: number | string;
   @ApiProperty() @IsBoolean() public: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsString() name?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsNumber() player_limit?: number;
@@ -89,6 +90,7 @@ export class RoomController {
   }
 
   @Post()
+  @UseGuards(CommandProtocolGuard)
   @ApiOperation({ summary: 'Create a new room (supports Idempotency-Key for safe retries)' })
   async createRoom(
     @CurrentUser() user: JwtPayload,
@@ -96,6 +98,7 @@ export class RoomController {
     @Headers('accept-language') lang: string,
     @Headers('idempotency-key') idempKey?: string,
   ) {
+    if (process.env.FINANCE_V2_ENABLED === 'true' && (!idempKey || !RoomController.UUID_RE.test(idempKey))) throw new BadRequestException('IDEMPOTENCY_KEY_REQUIRED');
     // Phase C: if the PWA sends a valid UUID Idempotency-Key, cache the response
     // so a transparent retry (slow network, timeout, app backgrounded) does NOT
     // create a second room and a second balance deduction. Falls through to the
@@ -104,12 +107,14 @@ export class RoomController {
       const cacheKey = `idem:rooms:create:${user.id}:${idempKey}`;
       return this.idempotency.getOrSet(cacheKey, IdempotencyService.DEFAULT_TTL_SEC, () =>
         this.roomService.createRoom(user.id, dto.game_id, dto.bet_amount, dto.public, dto.name, dto.player_limit, lang || 'en'),
+        dto,
       );
     }
     return this.roomService.createRoom(user.id, dto.game_id, dto.bet_amount, dto.public, dto.name, dto.player_limit, lang || 'en');
   }
 
   @Post(':id/join')
+  @UseGuards(CommandProtocolGuard)
   @ApiOperation({ summary: 'Join an existing room' })
   joinRoom(
     @CurrentUser() user: JwtPayload,
@@ -141,6 +146,7 @@ export class RoomController {
 
   // PATCH /api/rooms/:id/ready  — original uses PATCH, not PUT
   @Patch(':id/ready')
+  @UseGuards(CommandProtocolGuard)
   @ApiOperation({ summary: 'Set player ready status' })
   setReady(
     @CurrentUser() user: JwtPayload,
@@ -152,6 +158,7 @@ export class RoomController {
   }
 
   @Post(':id/battleship/placement')
+  @UseGuards(CommandProtocolGuard)
   @ApiOperation({ summary: 'Battleship: Submit ship placement' })
   async savePlacement(
     @CurrentUser() user: JwtPayload,

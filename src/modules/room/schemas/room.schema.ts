@@ -37,6 +37,8 @@ export class Room {
   @Prop({ type: [RoomPlayer], default: [] }) players: RoomPlayer[];
   @Prop({ type: [{ type: Types.ObjectId, ref: 'User' }], default: [] }) spectators: Types.ObjectId[];
   @Prop({ required: true, min: 0 }) bet_amount: number;
+  /** Exact authoritative stake; bet_amount remains a compatibility display field. */
+  @Prop({ type: MongooseSchema.Types.Decimal128 }) bet_amount_decimal?: Types.Decimal128;
   @Prop({ required: true, min: 0, max: 100 }) house_edge: number;
   @Prop({ required: true }) public: boolean;
   @Prop() player_limit: number;

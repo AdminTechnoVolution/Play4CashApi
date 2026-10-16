@@ -14,6 +14,7 @@ import { ADMIN_REDIS_ACCESS } from './admin-auth.constants';
 import { ADMIN_ACCESS_COOKIE, readNamedCookie } from './admin-auth-cookie.util';
 import { AdminRepository } from './admin.repository';
 import { AdminStatus } from './schemas/admin.schema';
+import { redisSessionExists } from '../../common/auth/redis-session';
 
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
@@ -54,7 +55,7 @@ export class AdminAuthGuard implements CanActivate {
       payload.typ !== 'access'
       || payload.actor_type !== 'admin'
       || payload.role !== 'admin'
-      || await this.redis.exists(`${ADMIN_REDIS_ACCESS}${token}`) !== 1
+      || !await redisSessionExists(this.redis, `${ADMIN_REDIS_ACCESS}${token}`)
     ) {
       throw new UnauthorizedException('ERROR_AUTH');
     }

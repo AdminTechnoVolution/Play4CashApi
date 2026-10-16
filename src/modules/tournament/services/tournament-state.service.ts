@@ -136,15 +136,14 @@ export class TournamentStateService {
         : match.player_a_user_id;
     const roomId = match.room_id?.toString() ?? null;
     const status = match.status;
-    const [opponent, room] = await Promise.all([
-      opponentId
-        ? this.participantModel
-            .findOne({ tournament_id: tournamentId, user_id: opponentId })
-            .select('username')
-            .lean()
-        : Promise.resolve(null),
-      roomId ? this.roomModel.findById(roomId).select('status').lean() : Promise.resolve(null),
-    ]);
+    const opponent = opponentId
+      ? await this.participantModel
+          .findOne({ tournament_id: tournamentId, user_id: opponentId })
+          .select('username').lean()
+      : null;
+    const room = roomId
+      ? await this.roomModel.findById(roomId).select('status').lean()
+      : null;
 
     if (roomId && (!room || room.status === 'finished')) {
       logSlowEvent(this.logger, 'tournament_active_match_trace', startedAt, 50, {
@@ -178,10 +177,8 @@ export class TournamentStateService {
     } | null = null;
     let myActiveMatch: Awaited<ReturnType<TournamentStateService['resolveMyActiveMatch']>> = null;
     if (userId) {
-      const [reg, activeMatch] = await Promise.all([
-        this.participantModel.findOne({ tournament_id: t._id, user_id: new Types.ObjectId(userId) }).lean(),
-        this.resolveMyActiveMatch(t._id as Types.ObjectId, userId),
-      ]);
+      const reg = await this.participantModel.findOne({ tournament_id: t._id, user_id: new Types.ObjectId(userId) }).lean();
+      const activeMatch = await this.resolveMyActiveMatch(t._id as Types.ObjectId, userId);
       if (reg) {
         myRegistration = {
           status: reg.status,
@@ -361,7 +358,11 @@ export class TournamentStateService {
         .sort({ starts_at: 1 })
         .exec();
 
-      return Promise.all(tournaments.map((t) => this.toPublicDetail(t, userId, langHeader)));
+      const details: Awaited<ReturnType<TournamentStateService['toPublicDetail']>>[] = [];
+      for (const tournament of tournaments) {
+        details.push(await this.toPublicDetail(tournament, userId, langHeader));
+      }
+      return details;
     });
     logSlowEvent(this.logger, 'tournament_mine_trace', startedAt, 50, { row_count: data.length });
     return data;

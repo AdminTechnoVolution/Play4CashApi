@@ -1,3 +1,4 @@
+import { durableVersion } from '../reliable-commands/reliable-commands';
 /** Monotonic game-state version + server turn deadline helpers for WS payloads. */
 
 export async function bumpGameStateVersion(
@@ -5,6 +6,7 @@ export async function bumpGameStateVersion(
   game: string,
   roomId: string,
 ): Promise<number> {
+  if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') return durableVersion(roomId);
   const key = `gameStateVersion:${game}:${roomId}`;
   const v = await redis.incr(key);
   await redis.expire(key, 86_400);

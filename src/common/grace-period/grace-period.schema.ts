@@ -34,6 +34,8 @@ export class GracePeriod {
    * `true` before invoking the handler so concurrent API replicas can't double-fire
    * a forfeit. The row is deleted right after the handler runs (success or failure).
    */
+  @Prop({ type: Date }) processing_at?: Date;
+
   @Prop({ type: Boolean, default: false })
   processing: boolean;
 }

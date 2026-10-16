@@ -14,8 +14,13 @@ import { SOCKET_IO_PING_OPTIONS } from './common/constants/socket-io.constants';
 import { createOriginChecker } from './common/cors/origin-policy';
 
 async function bootstrap(): Promise<void> {
+  if (process.env.FINANCE_V2_ENABLED === 'true' && process.env.RELIABLE_COMMANDS_ENABLED !== 'true') throw new Error('FINANCE_V2_ENABLED requires RELIABLE_COMMANDS_ENABLED');
+  if (process.env.PAYMENTS_WORKER === 'true') throw new Error('Deploy Play4CashPaymentsWorker separately; this process only runs the HTTP API');
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
+  if (config.get<string>('NOWPAYMENTS_PAYOUT_PASSWORD') || config.get<string>('NOWPAYMENTS_PAYOUT_TOTP_SECRET')) {
+    throw new Error('Payout authentication secrets must only exist in the isolated payments worker');
+  }
 
   const nodeEnv = process.env.NODE_ENV ?? 'development';
   const useRedisAdapter = config.get<boolean>('socketIoRedisAdapter');

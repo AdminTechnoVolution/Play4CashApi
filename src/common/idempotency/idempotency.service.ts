@@ -1,4 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
+import { fingerprint } from '../../modules/payments/canonical';
+import { commandContext, flushTransactionWrites } from '../reliable-commands/context';
+import { Inject, Injectable, Logger, Optional, ConflictException } from '@nestjs/common';
 import { REDIS_CLIENT } from '../redis/redis.module';
 
 /**
@@ -19,7 +23,7 @@ export class IdempotencyService {
   /** TTL the spec mandates is "long enough for retries but short enough to not leak across sessions". */
   static readonly DEFAULT_TTL_SEC = 300;
 
-  constructor(@Inject(REDIS_CLIENT) private readonly redis: any) {}
+  constructor(@Inject(REDIS_CLIENT) private readonly redis: any, @Optional() @InjectConnection() private readonly db?: Connection) {}
 
   /**
    * Returns the cached response if one exists for `key`; otherwise executes
@@ -30,7 +34,8 @@ export class IdempotencyService {
    * (e.g. `idem:rooms:create:<userId>:<idempKey>`); the service itself is unopinionated
    * about format to keep concerns separated.
    */
-  async getOrSet<T>(key: string, ttlSec: number, producer: () => Promise<T>): Promise<T> {
+  async getOrSet<T>(key: string, ttlSec: number, producer: () => Promise<T>, input?: unknown): Promise<T> {
+    if (process.env.FINANCE_V2_ENABLED === 'true') return this.durableRequest(key, producer, input);
     try {
       const cached = await this.redis.get(key);
       if (cached) {
@@ -52,4 +57,31 @@ export class IdempotencyService {
     }
     return result;
   }
+  private async durableRequest<T>(key: string, producer: () => Promise<T>, input: unknown): Promise<T> {
+    if (!this.db) throw new Error('DURABLE_IDEMPOTENCY_REQUIRES_MONGODB');
+    const hash = fingerprint(input ?? { key });
+    try {
+      return await this.db.transaction(async session => {
+        const existing = await this.db!.collection('finance_requests').findOne({ _id: key as any }, { session });
+        if (existing) {
+          if (existing.hash !== hash) throw new ConflictException('IDEMPOTENCY_CONFLICT');
+          return existing.result as T;
+        }
+        const context = { session, roomId: '', version: 0, events: [], rejected: false };
+        const result = await commandContext.run(context, async () => { const value = await producer(); await flushTransactionWrites(context); return value; });
+        await this.db!.collection('finance_requests').insertOne({ _id: key as any, hash, result, createdAt: new Date() }, { session });
+        if (context.events.length) await this.db!.collection('game_outbox').insertMany(context.events.map((event, index) => ({
+          commandId: key, roomId: '', sequence: 0, index, event, published: false, createdAt: new Date(),
+        })), { session });
+        return result;
+      }, { writeConcern: { w: 'majority' }, readConcern: { level: 'snapshot' } });
+    } catch (error) {
+      if ((error as any).code === 11000) {
+        const previous = await this.db.collection('finance_requests').findOne({ _id: key as any });
+        if (previous?.hash === hash) return previous.result as T;
+      }
+      throw error;
+    }
+  }
+
 }

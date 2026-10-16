@@ -1,3 +1,4 @@
+import { durableEmit } from '../../../common/reliable-commands/reliable-commands';
 import {
   WebSocketGateway, WebSocketServer, SubscribeMessage,
   MessageBody, ConnectedSocket, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit,
@@ -40,11 +41,11 @@ export class RoomsGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     @MessageBody() payload: { game_id: string; room_id?: string },
   ) {
     if (!payload?.game_id) {
-      client.emit('rooms', { success: false, messages: ['Missing game_id'] });
+      durableEmit(client, 'rooms', { success: false, messages: ['Missing game_id'] });
       return;
     }
     await client.join(`game:${payload.game_id}`);
-    client.emit('rooms', { success: true, messages: [], data: { event: 'subscribed', game_id: payload.game_id } });
+    durableEmit(client, 'rooms', { success: true, messages: [], data: { event: 'subscribed', game_id: payload.game_id } });
     if (payload.room_id) await this.emitRoomState(client, payload.room_id);
   }
 
@@ -54,7 +55,7 @@ export class RoomsGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     @MessageBody() payload: { room_id?: string },
   ) {
     if (!payload?.room_id) {
-      client.emit('rooms', {
+      durableEmit(client, 'rooms', {
         success: false,
         messages: ['Missing room_id'],
         data: { event: 'roomStateError', reason: 'invalid' },
@@ -68,17 +69,17 @@ export class RoomsGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
   async handleUnsubscribe(@ConnectedSocket() client: Socket, @MessageBody() payload: { game_id: string }) {
     if (!payload?.game_id) return;
     await client.leave(`game:${payload.game_id}`);
-    client.emit('rooms', { success: true, messages: [], data: { event: 'unsubscribed', game_id: payload.game_id } });
+    durableEmit(client, 'rooms', { success: true, messages: [], data: { event: 'unsubscribed', game_id: payload.game_id } });
   }
 
   /** Called by RoomService to broadcast room updates to subscribed clients */
   broadcastRoomUpdate(gameId: string, event: string, data: any): void {
-    this.server.to(`game:${gameId}`).emit(event, data);
+    durableEmit(this.server.to(`game:${gameId}`), event, data);
   }
 
   private async emitRoomState(client: Socket, roomId: string): Promise<void> {
     if (!Types.ObjectId.isValid(roomId)) {
-      client.emit('rooms', {
+      durableEmit(client, 'rooms', {
         success: false,
         messages: ['Invalid room_id'],
         data: { event: 'roomStateError', reason: 'invalid' },
@@ -91,16 +92,13 @@ export class RoomsGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
       .populate('players.playerId', 'username')
       .lean();
     if (!room) {
-      client.emit('rooms', {
+      durableEmit(client, 'rooms', {
         success: false,
         messages: ['Room not found'],
         data: { event: 'roomStateError', reason: 'notFound' },
       });
       return;
     }
-    client.emit(
-      'roomState',
-      buildAuthoritativeRoomState(room, String(client.data.player_id || '')),
-    );
+    durableEmit(client, 'roomState', buildAuthoritativeRoomState(room, String(client.data.player_id || '')));
   }
 }

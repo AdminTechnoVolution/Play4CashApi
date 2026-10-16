@@ -1,9 +1,11 @@
+import { CommandProtocolGuard } from '../../../common/guards/command-protocol.guard';
 import {
   Controller,
   Get,
   Headers,
   Param,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -88,6 +90,7 @@ export class TournamentController {
   }
 
   @Post(':id/register')
+  @UseGuards(CommandProtocolGuard)
   @ApiOperation({ summary: 'Register for tournament (Idempotency-Key required)' })
   async register(
     @Param('id') id: string,
