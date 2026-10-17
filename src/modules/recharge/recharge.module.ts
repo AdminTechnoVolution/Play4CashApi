@@ -6,7 +6,6 @@ import { Recharge, RechargeSchema } from './schemas/recharge.schema';
 import { RechargeIntent, RechargeIntentSchema } from './schemas/recharge-intent.schema';
 import { User, UserSchema } from '../user/schemas/user.schema';
 import { IdempotencyModule } from '../../common/idempotency/idempotency.module';
-import { RechargeAdminController } from './recharge-admin.controller';
 import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
@@ -24,7 +23,7 @@ import { WalletModule } from '../wallet/wallet.module';
       }) },
     ]),
   ],
-  controllers: [RechargeController, RechargeAdminController],
+  controllers: [RechargeController],
   providers: [RechargeService],
 })
 export class RechargeModule {}

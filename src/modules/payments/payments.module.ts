@@ -7,8 +7,9 @@ import { PaymentsService } from './payments.service';
 import { PaymentsPolicy } from './payments-policy.service';
 import { NowPaymentsClient } from './nowpayments.client';
 import { PaymentsController } from './payments.controller';
+import { PaymentsDashboardController } from './payments-dashboard.controller';
 @Global()
-@Module({ imports: [EmailModule, AdminAuthModule], controllers: [PaymentsController, PaymentsAdminController],
+@Module({ imports: [EmailModule, AdminAuthModule], controllers: [PaymentsController, PaymentsAdminController, PaymentsDashboardController],
   providers: [LedgerService, PaymentsService, PaymentsPolicy, NowPaymentsClient],
   exports: [LedgerService], })
 export class PaymentsModule {}

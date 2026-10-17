@@ -9,7 +9,7 @@ import { GameAuditController } from '../game-audit/game-audit.controller';
 import { GameAdminController } from '../game/game-admin.controller';
 import { GreetingAdminController } from '../greeting/greeting-admin.controller';
 import { HouseTreasuryController } from '../house-treasury/house-treasury.controller';
-import { RechargeAdminController } from '../recharge/recharge-admin.controller';
+import { PaymentsDashboardController } from '../payments/payments-dashboard.controller';
 import { RoomAdminController } from '../room/room-admin.controller';
 import { TournamentAdminController } from '../tournament/controllers/tournament-admin.controller';
 import { UserAdminController } from '../user/user-admin.controller';
@@ -24,7 +24,7 @@ const controllers = [
   GameAdminController,
   GreetingAdminController,
   HouseTreasuryController,
-  RechargeAdminController,
+  PaymentsDashboardController,
   RoomAdminController,
   TournamentAdminController,
   UserAdminController,
