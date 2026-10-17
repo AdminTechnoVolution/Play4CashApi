@@ -50,7 +50,7 @@ export default () => ({
     googleClientId: process.env.GOOGLE_ADMIN_CLIENT_ID,
     jwtSecret: process.env.ADMIN_JWT_SECRET_KEY,
     accessTtlSecs: parseInt(process.env.ADMIN_JWT_ACCESS_TOKEN_TTL_SECS || '1800', 10),
-    refreshTtlSecs: parseInt(process.env.ADMIN_JWT_REFRESH_TOKEN_TTL_SECS || '28800', 10),
+    refreshTtlSecs: parseInt(process.env.ADMIN_JWT_REFRESH_TOKEN_TTL_SECS || '86400', 10),
     issuer: process.env.ADMIN_JWT_ISSUER || 'play4cash-api',
     audience: process.env.ADMIN_JWT_AUDIENCE || 'play4cash-admin',
   },
