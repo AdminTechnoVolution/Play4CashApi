@@ -1,3 +1,4 @@
+import { MATCH_PREPARATION_MS } from '../../../common/ws/match-start';
 import { ReliableDisconnectAction, registerReliableDisconnectHandler } from '../../../common/reliable-commands/reliable-commands';
 import { validateFleet } from '../../naval-battle/placement.validation';
 import { durableEmit, ReliableAction, ReliableInternalAction, ReliableReadAction } from '../../../common/reliable-commands/reliable-commands';
@@ -406,8 +407,8 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       // updateOne, which allowed concurrent place_ships from both players to both
       // think they had moved the room to "started").
       const transitioned = await this.roomModel.findOneAndUpdate(
-        { _id: room_id, status: 'waiting' },
-        { $set: { status: 'started', turn_start_time: new Date() } },
+        { _id: room_id, status: { $in: ['waiting', 'started'] }, game_ready_at: null },
+        { $set: { status: 'started', game_ready_at: new Date(), start_protocol: 1, preparation_deadline_at: new Date(Date.now() + MATCH_PREPARATION_MS) } },
         { returnDocument: 'after' },
       );
       if (!transitioned) return;

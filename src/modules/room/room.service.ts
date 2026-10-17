@@ -1,3 +1,4 @@
+import { isPreparing, cancelPreparedMatch, MATCH_PREPARATION_MS } from '../../common/ws/match-start';
 import { validateFleet } from '../naval-battle/placement.validation';
 import { ReliableRoomServiceAction, durableEmit } from '../../common/reliable-commands/reliable-commands';
 import { assertFinanceEligibility } from '../payments/eligibility';
@@ -503,6 +504,11 @@ export class RoomService {
     // A full roster is published as `started` atomically by joinRoom, before the
     // game gateway finishes creating durable state and charging stakes. Leaving
     // during that short phase is a lobby departure, never a paid forfeit.
+    if (isPreparing(roomInfo)) {
+      await cancelPreparedMatch(this.roomModel.db, roomId);
+      this.invalidateReadCaches();
+      return this.roomModel.findById(roomId);
+    }
     const isPregameDeparture =
       roomInfo.status === RoomStatus.WAITING ||
       (roomInfo.status === RoomStatus.STARTED && !roomInfo.game_ready_at);
@@ -727,6 +733,8 @@ export class RoomService {
             status: RoomStatus.STARTED,
             started_at: room.started_at || new Date(),
             game_ready_at: new Date(),
+            start_protocol: 1,
+            preparation_deadline_at: new Date(Date.now() + MATCH_PREPARATION_MS),
             updated_at: new Date(),
           },
         },

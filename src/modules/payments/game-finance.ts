@@ -9,6 +9,11 @@ export async function gameFinancialUpdate(
   users: Model<any>, method: 'updateOne' | 'findOneAndUpdate' | 'findByIdAndUpdate',
   args: any[], roomId: string,
 ): Promise<any> {
+  const payoutUpdate = args[1];
+  if (payoutUpdate?.$inc?.total_won !== undefined && users.db) {
+    const match = await users.db.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) });
+    if (match?.start_protocol === 1 && !match.play_started_at) throw new Error('MATCH_START_NOT_CONFIRMED');
+  }
   if (process.env.FINANCE_V2_ENABLED !== 'true') return (users as any)[method](...args);
   const userId = String(method === 'findByIdAndUpdate' ? args[0] : args[0]._id);
   const update = args[1];
@@ -71,6 +76,7 @@ export async function settleGameRoom(db: Connection, roomId: string): Promise<vo
       await db.collection('rooms').updateOne({ _id: room._id }, { $set: { finance_settled: true, finance_settled_at: new Date() } }, { session });
       return;
     }
+    if (room.winner && !room.finance_cancelled && room.start_protocol === 1 && !room.play_started_at) throw new Error('MATCH_START_NOT_CONFIRMED');
     if (room.winner && !room.finance_cancelled) {
       const winner = String(room.winner);
       if (!room.players.some((p: any) => String(p.playerId) === winner)) throw new Error('WINNER_NOT_IN_ROOM');

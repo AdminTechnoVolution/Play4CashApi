@@ -59,6 +59,9 @@ export class Room {
   @Prop() started_at?: Date;
   /** Set only after the game gateway has created durable game state and charged stakes. */
   @Prop() game_ready_at?: Date;
+  @Prop() start_protocol?: number;
+  @Prop() preparation_deadline_at?: Date;
+  @Prop() play_started_at?: Date;
   @Prop() finished_at: Date;
   @Prop({ type: Types.ObjectId, ref: 'User' }) winner: Types.ObjectId;
   @Prop() winner_reason: string;

@@ -1,3 +1,4 @@
+import { canPlay, isPreparing, cancelPreparedMatch } from '../ws/match-start';
 import { settleGameRoom } from '../../modules/payments/game-finance';
 import { randomUUID } from 'crypto';
 import { ConflictException, Logger } from '@nestjs/common';
@@ -125,6 +126,8 @@ async function executeReliableActionImpl(
         { $set: { command_revision: expectedVersion + 1 } }, { session });
       if (!claimed.modifiedCount) throw new ConflictException('COMMAND_VERSION_CONFLICT');
       const context = { session, roomId, version: expectedVersion + 1, events: [] as DurableEvent[], rejected: false };
+      const isStartAction = name.startsWith('tryStart') || name === 'saveBattleshipPlacement' || name === 'handlePlaceShips' || name === 'setReady';
+      if (!internal && !isStartAction && name !== 'leaveRoom' && !canPlay(room)) throw new ConflictException('MATCH_NOT_ACTIVE');
       await commandContext.run(context, async () => {
         await work();
         if (!context.rejected) await flushTransactionWrites(context);
@@ -167,6 +170,18 @@ export function ReliableAction(): MethodDecorator {
   return (_target, property, descriptor: PropertyDescriptor) => {
     const original = descriptor.value;
     descriptor.value = async function (client: Socket, payload: any, ...args: any[]) {
+      if (connection && String(property) !== 'handlePlaceShips') {
+        const id = payload?.room_id ?? payload?.roomId ?? client.data.room_id;
+        if (Types.ObjectId.isValid(id ?? '')) {
+          const room = await connection.collection('rooms').findOne({ _id: new Types.ObjectId(id) });
+          if (!canPlay(room)) {
+            if (String(property).toLowerCase().includes('forfeit') && isPreparing(room)) {
+              await cancelPreparedMatch(connection, id); return;
+            }
+            client.emit('match_start_retry'); return;
+          }
+        }
+      }
       if (process.env.RELIABLE_COMMANDS_ENABLED !== 'true' || commandContext.getStore()) return original.call(this, client, payload, ...args);
       const roomId = payload?.room_id ?? payload?.roomId ?? client.data.room_id;
       return executeReliableAction(roomId, client.data.player_id, payload?.commandId, payload?.expectedVersion,
@@ -180,6 +195,10 @@ export function ReliableDisconnectAction(): MethodDecorator {
   return (_target, property, descriptor: PropertyDescriptor) => {
     const original = descriptor.value;
     descriptor.value = async function (client: Socket) {
+      if (connection && Types.ObjectId.isValid(client.data?.room_id ?? '')) {
+        const room = await connection.collection('rooms').findOne({ _id: new Types.ObjectId(client.data.room_id) });
+        if (isPreparing(room) || (room?.status === 'started' && !room.game_ready_at)) return; // Preparation deadline cancels/refunds; a socket loss never awards a win.
+      }
       if (process.env.RELIABLE_COMMANDS_ENABLED !== 'true') return original.call(this, client);
       const roomId = client.data?.room_id;
       const actorId = client.data?.player_id;
@@ -231,17 +250,33 @@ export function ReliableInternalAction(): MethodDecorator {
   return (_target, property, descriptor: PropertyDescriptor) => {
     const original = descriptor.value;
     descriptor.value = async function (roomId: string, ...args: any[]) {
-      if (process.env.RELIABLE_COMMANDS_ENABLED !== 'true') return original.call(this, roomId, ...args);
+      const guarded = async () => {
+        if (connection && !String(property).startsWith('tryStart')) {
+          const room = await connection.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) },
+            { session: commandContext.getStore()?.session });
+          if (!canPlay(room)) {
+            if (isPreparing(room) && (String(property).toLowerCase().includes('forfeit') || (property === 'eliminatePlayer' && args[1] !== 'timeout'))) await cancelPreparedMatch(connection, roomId);
+            return;
+          }
+          // A local timer armed during preparation must not expire the fresh first turn.
+          if (room?.start_protocol === 1 && (String(property).toLowerCase().includes('timeout') || (property === 'eliminatePlayer' && args[1] === 'timeout'))) {
+            const deadline = await connection.collection('turn_deadlines').findOne({ room_id: roomId }, { session: commandContext.getStore()?.session });
+            if (!deadline || new Date(deadline.expires_at).getTime() > Date.now()) return;
+          }
+        }
+        return original.call(this, roomId, ...args);
+      };
+      if (process.env.RELIABLE_COMMANDS_ENABLED !== 'true') return guarded();
       const parent = commandContext.getStore();
       if (parent) {
         if (parent.mode === 'read') {
           const db = reliableConnection();
           const room = await db.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) }, { session: parent.session });
-          if (String(property).startsWith('tryStart') && (room?.game_ready_at || !room?.players?.every((p: any) => p.ready) || room.players.length < 2)) return original.call(this, roomId, ...args);
+          if (String(property).startsWith('tryStart') && (room?.game_ready_at || !room?.players?.every((p: any) => p.ready) || room.players.length < 2)) return guarded();
           await db.collection('rooms').updateOne({ _id: new Types.ObjectId(roomId) }, { $inc: { command_revision: 1 } }, { session: parent.session });
           parent.version++; parent.mode = 'command';
         }
-        return original.call(this, roomId, ...args);
+        return guarded();
       }
       if (String(property).toLowerCase().includes('timeout') || (property === 'eliminatePlayer' && args[1] === 'timeout')) {
         const db = reliableConnection();
@@ -256,7 +291,7 @@ export function ReliableInternalAction(): MethodDecorator {
       }
       const version = await durableVersion(roomId);
       return executeReliableAction(roomId, 'server', `server:${property.toString()}:${version}`, version,
-        String(property), { roomId, args }, (this as any).server.name ?? '/', () => original.call(this, roomId, ...args), true);
+        String(property), { roomId, args }, (this as any).server.name ?? '/', guarded, true);
     };
   };
 }

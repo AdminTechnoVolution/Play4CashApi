@@ -207,7 +207,7 @@
     "USE_MFA_LEDGER_ADJUSTMENT": "With V2 accounting enabled, this correction can’t be made here. Record it as a TOTP-authorized adjustment in USDT Payments.",
     "LEGACY_TREASURY_DISABLED": "With V2 accounting enabled, house withdrawals are no longer recorded from Treasury.",
     "INVALID_FINANCIAL_MFA": "Invalid or already used TOTP code. Wait for the next code and try again.",
-    "FINANCIAL_MFA_NOT_CONFIGURED": "Your admin account has no financial TOTP configured (FINANCE_ADMIN_TOTP_SECRETS).",
+    "FINANCIAL_MFA_NOT_CONFIGURED": "Financial TOTP for your admin account is not configured or its configuration is invalid (FINANCE_ADMIN_TOTP_SECRETS).",
     "FINANCIAL_AUTHORIZATION_REQUIRED": "This operation requires a TOTP code and a reason of at least 10 characters.",
     "IDEMPOTENCY_CONFLICT": "This operation was already sent with different data. Reload the page and try again.",
     "IDEMPOTENCY_KEY_REQUIRED": "The operation identifier is missing. Reload the page and try again.",

@@ -1,3 +1,4 @@
+import { cancelPreparedMatch } from '../ws/match-start';
 import { Global, Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Interval } from '@nestjs/schedule';
@@ -22,10 +23,12 @@ class ReliableOutbox implements OnModuleInit {
   }
   @Interval(100)
   async publish() {
-    if (this.busy || process.env.RELIABLE_COMMANDS_ENABLED !== 'true') return;
+    if (this.busy) return;
     this.busy = true;
     try {
-      await recoverDisconnects();
+      const expired = await this.db.collection('rooms').find({ status: 'started', start_protocol: 1, play_started_at: null, preparation_deadline_at: { $lte: new Date() } }).limit(25).toArray();
+      for (const room of expired) await cancelPreparedMatch(this.db, String(room._id), true);
+      if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') await recoverDisconnects();
       const events = await this.db.collection('game_outbox').find({ published: false }).sort({ createdAt: 1, sequence: 1, index: 1 }).limit(100).toArray();
       for (const item of events) {
         if (await withRedisDelivery(() => deliverDurableEvent(item.event))) await this.db.collection('game_outbox').updateOne({ _id: item._id },

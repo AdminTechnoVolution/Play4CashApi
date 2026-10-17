@@ -1,3 +1,4 @@
+import { MATCH_PREPARATION_MS } from './match-start';
 import { randomUUID } from 'crypto';
 import { Model } from 'mongoose';
 
@@ -42,7 +43,7 @@ export async function publishGameStarted(
   return roomModel.findOneAndUpdate(
     { _id: roomId, status: { $in: ['waiting', 'started'] }, start_lock: token },
     {
-      $set: { status: 'started', game_ready_at: new Date(), ...extra },
+      $set: { status: 'started', game_ready_at: new Date(), ...extra, start_protocol: 1, preparation_deadline_at: new Date(Date.now() + MATCH_PREPARATION_MS) },
       $unset: { start_lock: 1, start_locked_at: 1 },
     },
     { returnDocument: 'after' },

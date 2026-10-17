@@ -1,3 +1,4 @@
+import { acknowledgeInitialState } from '../ws/match-start';
 import { redisSessionExists } from '../auth/redis-session';
 import { registerReliableNamespace, reliableConnection, durableVersion } from '../reliable-commands/reliable-commands';
 import { Types } from 'mongoose';
@@ -62,6 +63,12 @@ export function applyWsAuth(server: Server, config: ConfigService, redis: any): 
         if (!await redisSessionExists(redis, `${REDIS_KEY_ACCESS_TOKEN}${token}`)) return accept(new Error('ERROR_AUTH'));
         accept();
       } catch { accept(new Error('ERROR_AUTH')); }
+    });
+    socket.on('initial_state_ack', async (request: any) => {
+      try {
+        const state = await acknowledgeInitialState(reliableConnection(), (server as any).name, String(payload.id), request?.roomId ?? '');
+        socket.emit('match_start_state', state);
+      } catch { socket.emit('match_start_retry'); }
     });
     if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') {
       socket.on('command_state', async (request: any) => {

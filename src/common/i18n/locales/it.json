@@ -207,7 +207,7 @@
     "USE_MFA_LEDGER_ADJUSTMENT": "Con la contabilità V2 attiva, questa correzione non si può fare qui. Registrala come rettifica con codice TOTP in Pagamenti USDT.",
     "LEGACY_TREASURY_DISABLED": "Con la contabilità V2 attiva, i prelievi della casa non si registrano più dalla Tesoreria.",
     "INVALID_FINANCIAL_MFA": "Codice TOTP non valido o già usato. Attendi il codice successivo e riprova.",
-    "FINANCIAL_MFA_NOT_CONFIGURED": "Il tuo account amministratore non ha un TOTP finanziario configurato (FINANCE_ADMIN_TOTP_SECRETS).",
+    "FINANCIAL_MFA_NOT_CONFIGURED": "Il TOTP finanziario del tuo account amministratore non è configurato o la configurazione non è valida (FINANCE_ADMIN_TOTP_SECRETS).",
     "FINANCIAL_AUTHORIZATION_REQUIRED": "Questa operazione richiede un codice TOTP e una motivazione di almeno 10 caratteri.",
     "IDEMPOTENCY_CONFLICT": "Questa operazione è già stata inviata con dati diversi. Ricarica la pagina e riprova.",
     "IDEMPOTENCY_KEY_REQUIRED": "Manca l’identificativo dell’operazione. Ricarica la pagina e riprova.",

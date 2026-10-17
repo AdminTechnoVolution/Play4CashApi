@@ -207,7 +207,7 @@
     "USE_MFA_LEDGER_ADJUSTMENT": "Mit aktivierter V2-Buchhaltung ist diese Korrektur hier nicht möglich. Erfasse sie als TOTP-autorisierte Anpassung unter USDT-Zahlungen.",
     "LEGACY_TREASURY_DISABLED": "Mit aktivierter V2-Buchhaltung werden Auszahlungen des Hauses nicht mehr über die Treasury erfasst.",
     "INVALID_FINANCIAL_MFA": "Ungültiger oder bereits verwendeter TOTP-Code. Warte auf den nächsten Code und versuche es erneut.",
-    "FINANCIAL_MFA_NOT_CONFIGURED": "Für dein Admin-Konto ist kein Finanz-TOTP konfiguriert (FINANCE_ADMIN_TOTP_SECRETS).",
+    "FINANCIAL_MFA_NOT_CONFIGURED": "Das Finanz-TOTP deines Admin-Kontos ist nicht oder ungültig konfiguriert (FINANCE_ADMIN_TOTP_SECRETS).",
     "FINANCIAL_AUTHORIZATION_REQUIRED": "Dieser Vorgang erfordert einen TOTP-Code und eine Begründung mit mindestens 10 Zeichen.",
     "IDEMPOTENCY_CONFLICT": "Dieser Vorgang wurde bereits mit anderen Daten gesendet. Lade die Seite neu und versuche es erneut.",
     "IDEMPOTENCY_KEY_REQUIRED": "Die Vorgangskennung fehlt. Lade die Seite neu und versuche es erneut.",

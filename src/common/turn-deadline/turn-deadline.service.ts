@@ -1,4 +1,6 @@
-import { deferTransactionWrite } from '../reliable-commands/context';
+import { isPreparing } from '../ws/match-start';
+import { Types } from 'mongoose';
+import { commandContext, deferTransactionWrite } from '../reliable-commands/context';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
@@ -32,6 +34,10 @@ export class TurnDeadlineService {
     ttlSec: number,
   ): Promise<void> {
     if (deferTransactionWrite(() => this.schedule(gameName, roomId, playerId, ttlSec))) return;
+    if (this.model.db) {
+      const room = await this.model.db.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) }, { session: commandContext.getStore()?.session });
+      if (isPreparing(room)) return;
+    }
     const expiresAt = new Date(Date.now() + Math.max(1, Math.ceil(ttlSec)) * 1000);
     await this.model.findOneAndUpdate(
       { game_name: gameName, room_id: roomId },
