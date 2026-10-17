@@ -76,7 +76,7 @@ suite('MongoDB financial transactions and restart recovery', () => {
     await admin.adjust(actor, body, 'test-adjustment-id-0001');
     await admin.adjust(actor, body, 'test-adjustment-id-0001');
     await expect(admin.adjust(actor, { ...body, amount: '11' }, 'test-adjustment-id-0001')).rejects.toThrow('IDEMPOTENCY_CONFLICT');
-    await expect(admin.adjust(actor, body, 'test-adjustment-id-0002')).rejects.toMatchObject({ code: 11000 });
+    await expect(admin.adjust(actor, body, 'test-adjustment-id-0002')).rejects.toThrow('INVALID_FINANCIAL_MFA');
     expect((await ledger.balances(userId)).available).toBe('90.000000');
     expect(await db.collection('finance_admin_audit').countDocuments({})).toBe(1);
   });

@@ -42,6 +42,7 @@ function makeSocket(handshake: Partial<Socket['handshake']>): Socket {
     data: {} as Record<string, unknown>,
     join: jest.fn().mockResolvedValue(undefined),
     use: jest.fn(),
+    on: jest.fn(),
   } as unknown as Socket;
 }
 
@@ -152,5 +153,6 @@ describe('applyWsAuth', () => {
     expect(next).toHaveBeenCalledWith();
     expect(socket.data.player_id).toBe('u-xyz');
     expect(socket.data.token).toBe(token);
+    expect(socket.on).toHaveBeenCalledWith('initial_state_ack', expect.any(Function));
   });
 });
