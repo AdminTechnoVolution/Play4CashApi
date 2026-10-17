@@ -1,7 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { Connection, Model, Types } from 'mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
+import Decimal from 'decimal.js';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import { consumeFinancialMfa } from '../payments/financial-mfa';
+import { LedgerService } from '../payments/ledger.service';
+import { money, positiveMoney } from '../payments/money';
 import { Room, RoomStatus } from '../room/schemas/room.schema';
 import { User } from '../user/schemas/user.schema';
 import { UserService } from '../user/user.service';
@@ -38,6 +43,8 @@ export class GameAuditService {
     @InjectModel(GameAuditFinding.name) private readonly findingModel: Model<GameAuditFindingDocument>,
     @InjectModel(GameAuditReversal.name) private readonly reversalModel: Model<GameAuditReversalDocument>,
     private readonly userService: UserService,
+    private readonly ledger: LedgerService,
+    private readonly config: ConfigService,
   ) {}
 
   private eligibleFilter(roomId?: string) {
@@ -201,11 +208,11 @@ export class GameAuditService {
       pending_refund_count: refundableIds.length,
       reversals,
       durable_game_state: durableGameState,
+      requires_financial_mfa: process.env.FINANCE_V2_ENABLED === 'true',
     };
   }
 
-  async reverse(roomId: string, playerId: string, adminId: string, reason: string, override = false) {
-    if (process.env.FINANCE_V2_ENABLED === 'true') throw new BusinessException('USE_MFA_LEDGER_ADJUSTMENT', 409);
+  async reverse(roomId: string, playerId: string, adminId: string, reason: string, override = false, mfaCode?: string) {
     if (![roomId, playerId, adminId].every(Types.ObjectId.isValid)) {
       throw new BusinessException('ERROR_NOT_FOUND', 404);
     }
@@ -224,6 +231,9 @@ export class GameAuditService {
     if (!target) throw new BusinessException('ERROR_AUDIT_PLAYER_NOT_ELIGIBLE', 400);
 
     const winnerId = (room.winner._id || room.winner).toString();
+    if (process.env.FINANCE_V2_ENABLED === 'true') {
+      return this.reverseWithLedger(room, target, affected, playerId, winnerId, adminId, reason, evidenceComplete, mfaCode);
+    }
     const amount = Number(room.bet_amount);
     const session = await this.connection.startSession();
     let created: any;
@@ -280,29 +290,114 @@ export class GameAuditService {
             winner_after: canDebit ? Number(winnerBefore.balance) - amount : Number(winnerBefore.balance),
           },
         }], { session });
-        const affectedIds = affected.map(
-          (player: any) => new Types.ObjectId((player.playerId._id || player.playerId).toString()),
-        );
-        const refundedCount = await this.reversalModel.countDocuments({
-          room_id: room._id,
-          refunded_player_id: { $in: affectedIds },
-        }).session(session);
-        await this.findingModel.updateMany(
-          { room_id: room._id, affected_player_ids: new Types.ObjectId(playerId) },
-          {
-            $set: {
-              status: refundedCount >= affectedIds.length ? 'refunded' : 'partially_refunded',
-            },
-            $addToSet: { refunded_player_ids: new Types.ObjectId(playerId) },
-            $pull: { pending_player_ids: new Types.ObjectId(playerId) },
-          },
-          { session },
-        );
+        await this.markFindingsRefunded(room, affected, playerId, session);
       });
     } finally {
       await session.endSession();
     }
     this.userService.invalidateHistory([playerId, winnerId]);
     return created?.toObject?.() || created;
+  }
+
+  /**
+   * FINANCE_V2: balances live in the double-entry ledger, so the refund is a journal authorized
+   * with the admin's financial TOTP. The stake comes back from the winner; when the winner no
+   * longer holds it, the house fronts it and the winner's debt is recorded (legacy parity).
+   */
+  private async reverseWithLedger(
+    room: any, target: any, affected: any[], playerId: string, winnerId: string,
+    adminId: string, reason: string, evidenceComplete: boolean, mfaCode?: string,
+  ) {
+    const stake = positiveMoney(String(room.bet_amount_decimal ?? room.bet_amount));
+    const amount = Number(stake);
+    let created: any;
+    await this.ledger.transaction(async (session) => {
+      const duplicate = await this.reversalModel.findOne({
+        room_id: room._id,
+        refunded_player_id: new Types.ObjectId(playerId),
+      }).session(session);
+      if (duplicate) { created = duplicate; return; }
+      await consumeFinancialMfa(this.connection, this.config, adminId, mfaCode ?? '', session);
+
+      const [winnerBefore, playerBefore] = await Promise.all([
+        this.availableBalance(winnerId, session),
+        this.availableBalance(playerId, session),
+      ]);
+      const canDebit = new Decimal(winnerBefore).gte(stake);
+      try {
+        await this.ledger.post(`game-audit-refund:${room._id}:${playerId}`, [
+          { account: `user:${playerId}:available`, amount: stake },
+          { account: canDebit ? `user:${winnerId}:available` : 'house:main', amount: new Decimal(stake).negated().toFixed(6) },
+        ], session);
+      } catch (error) {
+        if (error instanceof ConflictException && error.message === 'INSUFFICIENT_BALANCE') {
+          throw new BusinessException(canDebit ? 'ERROR_AUDIT_BALANCE_CHANGED' : 'ERROR_AUDIT_HOUSE_BALANCE_INSUFFICIENT', 409);
+        }
+        throw error;
+      }
+
+      const winner = await this.userModel.findById(winnerId).session(session).lean();
+      await this.userModel.updateOne(
+        { _id: winnerId },
+        { $inc: {
+          total_won: -Math.min(amount, Number(winner?.total_won || 0)),
+          ...(canDebit ? {} : { audit_balance_debt: amount }),
+        } },
+        { session },
+      );
+      [created] = await this.reversalModel.create([{
+        room_id: room._id,
+        refunded_player_id: new Types.ObjectId(playerId),
+        refunded_username: target.playerId.username,
+        winner_id: new Types.ObjectId(winnerId),
+        winner_username: room.winner.username,
+        amount,
+        reason: reason.trim(),
+        admin_id: new Types.ObjectId(adminId),
+        inconclusive_override: !evidenceComplete,
+        winner_adjustment: canDebit ? 'balance_debited' : 'debt_recorded',
+        debt_created: canDebit ? 0 : amount,
+        balances: {
+          refunded_before: Number(playerBefore),
+          refunded_after: new Decimal(playerBefore).plus(stake).toNumber(),
+          winner_before: Number(winnerBefore),
+          winner_after: canDebit ? new Decimal(winnerBefore).minus(stake).toNumber() : Number(winnerBefore),
+        },
+      }], { session });
+      await this.markFindingsRefunded(room, affected, playerId, session);
+    });
+    this.userService.invalidateHistory([playerId, winnerId]);
+    return created?.toObject?.() || created;
+  }
+
+  /** Spendable balance as the ledger will see it (pre-V2 users are opened from `users.balance`). */
+  private async availableBalance(userId: string, session: ClientSession): Promise<string> {
+    const user = await this.connection.collection('users').findOne({ _id: new Types.ObjectId(userId) }, { session });
+    if (!user) throw new BusinessException('ERROR_USER_NOTFOUND', 404);
+    if (!user.finance_v2_initialized) return money(String(user.balance ?? '0'));
+    const account = await this.connection.collection('finance_accounts')
+      .findOne({ account: `user:${userId}:available` }, { session });
+    return account?.balance?.toString() ?? '0.000000';
+  }
+
+  private async markFindingsRefunded(room: any, affected: any[], playerId: string, session: ClientSession) {
+    const affectedIds = affected.map(
+      (player: any) => new Types.ObjectId((player.playerId._id || player.playerId).toString()),
+    );
+    const refundedCount = await this.reversalModel.countDocuments({
+      room_id: room._id,
+      refunded_player_id: { $in: affectedIds },
+    }).session(session);
+    await this.findingModel.updateMany(
+      { room_id: room._id, affected_player_ids: new Types.ObjectId(playerId) },
+      {
+        $set: {
+          status: refundedCount >= affectedIds.length ? 'refunded' : 'partially_refunded',
+        },
+        $addToSet: { refunded_player_ids: new Types.ObjectId(playerId) },
+        $pull: { pending_player_ids: new Types.ObjectId(playerId) },
+      },
+      { session },
+    );
   }
 }

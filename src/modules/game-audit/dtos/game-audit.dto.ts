@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsMongoId, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsIn, IsMongoId, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class RunGameAuditDto {
   @IsOptional()
@@ -22,4 +22,9 @@ export class ReverseGameBalanceDto {
   @IsOptional()
   @IsBoolean()
   inconclusive_override?: boolean;
+
+  /** Admin financial TOTP; required when FINANCE_V2_ENABLED. */
+  @IsOptional()
+  @Matches(/^\d{6}$/)
+  code?: string;
 }

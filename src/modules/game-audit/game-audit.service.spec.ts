@@ -41,6 +41,8 @@ describe('GameAuditService', () => {
       findingModel as any,
       reversalModel as any,
       {} as any,
+      {} as any,
+      {} as any,
     );
     return { service, roomModel, findingModel, runModel };
   }

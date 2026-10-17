@@ -48,6 +48,7 @@ export class GameAuditController {
       admin.id,
       dto.reason,
       !!dto.inconclusive_override,
+      dto.code,
     );
   }
 }
