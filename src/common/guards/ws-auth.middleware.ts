@@ -66,8 +66,10 @@ export function applyWsAuth(server: Server, config: ConfigService, redis: any): 
     });
     socket.on('initial_state_ack', async (request: any) => {
       try {
-        const state = await acknowledgeInitialState(reliableConnection(), (server as any).name, String(payload.id), request?.roomId ?? '');
+        const { state, pending } = await acknowledgeInitialState(reliableConnection(), (server as any).name, String(payload.id), request?.roomId ?? '');
         socket.emit('match_start_state', state);
+        // A player who missed the start snapshot would hold the match until the deadline; ask them to fetch it again.
+        if (pending.length) server.to(pending.map(id => `player:${id}`)).emit('match_start_state', state);
       } catch { socket.emit('match_start_retry'); }
     });
     if (process.env.RELIABLE_COMMANDS_ENABLED === 'true') {
@@ -88,7 +90,8 @@ export function applyWsAuth(server: Server, config: ConfigService, redis: any): 
           const stored = await db.collection('game_commands').findOne({ _id: `${request.roomId}:${payload.id}:${request.commandId}` as any });
           if (stored) { socket.emit('command_ack', stored.result); return; }
           const room = await db.collection('rooms').findOne({ _id: new Types.ObjectId(request.roomId), 'players.playerId': new Types.ObjectId(String(payload.id)) });
-          if (!room) return;
+          // Not stored and no longer a member: it can never execute. Answer, or the client retries it forever.
+          if (!room) { socket.emit('command_ack', { commandId: request.commandId, roomId: request.roomId, status: 'rejected', reason: 'COMMAND_PLAYER_NOT_IN_ROOM', version: 0 }); return; }
           socket.emit('command_ack', { commandId: request.commandId, roomId: request.roomId,
             status: 'unknown', version: await durableVersion(request.roomId) });
         } catch { socket.emit('command_recovery_unavailable'); }

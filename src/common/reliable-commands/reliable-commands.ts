@@ -175,10 +175,16 @@ export function ReliableAction(): MethodDecorator {
         if (Types.ObjectId.isValid(id ?? '')) {
           const room = await connection.collection('rooms').findOne({ _id: new Types.ObjectId(id) });
           if (!canPlay(room)) {
+            // A reliable command needs a terminal answer here, or the client keeps it pending and
+            // retries it every 2 s forever, exhausting the gateway's per-player event budget.
+            const reject = async () => {
+              if (typeof payload?.commandId === 'string') client.emit('command_ack', { commandId: payload.commandId, roomId: id,
+                status: 'rejected', reason: 'MATCH_NOT_ACTIVE', version: await durableVersion(id) });
+            };
             if (String(property).toLowerCase().includes('forfeit') && isPreparing(room)) {
-              await cancelPreparedMatch(connection, id); return;
+              await cancelPreparedMatch(connection, id); await reject(); return;
             }
-            client.emit('match_start_retry'); return;
+            client.emit('match_start_retry'); await reject(); return;
           }
         }
       }

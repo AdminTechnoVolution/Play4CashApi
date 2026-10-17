@@ -22,8 +22,12 @@ export function startState(room: any) {
     serverNow: new Date().toISOString(), reason: room.winner_reason ?? null };
 }
 
-/** The room id identifies one immutable prepared game. No moves are allowed before this barrier. */
-export async function acknowledgeInitialState(db: Connection, namespace: string, actor: string, roomId: string) {
+/**
+ * The room id identifies one immutable prepared game. No moves are allowed before this barrier.
+ * `pending` lists the players the barrier still waits for, so the caller can ask them to resync.
+ */
+export async function acknowledgeInitialState(db: Connection, namespace: string, actor: string, roomId: string)
+  : Promise<{ state: ReturnType<typeof startState>; pending: string[] }> {
   if (!Types.ObjectId.isValid(roomId) || !Types.ObjectId.isValid(actor)) throw new Error('INVALID_MATCH_ACK');
   return db.transaction(async session => {
     const rooms = db.collection('rooms');
@@ -32,14 +36,15 @@ export async function acknowledgeInitialState(db: Connection, namespace: string,
     const catalog = await db.collection('games').findOne({ _id: room.game_id }, { session });
     const code = gameCode(catalog?.socket_code);
     if (namespace !== `/${code}`) throw new Error('WRONG_GAME_NAMESPACE');
-    if (!isPreparing(room)) return startState(room);
-    if (!room.game_ready_at || new Date(room.preparation_deadline_at).getTime() <= Date.now()) return startState(room);
+    if (!isPreparing(room)) return { state: startState(room), pending: [] };
+    if (!room.game_ready_at || new Date(room.preparation_deadline_at).getTime() <= Date.now()) return { state: startState(room), pending: [] };
     const now = new Date();
     // Writing the room serializes simultaneous acknowledgements and cancellation across replicas.
     await rooms.updateOne({ _id: room._id, 'players.playerId': new Types.ObjectId(actor) },
       { $set: { 'players.$.initial_state_ack_at': now } }, { session });
     const players = room.players.map((p: any) => String(p.playerId) === actor ? { ...p, initial_state_ack_at: now } : p);
-    if (players.length < 2 || !players.every((p: any) => p.initial_state_ack_at)) return startState(room);
+    const pending = players.filter((p: any) => !p.initial_state_ack_at).map((p: any) => String(p.playerId));
+    if (players.length < 2 || pending.length) return { state: startState(room), pending };
     const startsAt = new Date(Date.now() + MATCH_COUNTDOWN_MS);
     const collection = GAME_COLLECTIONS[code];
     const game = collection ? await db.collection(collection).findOne({ room_id: room._id }, { session }) : null;
@@ -58,7 +63,7 @@ export async function acknowledgeInitialState(db: Connection, namespace: string,
     await db.collection('game_outbox').insertOne({ roomId, sequence: Number(room.command_revision ?? 0) + 1, index: 0,
       published: false, createdAt: now, event: { namespace, rooms: players.map((p: any) => `player:${p.playerId}`),
         except: [], event: 'match_start_state', args: [state] } }, { session });
-    return state;
+    return { state, pending: [] };
   });
 }
 

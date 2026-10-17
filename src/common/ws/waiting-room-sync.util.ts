@@ -46,6 +46,8 @@ export function agentDebugLog(
 }
 
 /** Terminal state payload for clients that re-join after forfeit/abandon. */
+const CANCELLED_BEFORE_PLAY = new Set(['startup_unconfirmed', 'startup_failed']);
+
 export function buildFinishedRoomSyncData(
   room: { winner?: { toString(): string } | null; winner_reason?: string | null },
   playerId: string,
@@ -60,7 +62,8 @@ export function buildFinishedRoomSyncData(
   const winnerId = room.winner?.toString() ?? '';
   return {
     gameEnded: true,
-    outcome: room.winner_reason || 'finished',
+    // Rooms cancelled before play report the same outcome as the live cancellation event.
+    outcome: CANCELLED_BEFORE_PLAY.has(room.winner_reason ?? '') ? 'match_cancelled' : room.winner_reason || 'finished',
     youWon: winnerId === playerId,
     winner: winnerId,
     waitingForOpponent: false,

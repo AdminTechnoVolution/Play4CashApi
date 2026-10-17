@@ -2,6 +2,13 @@ import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import { Server, Socket } from 'socket.io';
 import { applyWsAuth } from './ws-auth.middleware';
+import { acknowledgeInitialState } from '../ws/match-start';
+
+jest.mock('../ws/match-start', () => ({ acknowledgeInitialState: jest.fn() }));
+jest.mock('../reliable-commands/reliable-commands', () => ({
+  ...jest.requireActual('../reliable-commands/reliable-commands'),
+  reliableConnection: jest.fn(() => ({ collection: () => ({ findOne: jest.fn().mockResolvedValue(null) }) })),
+}));
 
 const SECRET = 'unit-test-secret';
 const ISSUER = 'play4cash-api';
@@ -19,16 +26,21 @@ function makeConfig(): ConfigService {
 
 function captureServerMiddleware(): {
   server: Server;
+  roomEmit: jest.Mock;
   getMiddleware: () => (socket: Socket, next: (err?: Error) => void) => Promise<void>;
 } {
   let captured: ((socket: Socket, next: (err?: Error) => void) => Promise<void>) | undefined;
+  const roomEmit = jest.fn();
   const server = {
+    name: '/uno',
+    to: jest.fn(() => ({ emit: roomEmit })),
     use: (fn: (socket: Socket, next: (err?: Error) => void) => Promise<void>) => {
       captured = fn;
     },
   } as unknown as Server;
   return {
     server,
+    roomEmit,
     getMiddleware: () => {
       if (!captured) throw new Error('No middleware captured');
       return captured;
@@ -43,6 +55,7 @@ function makeSocket(handshake: Partial<Socket['handshake']>): Socket {
     join: jest.fn().mockResolvedValue(undefined),
     use: jest.fn(),
     on: jest.fn(),
+    emit: jest.fn(),
   } as unknown as Socket;
 }
 
@@ -154,5 +167,39 @@ describe('applyWsAuth', () => {
     expect(socket.data.player_id).toBe('u-xyz');
     expect(socket.data.token).toBe(token);
     expect(socket.on).toHaveBeenCalledWith('initial_state_ack', expect.any(Function));
+  });
+
+  it('asks players who have not acknowledged the start snapshot to fetch it again', async () => {
+    const { server, roomEmit, getMiddleware } = captureServerMiddleware();
+    applyWsAuth(server, makeConfig(), { exists: jest.fn().mockResolvedValue(1) });
+    const socket = makeSocket({ auth: { token: signAccess({ id: 'u1' }) } });
+    await getMiddleware()(socket, jest.fn());
+    const onAck = (socket.on as jest.Mock).mock.calls.find(([event]) => event === 'initial_state_ack')[1];
+    const state = { roomId: 'r1', phase: 'preparing' };
+
+    (acknowledgeInitialState as jest.Mock).mockResolvedValueOnce({ state, pending: ['u2'] });
+    await onAck({ roomId: 'r1' });
+    expect(socket.emit).toHaveBeenCalledWith('match_start_state', state);
+    expect(server.to).toHaveBeenCalledWith(['player:u2']);
+    expect(roomEmit).toHaveBeenCalledWith('match_start_state', state);
+
+    (server.to as jest.Mock).mockClear();
+    (acknowledgeInitialState as jest.Mock).mockResolvedValueOnce({ state: { ...state, phase: 'active' }, pending: [] });
+    await onAck({ roomId: 'r1' });
+    expect(server.to).not.toHaveBeenCalled();
+  });
+
+  it('rejects the status of a command whose room no longer includes the player', async () => {
+    process.env.RELIABLE_COMMANDS_ENABLED = 'true';
+    try {
+      const { server, getMiddleware } = captureServerMiddleware();
+      applyWsAuth(server, makeConfig(), { exists: jest.fn().mockResolvedValue(1) });
+      const socket = makeSocket({ auth: { token: signAccess({ id: '507f1f77bcf86cd799439011' }) } });
+      await getMiddleware()(socket, jest.fn());
+      const onStatus = (socket.on as jest.Mock).mock.calls.find(([event]) => event === 'command_status')[1];
+      await onStatus({ roomId: '507f1f77bcf86cd799439012', commandId: 'cmd-0123456789abcdef' });
+      expect(socket.emit).toHaveBeenCalledWith('command_ack', { commandId: 'cmd-0123456789abcdef',
+        roomId: '507f1f77bcf86cd799439012', status: 'rejected', reason: 'COMMAND_PLAYER_NOT_IN_ROOM', version: 0 });
+    } finally { delete process.env.RELIABLE_COMMANDS_ENABLED; }
   });
 });

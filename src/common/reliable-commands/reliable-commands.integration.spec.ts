@@ -1,6 +1,6 @@
 import { createConnection, Connection, Schema, Types } from 'mongoose';
 import { randomUUID } from 'crypto';
-import { configureReliableCommands, executeReliableAction, durableEmit, registerReliableNamespace, ReliableDisconnectAction } from './reliable-commands';
+import { configureReliableCommands, executeReliableAction, durableEmit, registerReliableNamespace, ReliableAction, ReliableDisconnectAction } from './reliable-commands';
 import { LedgerService } from '../../modules/payments/ledger.service';
 import { gameFinancialUpdate, settleGameRoom } from '../../modules/payments/game-finance';
 const uri = process.env.P4C_TEST_MONGO_URI;
@@ -115,5 +115,19 @@ suite('durable gameplay transactions', () => {
       expect(await db.collection('game_disconnects').countDocuments({ completed: true })).toBe(2);
       expect(await db.collection('game_outbox').countDocuments({})).toBeGreaterThanOrEqual(2);
     } finally { delete process.env.RELIABLE_COMMANDS_ENABLED; }
+  });
+  it('answers a command sent before the match start barrier opens instead of leaving it pending', async () => {
+    await db.collection('rooms').updateOne({ _id: new Types.ObjectId(roomId) }, { $set: { start_protocol: 1, game_ready_at: new Date(), command_revision: 4 } });
+    const executed = jest.fn();
+    class Gateway {
+      @ReliableAction()
+      async handleMove(_client: any, _payload: any) { executed(); }
+    }
+    const client = { emit: jest.fn(), data: { player_id: actor }, nsp: { name: '/test' } };
+    await new Gateway().handleMove(client, { room_id: roomId, commandId: 'cmd-0123456789abcdef', expectedVersion: 4 });
+    expect(executed).not.toHaveBeenCalled();
+    expect(client.emit).toHaveBeenCalledWith('match_start_retry');
+    expect(client.emit).toHaveBeenCalledWith('command_ack', { commandId: 'cmd-0123456789abcdef', roomId,
+      status: 'rejected', reason: 'MATCH_NOT_ACTIVE', version: 4 });
   });
 });
