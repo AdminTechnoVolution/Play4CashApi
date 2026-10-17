@@ -67,10 +67,12 @@ export class PaymentsWorker {
         payAmount: positiveMoney(String(result.pay_amount)), status: 'waiting', ...expectedCredit(result.amount_received),
       } });
     } catch (error) {
-      const rejected = error instanceof NowPaymentsRejectedError;
+      const rejected = error instanceof NowPaymentsRejectedError ? error : null;
       await this.db.collection('finance_orders').updateOne({ _id: order._id, status: 'submitting' },
-        { $set: { status: rejected ? 'rejected' : 'uncertain', reviewReason: rejected ? 'provider_rejected' : 'provider_result_unknown' } });
-      this.logger.error(`event=${rejected ? 'deposit_provider_rejected' : 'deposit_creation_uncertain'} id=${order._id}`);
+        { $set: { status: rejected ? 'rejected' : 'uncertain', reviewReason: rejected ? 'provider_rejected' : 'provider_result_unknown',
+          ...(rejected ? { providerError: rejected.reason } : {}) } });
+      this.logger.error(rejected ? `event=deposit_provider_rejected id=${order._id} ${rejected.describe()}`
+        : `event=deposit_creation_uncertain id=${order._id}`);
     }
   }
 
@@ -270,10 +272,10 @@ export class PaymentsWorker {
             { account: `user:${current.userId}:available`, amount: current.amount },
           ], session);
           await this.db.collection('finance_orders').updateOne({ _id: order._id, status: 'submitting' },
-            { $set: { status: 'rejected', reviewReason: 'provider_rejected', rejectedAt: new Date() } }, { session });
+            { $set: { status: 'rejected', reviewReason: 'provider_rejected', rejectedAt: new Date(), providerError: error.reason } }, { session });
           return true;
         });
-        if (rejected) { this.logger.warn(`event=payout_provider_rejected id=${order._id}`); return; }
+        if (rejected) { this.logger.warn(`event=payout_provider_rejected id=${order._id} ${error.describe()}`); return; }
       }
       await this.db.collection('finance_orders').updateOne({ _id: order._id, status: 'submitting' }, { $set: { status: 'uncertain' } });
       this.logger.error(`event=payout_requires_reconciliation id=${order._id}`);

@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { canonical } from './canonical';
+import { SETTLEMENT_CURRENCY } from './payments-policy.service';
 
 export function parseProviderJson(raw: string): any {
   // Preserve numeric tokens as decimal strings rather than losing precision in JSON.parse.
@@ -17,10 +18,23 @@ export function verifyIpn(body: unknown, signature: string | undefined, secret: 
   return timingSafeEqual(expected, Buffer.from(signature, 'hex'));
 }
 
+/** Provider error fields are logged and stored, so keep them short, printable and on one line. */
+function providerText(value: unknown, max: number): string | null {
+  if (typeof value !== 'string') return null;
+  return value.replace(/[^\x20-\x7E]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) || null;
+}
+
 /** Only an explicit negative provider response proves rejection; transport errors remain uncertain. */
 export class NowPaymentsRejectedError extends ServiceUnavailableException {
-  constructor(readonly providerStatus: number) {
+  constructor(readonly providerStatus: number, readonly providerCode: string | null = null, readonly providerMessage: string | null = null) {
     super({ message: 'NOWPAYMENTS_REJECTED', providerStatus });
+  }
+  /** The provider's stated reason. Its response body never echoes our request headers or credentials. */
+  get reason() {
+    return { status: this.providerStatus, code: this.providerCode, message: this.providerMessage };
+  }
+  describe(): string {
+    return `status=${this.providerStatus} code=${this.providerCode ?? '-'} message=${JSON.stringify(this.providerMessage ?? '')}`;
   }
 }
 
@@ -67,7 +81,7 @@ export class NowPaymentsClient {
         && body && typeof body === 'object' && body.status === false
         && !body.payment_id && !body.id && !body.batch_withdrawal_id && !body.batch_id && !body.payout_id
         && (!Array.isArray(body.withdrawals) || body.withdrawals.length === 0)) {
-        throw new NowPaymentsRejectedError(response!.status);
+        throw new NowPaymentsRejectedError(response!.status, providerText(body.code, 64), providerText(body.message, 300));
       }
       // Axios errors contain request credentials. Never log/return the original error.
       throw new ServiceUnavailableException('NOWPAYMENTS_REQUEST_UNRESOLVED');
@@ -75,7 +89,11 @@ export class NowPaymentsClient {
   }
   merchantCoins() { return this.request('GET', '/merchant/coins'); }
   currencies() { return this.request('GET', '/full-currencies'); }
-  minimum(currency: string) { return this.request('GET', '/min-amount', { currency_from: currency, currency_to: currency }); }
+  /** Minimum NOWPayments accepts for a payment in `currency`, converted into the settlement wallet with fees on us. */
+  minimum(currency: string) {
+    return this.request('GET', '/min-amount', { currency_from: currency, currency_to: SETTLEMENT_CURRENCY,
+      is_fixed_rate: false, is_fee_paid_by_user: false });
+  }
   createDeposit(orderId: string, amount: string, currency: string, callback: string) {
     return this.request('POST', '/payment', { order_id: orderId, price_amount: amount,
       // NOWPayments rejects outcome_currency on /payment (400 "outcome_currency is not allowed"); it settles in

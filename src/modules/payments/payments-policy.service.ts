@@ -12,6 +12,8 @@ export const DEFAULT_USDT_NETWORKS = {
 // NOWPayments settles every deposit into USDTTRC20, so provider liquidity only exists on TRC20. Payouts on other
 // networks would wait forever for a balance in their own currency.
 export const WITHDRAWAL_NETWORKS = new Set(['TRC20']);
+/** The merchant's outcome wallet: every deposit is converted into it. */
+export const SETTLEMENT_CURRENCY = 'usdttrc20';
 
 @Injectable()
 export class PaymentsPolicy {

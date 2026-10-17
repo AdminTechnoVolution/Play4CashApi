@@ -18,6 +18,8 @@ export function idempotencyKey(value?: string): string {
   if (!value || !/^[a-zA-Z0-9_-]{16,100}$/.test(value)) throw new BadRequestException('IDEMPOTENCY_KEY_REQUIRED');
   return value;
 }
+/** Headroom over NOWPayments' current minimum, so a deposit accepted here is not refused moments later. */
+const DEPOSIT_MINIMUM_MARGIN = '1.05';
 /** NOWPayments service fee for same-currency payments; the rest of each quoted fee is the network cost. */
 export const DEPOSIT_SERVICE_RATE = '0.005';
 const median = (values: Decimal[]) => {
@@ -27,6 +29,7 @@ const median = (values: Decimal[]) => {
 };
 @Injectable()
 export class PaymentsService implements OnModuleInit {
+  private readonly minimums = new Map<string, { value: Promise<string>; expiresAt: number }>();
   constructor(@InjectConnection() private readonly db: Connection, private readonly ledger: LedgerService,
     private readonly provider: NowPaymentsClient, private readonly policy: PaymentsPolicy,
     private readonly config: ConfigService, private readonly email: EmailService) {}
@@ -79,7 +82,23 @@ export class PaymentsService implements OnModuleInit {
   /** Networks for the client, with an approximate deposit fee where recent provider quotes exist. */
   async networkOptions() {
     const [rows, fees] = await Promise.all([this.networks(), this.depositFeeEstimates()]);
-    return rows.map(row => ({ ...row, withdrawable: WITHDRAWAL_NETWORKS.has(row.network), ...(fees[row.network] ? { depositFee: fees[row.network] } : {}) }));
+    // A network whose minimum is momentarily unavailable is still listed; deposit() re-checks it.
+    const minimums = await Promise.all(rows.map(row => this.depositMinimum(row.currency).catch(() => null)));
+    return rows.map((row, index) => ({ ...row, withdrawable: WITHDRAWAL_NETWORKS.has(row.network),
+      ...(minimums[index] ? { minDeposit: minimums[index] } : {}), ...(fees[row.network] ? { depositFee: fees[row.network] } : {}) }));
+  }
+  /**
+   * NOWPayments converts every deposit into the settlement wallet and refuses payments below that conversion's
+   * minimum, which moves with network fees. The margin absorbs drift until the worker creates the payment.
+   */
+  async depositMinimum(currency: string): Promise<string> {
+    const cached = this.minimums.get(currency);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const value = this.provider.minimum(currency).then((result: any) =>
+      new Decimal(String(result.min_amount)).times(DEPOSIT_MINIMUM_MARGIN).toDecimalPlaces(2, Decimal.ROUND_UP).toFixed(2));
+    this.minimums.set(currency, { value, expiresAt: Date.now() + 300_000 });
+    value.catch(() => this.minimums.delete(currency));
+    return value;
   }
   /**
    * NOWPayments has no fee estimate for incoming payments, but quotes amount_received when each deposit is created.
@@ -139,8 +158,7 @@ export class PaymentsService implements OnModuleInit {
     await this.policy.eligibility(userId);
     const amount = positiveMoney(rawAmount);
     const currency = await this.currency(network);
-    const minimum = await this.provider.minimum(currency);
-    if (new Decimal(amount).lt(String(minimum.min_amount))) throw new BadRequestException('DEPOSIT_BELOW_MINIMUM');
+    if (new Decimal(amount).lt(await this.depositMinimum(currency))) throw new BadRequestException('DEPOSIT_BELOW_MINIMUM');
     const callback = this.callback();
     const input = { amount, network, currency };
     const order = await this.ledger.transaction(async session => {

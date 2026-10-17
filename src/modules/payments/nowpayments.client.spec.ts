@@ -36,4 +36,21 @@ describe('NOWPayments sandbox requests', () => {
       await expect(client.createDeposit('order', '10', 'usdttrc20', 'https://gateway.test/ipn')).rejects.toThrow('NOWPAYMENTS_REQUEST_UNRESOLVED');
     }
   });
+  it('keeps the provider rejection reason, single-line and bounded, for logs and the order', async () => {
+    jest.spyOn(axios, 'request').mockRejectedValueOnce({ isAxiosError: true, response: { status: 400,
+      data: { status: false, statusCode: 400, code: 'AMOUNT_MINIMAL_ERROR', message: `amountTo is too small\n${'x'.repeat(400)}` } } });
+    const error = await new NowPaymentsClient(new ConfigService(base)).createDeposit('order', '10', 'usdttrc20', 'https://gateway.test/ipn')
+      .catch((e: unknown) => e) as NowPaymentsRejectedError;
+    expect(error).toBeInstanceOf(NowPaymentsRejectedError);
+    expect(error.reason).toEqual({ status: 400, code: 'AMOUNT_MINIMAL_ERROR', message: `amountTo is too small ${'x'.repeat(278)}` });
+    expect(error.describe()).toMatch(/^status=400 code=AMOUNT_MINIMAL_ERROR message="amountTo is too small x+"$/);
+    // The reason is internal: the exception body sent to clients stays generic.
+    expect(error.getResponse()).toEqual({ message: 'NOWPAYMENTS_REJECTED', providerStatus: 400 });
+  });
+  it('asks for the minimum converted into the settlement wallet with fees on the merchant', async () => {
+    const request = jest.spyOn(axios, 'request').mockResolvedValue({ data: { min_amount: 12.14829 } });
+    await new NowPaymentsClient(new ConfigService(base)).minimum('usdtbsc');
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'GET', url: '/min-amount',
+      params: { currency_from: 'usdtbsc', currency_to: 'usdttrc20', is_fixed_rate: false, is_fee_paid_by_user: false } }));
+  });
 });

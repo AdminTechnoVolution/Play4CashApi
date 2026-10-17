@@ -118,9 +118,9 @@ suite('MongoDB financial transactions and restart recovery', () => {
     ]);
     provider.merchantCoins.mockResolvedValueOnce({ selectedCurrencies: ['USDTTRC20', 'USDTBSC', 'USDTSOL'] });
     expect(await payments.networkOptions()).toEqual([
-      { network: 'TRC20', currency: 'usdttrc20', asset: 'USDT', withdrawable: true, depositFee: { fixed: '5.511000', rate: '0.005' } },
-      { network: 'BEP20', currency: 'usdtbsc', asset: 'USDT', withdrawable: false, depositFee: { fixed: '0.500000', rate: '0.005' } },
-      { network: 'SOLANA', currency: 'usdtsol', asset: 'USDT', withdrawable: false },
+      { network: 'TRC20', currency: 'usdttrc20', asset: 'USDT', withdrawable: true, minDeposit: '1.05', depositFee: { fixed: '5.511000', rate: '0.005' } },
+      { network: 'BEP20', currency: 'usdtbsc', asset: 'USDT', withdrawable: false, minDeposit: '1.05', depositFee: { fixed: '0.500000', rate: '0.005' } },
+      { network: 'SOLANA', currency: 'usdtsol', asset: 'USDT', withdrawable: false, minDeposit: '1.05' },
     ]);
   });
   it('quotes withdrawals only on TRC20, before contacting the provider', async () => {
@@ -132,11 +132,13 @@ suite('MongoDB financial transactions and restart recovery', () => {
   it('records a provider-rejected deposit without credit or resend', async () => {
     const order = { _id: new Types.ObjectId(), userId, kind: 'deposit', key: randomUUID(), amount: '10.000000', currency: 'usdttrc20', status: 'created' };
     await db.collection('finance_orders').insertOne(order);
-    provider.createDeposit.mockRejectedValueOnce(new NowPaymentsRejectedError(403));
+    provider.createDeposit.mockRejectedValueOnce(new NowPaymentsRejectedError(400, 'INVALID_REQUEST_PARAMS', 'case is not allowed'));
     await worker.submitDeposit(order);
     await worker.submitDeposit(order);
     expect(provider.createDeposit).toHaveBeenCalledTimes(1);
-    expect((await db.collection('finance_orders').findOne({ _id: order._id }))?.status).toBe('rejected');
+    expect(await db.collection('finance_orders').findOne({ _id: order._id })).toMatchObject({ status: 'rejected',
+      providerError: { status: 400, code: 'INVALID_REQUEST_PARAMS', message: 'case is not allowed' } });
+    expect(await payments.get(userId, String(order._id))).not.toHaveProperty('providerError');
     expect(await db.collection('finance_journals').countDocuments({})).toBe(0);
   });
   it('accepts a sandbox deposit without local country or KYC provisioning', async () => {
@@ -157,10 +159,20 @@ suite('MongoDB financial transactions and restart recovery', () => {
     ]);
     await expect(payments.deposit(userId, 'limit-deposit-key-0001', 'TRC20', '300.000001')).rejects.toThrow('DEPOSIT_DAILY_LIMIT');
     expect((await payments.deposit(userId, 'limit-deposit-key-0002', 'TRC20', '300')).status).toBe('created');
-    await expect(payments.deposit(userId, 'limit-deposit-key-0003', 'TRC20', '1')).rejects.toThrow('DEPOSIT_DAILY_LIMIT');
+    await expect(payments.deposit(userId, 'limit-deposit-key-0003', 'TRC20', '2')).rejects.toThrow('DEPOSIT_DAILY_LIMIT');
     // Replaying an accepted request returns the same order instead of counting it twice.
     expect((await payments.deposit(userId, 'limit-deposit-key-0002', 'TRC20', '300')).status).toBe('created');
     expect(await db.collection('finance_orders').countDocuments({ userId, kind: 'deposit', status: 'created' })).toBe(1);
+  });
+  it('enforces the settlement-converted provider minimum per network, with headroom', async () => {
+    const service = new PaymentsService(db, ledger, provider, new PaymentsPolicy(config, db), config, email);
+    provider.minimum.mockResolvedValueOnce({ min_amount: 11.463924 });
+    await expect(service.deposit(userId, 'minimum-deposit-key-01', 'TRC20', '12.03')).rejects.toThrow('DEPOSIT_BELOW_MINIMUM');
+    expect((await service.deposit(userId, 'minimum-deposit-key-02', 'TRC20', '12.04')).status).toBe('created');
+    // The minimum is cached briefly, so listing networks and creating deposits agree without extra provider calls.
+    provider.merchantCoins.mockResolvedValueOnce({ selectedCurrencies: ['USDTTRC20'] });
+    expect(await service.networkOptions()).toEqual([expect.objectContaining({ network: 'TRC20', minDeposit: '12.04' })]);
+    expect(provider.minimum).toHaveBeenCalledTimes(1);
   });
   it('applies the deposit limit configured in DEPOSIT_LIMIT_24H', async () => {
     const limited = new ConfigService({ ...env, DEPOSIT_LIMIT_24H: '50' });
