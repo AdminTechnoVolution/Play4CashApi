@@ -25,3 +25,7 @@ export function bsonMoney(value: string): Types.Decimal128 {
 export function reviewRequired(amount: string, preceding24h: string, risk: boolean): boolean {
   return risk || new Decimal(amount).gt(500) || new Decimal(preceding24h).plus(amount).gt(1000);
 }
+/** True when a deposit would take the player's rolling 24 hour total above `limit` USDT. */
+export function depositLimitExceeded(amount: string, preceding24h: string, limit: string): boolean {
+  return new Decimal(preceding24h).plus(amount).gt(limit);
+}

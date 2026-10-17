@@ -3,6 +3,7 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
+import { money } from './money';
 
 export const DEFAULT_USDT_NETWORKS = {
   TRC20: 'usdttrc20', ERC20: 'usdterc20', BEP20: 'usdtbsc',
@@ -23,6 +24,13 @@ export class PaymentsPolicy {
     if (this.config.get('NOWPAYMENTS_BASE_URL') !== 'https://api-sandbox.nowpayments.io/v1') {
       throw new ServiceUnavailableException('PAYMENTS_SANDBOX_ONLY');
     }
+  }
+  /** Rolling 24 hour deposit cap per player in USDT, from DEPOSIT_LIMIT_24H (default 1000). */
+  depositLimit24h(): string {
+    const raw = String(this.config.get('DEPOSIT_LIMIT_24H') ?? '').trim() || '1000';
+    // A malformed money limit must stop deposits, never silently remove the cap.
+    if (!/^\d{1,12}(\.\d{1,6})?$/.test(raw) || !/[1-9]/.test(raw)) throw new ServiceUnavailableException('DEPOSIT_LIMIT_MISCONFIGURED');
+    return money(raw);
   }
   async eligibility(userId: string) {
     return assertFinanceEligibility(this.db, userId);

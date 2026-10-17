@@ -23,11 +23,12 @@ suite('MongoDB financial transactions and restart recovery', () => {
   let worker: PaymentsWorker;
   const userId = '507f1f77bcf86cd799439011';
   const otherId = '507f1f77bcf86cd799439012';
-  const config = new ConfigService({ FINANCE_V2_ENABLED: 'true', PAYMENTS_WORKER: 'true', PAYMENTS_DEPOSITS_ENABLED: 'true',
+  const env = { FINANCE_V2_ENABLED: 'true', PAYMENTS_WORKER: 'true', PAYMENTS_DEPOSITS_ENABLED: 'true',
     PAYMENTS_WITHDRAWALS_ENABLED: 'true', NOWPAYMENTS_BASE_URL: 'https://api-sandbox.nowpayments.io/v1',
     NOWPAYMENTS_IPN_URL: 'https://example.test/api/payments/ipn/nowpayments',
     NOWPAYMENTS_PAYOUT_TOTP_SECRET: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
-    FINANCE_ADMIN_TOTP_SECRETS: '{"507f1f77bcf86cd799439012":"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"}' });
+    FINANCE_ADMIN_TOTP_SECRETS: '{"507f1f77bcf86cd799439012":"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"}' };
+  const config = new ConfigService(env);
   const provider: any = { claimSubmissionSlot: jest.fn(async () => true), deposit: jest.fn(), authenticate: jest.fn(async () => 'test-token'),
     balances: jest.fn(async () => ({ usdttrc20: { amount: '100000.000000' } })),
     payoutFee: jest.fn(async () => ({ fee: '1' })), createPayout: jest.fn(), verifyPayout: jest.fn(), payout: jest.fn(),
@@ -144,6 +145,35 @@ suite('MongoDB financial transactions and restart recovery', () => {
     expect(order.status).toBe('created');
     await db.collection('finance_eligibility').insertOne({ userId, verifiedCountry: 'XX', observedCountry: 'ZZ' });
     expect((await payments.deposit(userId, 'global-deposit-key-0002', 'TRC20', '10')).status).toBe('created');
+  });
+  it('limits deposits to 1000 USDT per rolling 24 hours, counting live and credited orders', async () => {
+    const old = new Date(Date.now() - 2 * 86400000);
+    await db.collection('finance_orders').insertMany([
+      { userId, kind: 'deposit', key: 'live-deposit', amount: '300.000000', status: 'waiting', createdAt: new Date() },
+      { userId, kind: 'deposit', key: 'overpaid-deposit', amount: '100.000000', credited: '400.000000', status: 'confirmed', createdAt: new Date(), confirmedAt: new Date() },
+      { userId, kind: 'deposit', key: 'expired-deposit', amount: '900.000000', status: 'expired', createdAt: new Date() },
+      { userId, kind: 'deposit', key: 'old-deposit', amount: '900.000000', credited: '900.000000', status: 'confirmed', createdAt: old, confirmedAt: old },
+      { userId: otherId, kind: 'deposit', key: 'other-user-deposit', amount: '900.000000', status: 'waiting', createdAt: new Date() },
+    ]);
+    await expect(payments.deposit(userId, 'limit-deposit-key-0001', 'TRC20', '300.000001')).rejects.toThrow('DEPOSIT_DAILY_LIMIT');
+    expect((await payments.deposit(userId, 'limit-deposit-key-0002', 'TRC20', '300')).status).toBe('created');
+    await expect(payments.deposit(userId, 'limit-deposit-key-0003', 'TRC20', '1')).rejects.toThrow('DEPOSIT_DAILY_LIMIT');
+    // Replaying an accepted request returns the same order instead of counting it twice.
+    expect((await payments.deposit(userId, 'limit-deposit-key-0002', 'TRC20', '300')).status).toBe('created');
+    expect(await db.collection('finance_orders').countDocuments({ userId, kind: 'deposit', status: 'created' })).toBe(1);
+  });
+  it('applies the deposit limit configured in DEPOSIT_LIMIT_24H', async () => {
+    const limited = new ConfigService({ ...env, DEPOSIT_LIMIT_24H: '50' });
+    const service = new PaymentsService(db, ledger, provider, new PaymentsPolicy(limited, db), limited, email);
+    await expect(service.deposit(userId, 'configured-limit-key-01', 'TRC20', '50.000001')).rejects.toThrow('DEPOSIT_DAILY_LIMIT');
+    expect((await service.deposit(userId, 'configured-limit-key-02', 'TRC20', '50')).status).toBe('created');
+  });
+  it('serializes concurrent deposit requests so both cannot fit under the daily limit', async () => {
+    const results = await Promise.allSettled(['concurrent-deposit-01', 'concurrent-deposit-02']
+      .map(key => payments.deposit(userId, key, 'TRC20', '600')));
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(r => r.status === 'rejected').map(r => (r as PromiseRejectedResult).reason.message)).toEqual(['DEPOSIT_DAILY_LIMIT']);
+    expect(await db.collection('finance_orders').countDocuments({ userId, kind: 'deposit' })).toBe(1);
   });
   it('releases a provider-rejected payout reservation once, with no resubmission', async () => {
     await fund('100');

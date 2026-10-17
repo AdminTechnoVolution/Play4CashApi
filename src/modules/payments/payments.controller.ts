@@ -6,6 +6,7 @@ import { Public } from '../../common/decorators/public.decorator';
 import { RateLimit } from '../../common/rate-limit/rate-limit.decorator';
 import { PaymentsService } from './payments.service';
 import { LedgerService } from './ledger.service';
+import { PaymentsPolicy } from './payments-policy.service';
 class DepositDto {
   @IsString() @Length(2, 30) network: string;
   @IsString() @Matches(/^\d{1,18}(\.\d{1,6})?$/) amount: string;
@@ -22,9 +23,11 @@ class ReturnRequestDto {
 
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly payments: PaymentsService, private readonly ledger: LedgerService) {}
+  constructor(private readonly payments: PaymentsService, private readonly ledger: LedgerService,
+    private readonly policy: PaymentsPolicy) {}
   @Get('networks') networks() { return this.payments.networkOptions(); }
   @Get('balance') balance(@CurrentUser() user: JwtPayload) { return this.ledger.balances(user.id); }
+  @Get('limits') limits() { return { depositLimit24h: this.policy.depositLimit24h() }; }
   @Get('orders') history(@CurrentUser() user: JwtPayload) { return this.payments.history(user.id); }
   @Get('orders/:id') get(@CurrentUser() user: JwtPayload, @Param() params: OrderParams) { return this.payments.get(user.id, params.id); }
   @Post('fund-return-requests') @RateLimit({ limit: 3, ttlMs: 60000 })

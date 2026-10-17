@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
-import { Connection, Types } from 'mongoose';
+import { ClientSession, Connection, Types } from 'mongoose';
 import { randomInt, randomUUID } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import Decimal from 'decimal.js';
@@ -9,7 +9,7 @@ import { LedgerService } from './ledger.service';
 import { NowPaymentsClient } from './nowpayments.client';
 import { PaymentsPolicy, WITHDRAWAL_NETWORKS } from './payments-policy.service';
 import { fingerprint } from './canonical';
-import { positiveMoney, money, reviewRequired } from './money';
+import { positiveMoney, money, reviewRequired, depositLimitExceeded } from './money';
 import { EmailService } from '../../common/email/email.service';
 import { assertFinanceEligibility } from './eligibility';
 import { withdrawalAuthorization } from './withdrawal-authorization';
@@ -118,16 +118,17 @@ export class PaymentsService implements OnModuleInit {
   async history(userId: string) {
     return (await this.db.collection('finance_orders').find({ userId }).sort({ createdAt: -1 }).limit(100).toArray()).map(o => this.expose(o));
   }
-  private async insertOrder(userId: string, kind: string, key: string, input: any) {
+  private async insertOrder(userId: string, kind: string, key: string, input: any, session?: ClientSession) {
     const hash = fingerprint(input);
     const orders = this.db.collection('finance_orders');
     try {
       const order = { _id: new Types.ObjectId(), userId, kind, key: idempotencyKey(key), hash,
         ...input, status: 'created', createdAt: new Date() };
-      await orders.insertOne(order);
+      await orders.insertOne(order, { session });
       return order as any;
     } catch (err) {
-      if ((err as any).code !== 11000) throw err;
+      // Inside a transaction a duplicate aborts it; callers check the key first.
+      if ((err as any).code !== 11000 || session) throw err;
       const existing = await orders.findOne({ userId, kind, key });
       if (!existing || existing.hash !== hash) throw new ConflictException('IDEMPOTENCY_CONFLICT');
       return existing;
@@ -141,7 +142,25 @@ export class PaymentsService implements OnModuleInit {
     const minimum = await this.provider.minimum(currency);
     if (new Decimal(amount).lt(String(minimum.min_amount))) throw new BadRequestException('DEPOSIT_BELOW_MINIMUM');
     const callback = this.callback();
-    const order = await this.insertOrder(userId, 'deposit', key, { amount, network, currency });
+    const input = { amount, network, currency };
+    const order = await this.ledger.transaction(async session => {
+      const orders = this.db.collection('finance_orders');
+      // Writing the user serializes concurrent requests, so two orders cannot both fit under the limit.
+      await this.db.collection('users').updateOne({ _id: new Types.ObjectId(userId) },
+        { $set: { last_deposit_request_at: new Date() } }, { session });
+      const existing = await orders.findOne({ userId, kind: 'deposit', key: idempotencyKey(key) }, { session });
+      if (existing) {
+        if (existing.hash !== fingerprint(input)) throw new ConflictException('IDEMPOTENCY_CONFLICT');
+        return existing;
+      }
+      // Every live or credited deposit counts: requested amount, or the credited one if the player sent more.
+      const since = new Date(Date.now() - 86400000);
+      const recent = await orders.find({ userId, kind: 'deposit', status: { $nin: ['expired', 'failed', 'refunded', 'rejected'] },
+        $or: [{ createdAt: { $gte: since } }, { confirmedAt: { $gte: since } }] }, { session }).toArray();
+      const total = recent.reduce((sum, o) => sum.plus(Decimal.max(o.amount, o.credited ?? '0')), new Decimal(0));
+      if (depositLimitExceeded(amount, total.toFixed(6), this.policy.depositLimit24h())) throw new BadRequestException('DEPOSIT_DAILY_LIMIT');
+      return this.insertOrder(userId, 'deposit', key, input, session);
+    });
     // The durable worker creates the provider payment under the shared merchant rate limit.
     return this.get(userId, String(order._id));
   }
