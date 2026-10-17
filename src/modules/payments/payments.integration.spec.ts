@@ -92,6 +92,36 @@ suite('MongoDB financial transactions and restart recovery', () => {
     provider.merchantCoins.mockResolvedValueOnce({ selectedCurrencies: ['BTC', 'USDTTRC20'] });
     expect(await service.networks()).toEqual([{ network: 'TRC20', currency: 'usdttrc20', asset: 'USDT' }]);
   });
+  it('stores the provider net quote on submission without letting a missing quote fail the deposit', async () => {
+    const quoted = { _id: new Types.ObjectId(), userId, kind: 'deposit', key: randomUUID(), amount: '100.000000', currency: 'usdttrc20', status: 'created' };
+    const unquoted = { ...quoted, _id: new Types.ObjectId(), key: randomUUID() };
+    await db.collection('finance_orders').insertMany([quoted, unquoted]);
+    const payment = { pay_address: 'fixture-address', pay_currency: 'usdttrc20', pay_amount: '100' };
+    provider.createDeposit.mockResolvedValueOnce({ ...payment, payment_id: 'quoted-1', amount_received: '93.6149871' })
+      .mockResolvedValueOnce({ ...payment, payment_id: 'unquoted-1' });
+    await worker.submitDeposit(quoted);
+    await worker.submitDeposit(unquoted);
+    expect(await payments.get(userId, String(quoted._id))).toMatchObject({ status: 'waiting', expectedCredit: '93.614987' });
+    const plain = await db.collection('finance_orders').findOne({ _id: unquoted._id });
+    expect(plain).toMatchObject({ status: 'waiting' });
+    expect(plain).not.toHaveProperty('expectedCredit');
+  });
+  it('estimates deposit fees per network from recent provider quotes', async () => {
+    const quote = (network: string, amount: string, expectedCredit: string, daysAgo = 0) => ({ _id: new Types.ObjectId(), userId, kind: 'deposit',
+      key: randomUUID(), network, amount, expectedCredit, status: 'waiting', createdAt: new Date(Date.now() - daysAgo * 86400000) });
+    await db.collection('finance_orders').insertMany([
+      // TRC20 fixed part: 100 - 93.989 - 0.5 = 5.511, 1000 - 989.4 - 5 = 5.6, 50 - 44.3 - 0.25 = 5.45 → median 5.511
+      quote('TRC20', '100.000000', '93.989000'), quote('TRC20', '1000.000000', '989.400000'), quote('TRC20', '50.000000', '44.300000'),
+      quote('BEP20', '100.000000', '99.000000'),
+      quote('SOLANA', '100.000000', '10.000000', 31),
+    ]);
+    provider.merchantCoins.mockResolvedValueOnce({ selectedCurrencies: ['USDTTRC20', 'USDTBSC', 'USDTSOL'] });
+    expect(await payments.networkOptions()).toEqual([
+      { network: 'TRC20', currency: 'usdttrc20', asset: 'USDT', depositFee: { fixed: '5.511000', rate: '0.005' } },
+      { network: 'BEP20', currency: 'usdtbsc', asset: 'USDT', depositFee: { fixed: '0.500000', rate: '0.005' } },
+      { network: 'SOLANA', currency: 'usdtsol', asset: 'USDT' },
+    ]);
+  });
   it('records a provider-rejected deposit without credit or resend', async () => {
     const order = { _id: new Types.ObjectId(), userId, kind: 'deposit', key: randomUUID(), amount: '10.000000', currency: 'usdttrc20', status: 'created' };
     await db.collection('finance_orders').insertOne(order);

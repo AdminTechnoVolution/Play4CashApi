@@ -81,7 +81,9 @@ export class NowPaymentsClient {
       // NOWPayments rejects outcome_currency on /payment (400 "outcome_currency is not allowed"); it settles in
       // pay_currency by default, and reconcileDeposit still refuses to credit any other outcome_currency.
       price_currency: currency, pay_currency: currency,
-      ipn_callback_url: callback, is_fee_paid_by_user: true,
+      // Fee paid by user doubles the service fee (1% vs 0.5%) and raises minimums without charging the payer more
+      // for same-currency payments, so the merchant settles each deposit net of fees instead.
+      ipn_callback_url: callback, is_fee_paid_by_user: false,
       // NOWPayments sandbox emulates payment processing for this scenario; no chain funds sent.
       case: this.sandboxCase() });
   }

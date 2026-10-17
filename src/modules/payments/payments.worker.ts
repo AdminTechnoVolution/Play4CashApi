@@ -14,6 +14,12 @@ import { fingerprint } from './canonical';
 import { settleGameRoom } from './game-finance';
 import { totp } from './totp';
 
+/** NOWPayments' quote of what settles after fees. Display-only: the ledger always credits the final outcome_amount. */
+function expectedCredit(value: unknown): { expectedCredit?: string } {
+  try { return { expectedCredit: positiveMoney(new Decimal(String(value)).toDecimalPlaces(6, Decimal.ROUND_DOWN).toFixed(6)) }; }
+  catch { return {}; }
+}
+
 @Injectable()
 export class PaymentsWorker {
   private readonly logger = new Logger(PaymentsWorker.name);
@@ -53,7 +59,7 @@ export class PaymentsWorker {
       if (!result.payment_id || !result.pay_address || result.pay_currency !== order.currency) throw new Error('INVALID_PROVIDER_PAYMENT');
       await this.db.collection('finance_orders').updateOne({ _id: order._id, status: 'submitting' }, { $set: {
         providerId: String(result.payment_id), address: result.pay_address,
-        payAmount: positiveMoney(String(result.pay_amount)), status: 'waiting',
+        payAmount: positiveMoney(String(result.pay_amount)), status: 'waiting', ...expectedCredit(result.amount_received),
       } });
     } catch (error) {
       const rejected = error instanceof NowPaymentsRejectedError;

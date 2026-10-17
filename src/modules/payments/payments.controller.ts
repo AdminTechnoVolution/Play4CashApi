@@ -23,7 +23,7 @@ class ReturnRequestDto {
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly payments: PaymentsService, private readonly ledger: LedgerService) {}
-  @Get('networks') networks() { return this.payments.networks(); }
+  @Get('networks') networks() { return this.payments.networkOptions(); }
   @Get('balance') balance(@CurrentUser() user: JwtPayload) { return this.ledger.balances(user.id); }
   @Get('orders') history(@CurrentUser() user: JwtPayload) { return this.payments.history(user.id); }
   @Get('orders/:id') get(@CurrentUser() user: JwtPayload, @Param() params: OrderParams) { return this.payments.get(user.id, params.id); }

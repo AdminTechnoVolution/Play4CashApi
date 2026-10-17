@@ -18,6 +18,13 @@ export function idempotencyKey(value?: string): string {
   if (!value || !/^[a-zA-Z0-9_-]{16,100}$/.test(value)) throw new BadRequestException('IDEMPOTENCY_KEY_REQUIRED');
   return value;
 }
+/** NOWPayments service fee for same-currency payments; the rest of each quoted fee is the network cost. */
+export const DEPOSIT_SERVICE_RATE = '0.005';
+const median = (values: Decimal[]) => {
+  const sorted = [...values].sort((a, b) => a.cmp(b));
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : sorted[middle - 1].plus(sorted[middle]).div(2);
+};
 @Injectable()
 export class PaymentsService implements OnModuleInit {
   constructor(@InjectConnection() private readonly db: Connection, private readonly ledger: LedgerService,
@@ -29,6 +36,7 @@ export class PaymentsService implements OnModuleInit {
     await orders.createIndex({ providerId: 1, kind: 1 }, { unique: true, partialFilterExpression: { providerId: { $type: 'string' } } });
     await orders.createIndex({ userId: 1, reservedAt: 1 });
     await orders.createIndex({ status: 1, checkedAt: 1 });
+    await orders.createIndex({ kind: 1, createdAt: -1 });
     await this.db.collection('finance_ipn').createIndex({ hash: 1 }, { unique: true });
     await this.db.collection('finance_ipn').createIndex({ processed: 1, receivedAt: 1 });
     await this.db.collection('finance_challenges').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
@@ -68,6 +76,29 @@ export class PaymentsService implements OnModuleInit {
     const enabled = new Set(coins.map(c => c.toLowerCase()));
     return Object.entries(configured).filter(([, code]) => enabled.has(code)).map(([network, currency]) => ({ network, currency, asset: 'USDT' }));
   }
+  /** Networks for the client, with an approximate deposit fee where recent provider quotes exist. */
+  async networkOptions() {
+    const [rows, fees] = await Promise.all([this.networks(), this.depositFeeEstimates()]);
+    return rows.map(row => (fees[row.network] ? { ...row, depositFee: fees[row.network] } : row));
+  }
+  /**
+   * NOWPayments has no fee estimate for incoming payments, but quotes amount_received when each deposit is created.
+   * The fixed network part is the median of the latest quotes per network: fee = fixed + amount × rate.
+   */
+  async depositFeeEstimates(): Promise<Record<string, { fixed: string; rate: string }>> {
+    const rows = await this.db.collection('finance_orders').find(
+      { kind: 'deposit', expectedCredit: { $exists: true }, createdAt: { $gte: new Date(Date.now() - 30 * 86400000) } },
+      { projection: { network: 1, amount: 1, expectedCredit: 1 }, sort: { createdAt: -1 }, limit: 200 }).toArray();
+    const samples: Record<string, Decimal[]> = {};
+    for (const row of rows) {
+      const list = (samples[row.network] ??= []);
+      if (list.length >= 10) continue;
+      const amount = new Decimal(String(row.amount));
+      list.push(Decimal.max(0, amount.minus(String(row.expectedCredit)).minus(amount.times(DEPOSIT_SERVICE_RATE))));
+    }
+    return Object.fromEntries(Object.entries(samples).map(([network, list]) =>
+      [network, { fixed: median(list).toDecimalPlaces(6, Decimal.ROUND_UP).toFixed(6), rate: DEPOSIT_SERVICE_RATE }]));
+  }
   async currency(network: string): Promise<string> {
     const found = (await this.networks()).find(n => n.network === network);
     if (!found) throw new BadRequestException('USDT_NETWORK_UNAVAILABLE');
@@ -76,7 +107,7 @@ export class PaymentsService implements OnModuleInit {
   private expose(order: any) {
     return { id: String(order._id), kind: order.kind, asset: 'USDT', network: order.network,
       amount: order.amount, credited: order.credited, fee: order.fee, net: order.net, status: order.status,
-      address: order.address, payAmount: order.payAmount, expiresAt: order.expiresAt,
+      address: order.address, payAmount: order.payAmount, expectedCredit: order.expectedCredit, expiresAt: order.expiresAt,
       createdAt: order.createdAt, reviewReason: order.reviewReason };
   }
   async get(userId: string, id: string) {
