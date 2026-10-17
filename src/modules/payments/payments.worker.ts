@@ -13,6 +13,11 @@ import { assertWithdrawalAuthorization, withdrawalAuthorization } from './withdr
 import { fingerprint } from './canonical';
 import { settleGameRoom } from './game-finance';
 import { totp } from './totp';
+import { DEFAULT_USDT_NETWORKS } from './payments-policy.service';
+
+// NOWPayments settles every payment into the merchant's payout currency (e.g. USDTBSC deposits into USDTTRC20).
+// The ledger holds one USDT balance, so any USDT network is an acceptable settlement; nothing else is ever credited.
+const USDT_SETTLEMENTS = new Set<string>(Object.values(DEFAULT_USDT_NETWORKS));
 
 /** NOWPayments' quote of what settles after fees. Display-only: the ledger always credits the final outcome_amount. */
 function expectedCredit(value: unknown): { expectedCredit?: string } {
@@ -149,7 +154,7 @@ export class PaymentsWorker {
         { $set: { providerId, status: payment.payment_status === 'confirmed' ? 'confirming' : payment.payment_status } });
       return;
     }
-    if (payment.outcome_currency !== order.currency) throw new Error('SETTLEMENT_CURRENCY_MISMATCH');
+    if (!USDT_SETTLEMENTS.has(String(payment.outcome_currency).toLowerCase())) throw new Error('SETTLEMENT_CURRENCY_MISMATCH');
     const settled = positiveMoney(String(payment.outcome_amount));
     await this.ledger.transaction(async session => {
       const current = await this.db.collection('finance_orders').findOne({ _id: order._id }, { session });
@@ -165,7 +170,7 @@ export class PaymentsWorker {
       ], session);
       await this.db.collection('users').updateOne({ _id: new Types.ObjectId(order.userId) }, { $inc: { total_recharged: Types.Decimal128.fromString(settled) } }, { session });
       await this.db.collection('finance_orders').updateOne({ _id: order._id }, { $set: {
-        providerId, status: 'confirmed', credited: settled, confirmedAt: new Date(),
+        providerId, status: 'confirmed', credited: settled, settledCurrency: String(payment.outcome_currency).toLowerCase(), confirmedAt: new Date(),
         amountRelation: new Decimal(payment.actually_paid).cmp(payment.pay_amount),
       } }, { session });
     });

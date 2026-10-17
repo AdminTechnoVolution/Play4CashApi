@@ -117,10 +117,16 @@ suite('MongoDB financial transactions and restart recovery', () => {
     ]);
     provider.merchantCoins.mockResolvedValueOnce({ selectedCurrencies: ['USDTTRC20', 'USDTBSC', 'USDTSOL'] });
     expect(await payments.networkOptions()).toEqual([
-      { network: 'TRC20', currency: 'usdttrc20', asset: 'USDT', depositFee: { fixed: '5.511000', rate: '0.005' } },
-      { network: 'BEP20', currency: 'usdtbsc', asset: 'USDT', depositFee: { fixed: '0.500000', rate: '0.005' } },
-      { network: 'SOLANA', currency: 'usdtsol', asset: 'USDT' },
+      { network: 'TRC20', currency: 'usdttrc20', asset: 'USDT', withdrawable: true, depositFee: { fixed: '5.511000', rate: '0.005' } },
+      { network: 'BEP20', currency: 'usdtbsc', asset: 'USDT', withdrawable: false, depositFee: { fixed: '0.500000', rate: '0.005' } },
+      { network: 'SOLANA', currency: 'usdtsol', asset: 'USDT', withdrawable: false },
     ]);
+  });
+  it('quotes withdrawals only on TRC20, before contacting the provider', async () => {
+    await expect(payments.quote(userId, 'BEP20', '0xFixtureAddress000000000000000000000000', '10')).rejects.toThrow('WITHDRAWAL_NETWORK_UNAVAILABLE');
+    expect(provider.validateAddress).not.toHaveBeenCalled();
+    expect(provider.payoutFee).not.toHaveBeenCalled();
+    expect(await payments.quote(userId, 'TRC20', 'TFixtureAddress0000000000000000000', '10')).toMatchObject({ network: 'TRC20', net: '10.000000' });
   });
   it('records a provider-rejected deposit without credit or resend', async () => {
     const order = { _id: new Types.ObjectId(), userId, kind: 'deposit', key: randomUUID(), amount: '10.000000', currency: 'usdttrc20', status: 'created' };
@@ -307,6 +313,26 @@ suite('MongoDB financial transactions and restart recovery', () => {
     await restarted.reconcileDeposit(order, '123');
     expect((await ledger.balances(userId)).available).toBe('9.800000');
     expect(await db.collection('finance_journals').countDocuments()).toBe(1);
+  });
+  it('credits a USDT deposit that NOWPayments settles into another USDT network', async () => {
+    const order = { _id: new Types.ObjectId(), userId, kind: 'deposit', key: 'cross-network-key', hash: 'test',
+      network: 'BEP20', currency: 'usdtbsc', amount: '100.000000', providerId: '456', status: 'waiting' };
+    await db.collection('finance_orders').insertOne(order);
+    provider.deposit.mockResolvedValue({ payment_id: '456', order_id: String(order._id), pay_currency: 'usdtbsc',
+      outcome_currency: 'usdttrc20', payment_status: 'finished', outcome_amount: '99.150086', actually_paid: '0', pay_amount: '100' });
+    await worker.reconcileDeposit(order, '456');
+    expect((await ledger.balances(userId)).available).toBe('99.150086');
+    expect(await db.collection('finance_orders').findOne({ _id: order._id })).toMatchObject({ status: 'confirmed', settledCurrency: 'usdttrc20' });
+  });
+  it('never credits a settlement outside USDT', async () => {
+    const order = { _id: new Types.ObjectId(), userId, kind: 'deposit', key: 'non-usdt-settlement', hash: 'test',
+      network: 'TRC20', currency: 'usdttrc20', amount: '10.000000', providerId: '789', status: 'waiting' };
+    await db.collection('finance_orders').insertOne(order);
+    provider.deposit.mockResolvedValue({ payment_id: '789', order_id: String(order._id), pay_currency: 'usdttrc20',
+      outcome_currency: 'btc', payment_status: 'finished', outcome_amount: '0.0001', actually_paid: '10', pay_amount: '10' });
+    await expect(worker.reconcileDeposit(order, '789')).rejects.toThrow('SETTLEMENT_CURRENCY_MISMATCH');
+    expect(await db.collection('finance_journals').countDocuments()).toBe(0);
+    expect((await db.collection('finance_orders').findOne({ _id: order._id }))?.status).toBe('waiting');
   });
   it('rejects a deposit in the wrong network/currency', async () => {
     provider.deposit.mockResolvedValue({ payment_id: '123', order_id: 'x', pay_currency: 'btc' });

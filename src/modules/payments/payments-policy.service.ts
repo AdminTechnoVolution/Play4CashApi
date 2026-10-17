@@ -8,6 +8,9 @@ export const DEFAULT_USDT_NETWORKS = {
   TRC20: 'usdttrc20', ERC20: 'usdterc20', BEP20: 'usdtbsc',
   POLYGON: 'usdtmatic', ARBITRUM: 'usdtarb', TON: 'usdtton', SOLANA: 'usdtsol',
 };
+// NOWPayments settles every deposit into USDTTRC20, so provider liquidity only exists on TRC20. Payouts on other
+// networks would wait forever for a balance in their own currency.
+export const WITHDRAWAL_NETWORKS = new Set(['TRC20']);
 
 @Injectable()
 export class PaymentsPolicy {

@@ -7,7 +7,7 @@ import * as bcrypt from 'bcryptjs';
 import Decimal from 'decimal.js';
 import { LedgerService } from './ledger.service';
 import { NowPaymentsClient } from './nowpayments.client';
-import { PaymentsPolicy } from './payments-policy.service';
+import { PaymentsPolicy, WITHDRAWAL_NETWORKS } from './payments-policy.service';
 import { fingerprint } from './canonical';
 import { positiveMoney, money, reviewRequired } from './money';
 import { EmailService } from '../../common/email/email.service';
@@ -79,7 +79,7 @@ export class PaymentsService implements OnModuleInit {
   /** Networks for the client, with an approximate deposit fee where recent provider quotes exist. */
   async networkOptions() {
     const [rows, fees] = await Promise.all([this.networks(), this.depositFeeEstimates()]);
-    return rows.map(row => (fees[row.network] ? { ...row, depositFee: fees[row.network] } : row));
+    return rows.map(row => ({ ...row, withdrawable: WITHDRAWAL_NETWORKS.has(row.network), ...(fees[row.network] ? { depositFee: fees[row.network] } : {}) }));
   }
   /**
    * NOWPayments has no fee estimate for incoming payments, but quotes amount_received when each deposit is created.
@@ -158,6 +158,7 @@ export class PaymentsService implements OnModuleInit {
     this.policy.enabled('withdrawals');
     await this.policy.eligibility(userId);
     const net = positiveMoney(rawNet);
+    if (!WITHDRAWAL_NETWORKS.has(network)) throw new BadRequestException('WITHDRAWAL_NETWORK_UNAVAILABLE');
     const currency = await this.currency(network);
     await this.provider.validateAddress(currency, address);
     const result = await this.provider.payoutFee(currency, net);
