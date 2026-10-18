@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { RoomService } from './room.service';
 import { RoomStatus } from './schemas/room.schema';
@@ -206,6 +207,23 @@ describe('RoomService ready requests', () => {
 
     await expect(service.setReady(creatorId.toString(), room._id.toString(), true)).resolves.toBe(room);
     expect(markReady).not.toHaveBeenCalled();
+  });
+
+  it('ignores a ready that arrives after the start was triggered', async () => {
+    const { service, room, creatorId } = makeJoinHarness(2);
+    room.status = RoomStatus.STARTED;
+    room.game_ready_at = new Date();
+    const markReady = jest.spyOn(service, 'markReady').mockResolvedValue(room);
+
+    await expect(service.setReady(creatorId.toString(), room._id.toString(), true)).resolves.toBe(room);
+    expect(markReady).not.toHaveBeenCalled();
+  });
+
+  it('answers normally when the start lands while the ready command is being retried', async () => {
+    const { service, room, creatorId } = makeJoinHarness(2);
+    jest.spyOn(service, 'markReady').mockRejectedValue(new ConflictException('MATCH_ALREADY_STARTED'));
+
+    await expect(service.setReady(creatorId.toString(), room._id.toString(), true)).resolves.toBe(room);
   });
 
   it('records the first ready as a room command', async () => {

@@ -6,7 +6,7 @@ import { gameFinancialUpdate } from '../payments/game-finance';
 import { positiveMoney, bsonMoney } from '../payments/money';
 import { LedgerService } from '../payments/ledger.service';
 import Decimal from 'decimal.js';
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Room, RoomDocument, RoomStatus } from './schemas/room.schema';
@@ -426,6 +426,7 @@ export class RoomService {
   /**
    * Clients repeat this call while their waiting room syncs. One that changes nothing must not become a room command:
    * its version bump would reject the move a player sends at that moment (seen in production as a lost first move).
+   * Once the start is triggered (game_ready_at) it changes nothing either: game sockets mark their players ready.
    */
   async setReady(userId: string, roomId: string, ready: boolean, lang = 'en'): Promise<RoomDocument> {
     const room = await this.roomModel.findById(roomId).populate('game_id', 'max_players');
@@ -434,8 +435,13 @@ export class RoomService {
 
     const player = room.players.find((p: any) => p.playerId.toString() === userId);
     if (!player) throw new BusinessException('ERROR_AUTH', 403);
-    if (player.ready) return room;
-    return this.markReady(userId, roomId, ready, lang);
+    if (player.ready || room.game_ready_at || room.play_started_at) return room;
+    try {
+      return await this.markReady(userId, roomId, ready, lang);
+    } catch (error) {
+      if (error instanceof ConflictException && error.message === 'MATCH_ALREADY_STARTED') return room;
+      throw error;
+    }
   }
 
   @ReliableRoomServiceAction()
@@ -443,6 +449,8 @@ export class RoomService {
     const room = await this.roomModel.findById(roomId).populate('game_id', 'max_players');
     if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
     if (room.status !== RoomStatus.WAITING && room.status !== RoomStatus.STARTED) return room;
+    // Version conflicts are retried, so this can run after the start; failing here rolls back the version bump.
+    if (room.game_ready_at || room.play_started_at) throw new ConflictException('MATCH_ALREADY_STARTED');
 
     const player = room.players.find((p: any) => p.playerId.toString() === userId);
     if (!player) throw new BusinessException('ERROR_AUTH', 403);

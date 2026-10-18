@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { createConnection, Connection, Schema, Types } from 'mongoose';
 import { randomUUID } from 'crypto';
 import { configureReliableCommands, executeReliableAction, durableEmit, registerReliableNamespace, ReliableAction, ReliableDisconnectAction, ReliableRoomServiceAction } from './reliable-commands';
@@ -167,6 +168,20 @@ suite('durable gameplay transactions', () => {
       const results = await Promise.all([rooms.place(actor, roomId), rooms.place(opponent, roomId)]);
       expect(results).toEqual([{ placed: actor }, { placed: opponent }]);
       expect((await games.findOne({ room_id: roomId })).board).toEqual([1, 1]);
+    } finally { delete process.env.RELIABLE_COMMANDS_ENABLED; }
+  });
+
+  it('leaves the room version alone when a REST room action declines inside its command', async () => {
+    process.env.RELIABLE_COMMANDS_ENABLED = 'true';
+    try {
+      class Rooms {
+        @ReliableRoomServiceAction()
+        async markReady(_userId: string, _room: string): Promise<never> { throw new ConflictException('MATCH_ALREADY_STARTED'); }
+      }
+      const before = (await db.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) }))?.command_revision ?? 0;
+      await expect(new Rooms().markReady(actor, roomId)).rejects.toThrow('MATCH_ALREADY_STARTED');
+      // A player's next move is sent with this version; a bump here would reject it.
+      expect((await db.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) }))?.command_revision ?? 0).toBe(before);
     } finally { delete process.env.RELIABLE_COMMANDS_ENABLED; }
   });
 });
