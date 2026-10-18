@@ -128,7 +128,7 @@ async function executeReliableActionImpl(
         { $set: { command_revision: expectedVersion + 1 } }, { session });
       if (!claimed.modifiedCount) throw new ConflictException('COMMAND_VERSION_CONFLICT');
       const context = { session, roomId, version: expectedVersion + 1, events: [] as DurableEvent[], rejected: false };
-      const isStartAction = name.startsWith('tryStart') || name === 'saveBattleshipPlacement' || name === 'handlePlaceShips' || name === 'setReady';
+      const isStartAction = name.startsWith('tryStart') || name === 'saveBattleshipPlacement' || name === 'handlePlaceShips' || name === 'markReady';
       if (!internal && !isStartAction && name !== 'leaveRoom' && !canPlay(room)) throw new ConflictException('MATCH_NOT_ACTIVE');
       await commandContext.run(context, async () => {
         await work();

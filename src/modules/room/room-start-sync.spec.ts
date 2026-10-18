@@ -196,3 +196,23 @@ describe('RoomService authoritative room start synchronization', () => {
     expect(outsider.data.isCurrentUserInRoom).toBe(false);
   });
 });
+
+describe('RoomService ready requests', () => {
+  it('answers a repeated ready without a room command, so it cannot bump the version under a player move', async () => {
+    const { service, room, creatorId } = makeJoinHarness(2);
+    room.status = RoomStatus.STARTED;
+    room.players[0].ready = true;
+    const markReady = jest.spyOn(service, 'markReady').mockResolvedValue(room);
+
+    await expect(service.setReady(creatorId.toString(), room._id.toString(), true)).resolves.toBe(room);
+    expect(markReady).not.toHaveBeenCalled();
+  });
+
+  it('records the first ready as a room command', async () => {
+    const { service, room, creatorId } = makeJoinHarness(2);
+    const markReady = jest.spyOn(service, 'markReady').mockResolvedValue(room);
+
+    await service.setReady(creatorId.toString(), room._id.toString(), true, 'es');
+    expect(markReady).toHaveBeenCalledWith(creatorId.toString(), room._id.toString(), true, 'es');
+  });
+});

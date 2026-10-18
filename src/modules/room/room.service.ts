@@ -423,8 +423,23 @@ export class RoomService {
 
   // ── SET READY ───────────────────────────────────────────────────────────────
 
-  @ReliableRoomServiceAction()
+  /**
+   * Clients repeat this call while their waiting room syncs. One that changes nothing must not become a room command:
+   * its version bump would reject the move a player sends at that moment (seen in production as a lost first move).
+   */
   async setReady(userId: string, roomId: string, ready: boolean, lang = 'en'): Promise<RoomDocument> {
+    const room = await this.roomModel.findById(roomId).populate('game_id', 'max_players');
+    if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
+    if (room.status !== RoomStatus.WAITING && room.status !== RoomStatus.STARTED) return room;
+
+    const player = room.players.find((p: any) => p.playerId.toString() === userId);
+    if (!player) throw new BusinessException('ERROR_AUTH', 403);
+    if (player.ready) return room;
+    return this.markReady(userId, roomId, ready, lang);
+  }
+
+  @ReliableRoomServiceAction()
+  async markReady(userId: string, roomId: string, ready: boolean, lang = 'en'): Promise<RoomDocument> {
     const room = await this.roomModel.findById(roomId).populate('game_id', 'max_players');
     if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
     if (room.status !== RoomStatus.WAITING && room.status !== RoomStatus.STARTED) return room;

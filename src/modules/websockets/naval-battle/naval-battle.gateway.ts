@@ -522,7 +522,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         const sLang = this.getLang(s as unknown as Socket);
         const pid = (s as any).data.player_id;
         const isWinner = pid === player_id;
-        const sData: any = { outcome: isWinner ? 'win' : 'lose', youWon: isWinner && !sIsSpectator, winner: isWinner ? (sIsSpectator ? winnerUsername : player_id) : (sIsSpectator ? winnerUsername : player_id), reason: 'normal', row, col, shipType, prize: isWinner ? displayPrize : 0, yourTurn: false, gameEnded: true, isSpectator: sIsSpectator };
+        const sData: any = { outcome: isWinner ? 'win' : 'lose', youWon: isWinner && !sIsSpectator, winner: isWinner ? (sIsSpectator ? winnerUsername : player_id) : (sIsSpectator ? winnerUsername : player_id), reason: 'normal', row, col, shipType, prize: isWinner ? displayPrize : 0, yourTurn: false, gameEnded: true, isSpectator: sIsSpectator, ...(sIsSpectator ? {} : { yourShot: isWinner }) };
         if (sIsSpectator) { sData.player1 = player1; sData.player2 = player2; sData.shotFrom = winnerUsername; sData.turnOf = winnerUsername; sData.winner = winnerUsername; }
         
         let msg = '';
@@ -565,7 +565,8 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       const sLang = this.getLang(s as unknown as Socket);
       const pid = (s as any).data.player_id;
       const isShooter = pid === player_id;
-      const sData: any = { outcome, row, col, shipType: (outcome === 'sunk' ? shipType : null), yourTurn: (isShooter ? keepTurn : !keepTurn) && !sIsSpectator, turnTimerSeconds: timerSeconds, isSpectator: sIsSpectator };
+      // yourShot tells each player which board the shot belongs to; a local "I just fired" flag gets lost on resyncs.
+      const sData: any = { outcome, row, col, shipType: (outcome === 'sunk' ? shipType : null), yourTurn: (isShooter ? keepTurn : !keepTurn) && !sIsSpectator, turnTimerSeconds: timerSeconds, isSpectator: sIsSpectator, ...(sIsSpectator ? {} : { yourShot: isShooter }) };
       if (sIsSpectator) { sData.player1 = player1; sData.player2 = player2; sData.shotFrom = shooterUsername; sData.turnOf = keepTurn ? shooterUsername : (player_id === p1Id ? player2 : player1); }
 
       let msg = '';
