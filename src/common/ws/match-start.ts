@@ -15,8 +15,9 @@ export function isPreparing(room: any): boolean {
 export function canPlay(room: any, now = Date.now()): boolean {
   return room?.start_protocol !== 1 || (room.status === 'started' && !!room.play_started_at && new Date(room.play_started_at).getTime() <= now);
 }
+/** `version` is the room revision: opening the barrier advances it without a snapshot, so clients learn it here. */
 export function startState(room: any) {
-  return { roomId: String(room._id), protocol: room.start_protocol ?? 0,
+  return { roomId: String(room._id), protocol: room.start_protocol ?? 0, version: Number(room.command_revision ?? 0),
     phase: room.status === 'finished' ? 'finished' : room.play_started_at ? 'active' : room.start_protocol === 1 ? 'preparing' : 'legacy',
     startsAt: room.play_started_at ? new Date(room.play_started_at).toISOString() : null,
     serverNow: new Date().toISOString(), reason: room.winner_reason ?? null };
@@ -59,7 +60,7 @@ export async function acknowledgeInitialState(db: Connection, namespace: string,
     await db.collection('turn_deadlines').updateOne({ game_name: code, room_id: roomId }, { $set: {
       player_id: String(currentPlayer), expires_at: new Date(startsAt.getTime() + timerSeconds * 1000), processing: false,
     } }, { session, upsert: true });
-    const state = startState({ ...room, play_started_at: startsAt });
+    const state = startState({ ...room, play_started_at: startsAt, command_revision: Number(room.command_revision ?? 0) + 1 });
     await db.collection('game_outbox').insertOne({ roomId, sequence: Number(room.command_revision ?? 0) + 1, index: 0,
       published: false, createdAt: now, event: { namespace, rooms: players.map((p: any) => `player:${p.playerId}`),
         except: [], event: 'match_start_state', args: [state] } }, { session });

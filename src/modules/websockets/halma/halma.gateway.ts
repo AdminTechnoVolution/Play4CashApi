@@ -208,10 +208,13 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     client.data.room_id = room_id;
     client.data.isSpectator = !isMember;
 
+    // Start decisions below must see this player as ready, not the room as it was before the update.
+    let readyRoom: any = null;
     if (isMember && (room.status === 'waiting' || room.status === 'started')) {
-      await this.roomModel.updateOne(
+      readyRoom = await this.roomModel.findOneAndUpdate(
         { _id: room_id, status: { $in: ['waiting', 'started'] }, 'players.playerId': new Types.ObjectId(player_id) },
         { $set: { 'players.$.ready': true, 'players.$.ready_at': new Date(), 'players.$.game_socket_joined_at': new Date() } },
+        { returnDocument: 'after' },
       );
     }
 
@@ -300,7 +303,7 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
     });
 
     const maxPlayers = room.player_limit || room.game_id?.max_players || 2;
-    if (room.players.length >= maxPlayers && room.players.every((player: any) => player.ready) && (room.status === 'waiting' || room.status === 'started')) {
+    if (room.players.length >= maxPlayers && (readyRoom ?? room).players.every((player: any) => player.ready) && (room.status === 'waiting' || room.status === 'started')) {
       await this.tryStartHalmaGame(room_id, lang);
     }
     scheduleWaitingRoomReconcile(room_id, () => this.tryStartHalmaGame(room_id, lang));

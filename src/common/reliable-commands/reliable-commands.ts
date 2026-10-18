@@ -108,7 +108,9 @@ async function executeReliableActionImpl(
       const existing = await db.collection('game_commands').findOne({ _id: id as any }, { session });
       if (existing) {
         if (existing.hash !== hash) throw new ConflictException('COMMAND_ID_CONFLICT');
-        return existing.result;
+        // Rejections of server commands used to be stored; re-evaluate them instead of replaying (see below).
+        if (internal && existing.result?.status === 'rejected') await db.collection('game_commands').deleteOne({ _id: id as any }, { session });
+        else return existing.result;
       }
       const room = await db.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) }, { session });
       if (!room || (!internal && !room.players?.some((p: any) => String(p.playerId) === actorId))) {
@@ -154,7 +156,10 @@ async function executeReliableActionImpl(
       throw error;
     }
   }
-  if (outcome?.status === 'rejected') {
+  // Player commands keep their rejection so a retried command gets the same answer. A server command's id only
+  // encodes the room version, and a rejection does not advance it: storing one would replay that rejection for every
+  // later attempt at the same version, e.g. a start tried before the opponent was ready would block the match forever.
+  if (outcome?.status === 'rejected' && !internal) {
     await db.collection('game_commands').updateOne({ _id: id as any }, { $setOnInsert: {
       roomId, actorId, commandId, hash, result: outcome, createdAt: new Date(),
     } }, { upsert: true });
@@ -312,13 +317,17 @@ export function ReliableRoomServiceAction(): MethodDecorator {
       const room = await db.collection('rooms').findOne({ _id: new Types.ObjectId(roomId) });
       const catalogue = room ? await db.collection('games').findOne({ _id: room.game_id }) : null;
       const namespace = catalogue?.socket_code === 'battleship' ? '/naval-battle' : `/${catalogue?.socket_code ?? 'rooms'}`;
-      const version = await durableVersion(roomId);
-      const id = randomUUID();
-      let value: any;
-      const result = await executeReliableAction(roomId, userId, id, version, String(property), { userId, roomId, args }, namespace,
-        async () => { value = await original.call(this, userId, roomId, ...args); });
-      if (result.status !== 'accepted') throw new ConflictException(result.reason ?? 'ROOM_ACTION_REJECTED');
-      return value ?? { ...result, success: true };
+      // The version is read here, not sent by the client, so a version conflict only means another command committed
+      // first (e.g. both players confirming their fleet at once): retry on the new version. The action still
+      // validates its own state, so a retry can never apply it twice.
+      for (let attempt = 1; ; attempt++) {
+        const version = await durableVersion(roomId);
+        let value: any;
+        const result = await executeReliableAction(roomId, userId, randomUUID(), version, String(property), { userId, roomId, args }, namespace,
+          async () => { value = await original.call(this, userId, roomId, ...args); });
+        if (result.status === 'accepted') return value ?? { ...result, success: true };
+        if (result.reason !== 'COMMAND_VERSION_CONFLICT' || attempt >= 5) throw new ConflictException(result.reason ?? 'ROOM_ACTION_REJECTED');
+      }
     };
   };
 }

@@ -27,6 +27,9 @@ import { TournamentMatchService } from '../../tournament/services/tournament-mat
 const turnTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const clearTimer = (id: string) => { const t = turnTimers.get(id); if (t) { clearTimeout(t); turnTimers.delete(id); } };
 
+/** History holds shots only: confirming a fleet over REST also records a move, which has no target cell. */
+const isShot = (move: any) => Number.isInteger(move?.data?.row) && Number.isInteger(move?.data?.col);
+
 @WebSocketGateway({ namespace: '/naval-battle', cors: buildWebSocketCorsOptions() })
 export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleInit {
   @WebSocketServer() server: Server;
@@ -99,7 +102,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!room) return;
 
     // Store move count to calculate missed shots on reconnection
-    const totalMoves = (room.players[0]?.moves?.length || 0) + (room.players[1]?.moves?.length || 0);
+    const totalMoves = room.players.reduce((count: number, p: any) => count + (p.moves ?? []).filter(isShot).length, 0);
     await this.redis.set(`last_move_index:naval-battle:${room_id}:${player_id}`, totalMoves.toString(), 'EX', 300);
 
     // Save remaining turn time BEFORE clearing the timer
@@ -232,7 +235,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     // Phase B: cancel any open disconnect grace via the distributed service.
     await this.grace.cancel('naval-battle', player_id);
 
-    await this.syncPlayerState(client, room_id, player_id);
+    await this.syncPlayerState(client, room_id, player_id, true);
   }
 
   @SubscribeMessage('get_state')
@@ -241,7 +244,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     await this.syncPlayerState(client, payload?.room_id || client.data.room_id, client.data.player_id);
   }
 
-  private async syncPlayerState(client: Socket, room_id: string, player_id: string) {
+  private async syncPlayerState(client: Socket, room_id: string, player_id: string, announce = false) {
     const lang = this.getLang(client);
     if (!room_id) return durableEmit(client, 'naval-battle', { success: false, messages: [this.i18n.translate('ws.invalidMessageFormat', lang)] });
     
@@ -282,11 +285,12 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
         yourTurn: false, turnTimerSeconds: 30,
         isSpectator: true, spectatorsCount: room.spectators.length,
         player1, player2, shotFrom, turnOf: shotFrom,
-        history: room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: i === 0 ? player1 : player2 })))
+        history: room.players.flatMap((p, i) => p.moves.filter(isShot).map(m => ({ ...m.data, player: i === 0 ? player1 : player2 })))
       }, messages: [] });
     }
 
-    const socketsInRoom = await this.server.in(room_id).fetchSockets();
+    // Announce an arrival once, before the match: resyncs and reconnects must not repeat "opponent joined".
+    const socketsInRoom = announce && !room.game_ready_at ? await this.server.in(room_id).fetchSockets() : [];
     if (socketsInRoom.length > 1) {
       const username = await this.getCachedUsername(player_id);
       durableEmit(client.to(room_id), 'naval-battle', { success: true, data: { opponentJoined: true, opponentName: username }, messages: [this.i18n.translate('ws.games.opponentJoined', lang, { username })] });
@@ -312,7 +316,7 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
     ]);
 
     if (myPlacement) {
-      const history = room.players.flatMap((p, i) => p.moves.map(m => ({ ...m.data, player: i === 0 ? player1 : player2 })));
+      const history = room.players.flatMap((p, i) => p.moves.filter(isShot).map(m => ({ ...m.data, player: i === 0 ? player1 : player2 })));
       
       let missedShots = [];
       if (lastMoveIndexStr) {
@@ -351,7 +355,11 @@ export class NavalBattleGateway implements OnGatewayInit, OnGatewayConnection, O
       }, messages: [this.i18n.translate('ws.games.roomReconnected', lang)] });
     }
 
-    durableEmit(client, 'naval-battle', { success: true, data: { waitingForOpponent: true, isSpectator: false }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
+    // The caller learns whether the opponent is already seated, so it never depends on having caught the one-off
+    // "opponent joined" broadcast to enable fleet confirmation.
+    const opponentName = opponent_id ? await this.getCachedUsername(opponent_id) : null;
+    durableEmit(client, 'naval-battle', { success: true, data: { waitingForOpponent: true, isSpectator: false,
+      ...(opponentName ? { opponentPresent: true, opponentName } : {}) }, messages: [this.i18n.translate('ws.games.waitingOpponent', lang)] });
   }
 
   @SubscribeMessage('place_ships')

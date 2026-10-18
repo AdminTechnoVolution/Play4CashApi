@@ -1,6 +1,7 @@
 import { createConnection, Connection, Schema, Types } from 'mongoose';
 import { randomUUID } from 'crypto';
-import { configureReliableCommands, executeReliableAction, durableEmit, registerReliableNamespace, ReliableAction, ReliableDisconnectAction } from './reliable-commands';
+import { configureReliableCommands, executeReliableAction, durableEmit, registerReliableNamespace, ReliableAction, ReliableDisconnectAction, ReliableRoomServiceAction } from './reliable-commands';
+import { fingerprint } from '../../modules/payments/canonical';
 import { LedgerService } from '../../modules/payments/ledger.service';
 import { gameFinancialUpdate, settleGameRoom } from '../../modules/payments/game-finance';
 const uri = process.env.P4C_TEST_MONGO_URI;
@@ -129,5 +130,43 @@ suite('durable gameplay transactions', () => {
     expect(client.emit).toHaveBeenCalledWith('match_start_retry');
     expect(client.emit).toHaveBeenCalledWith('command_ack', { commandId: 'cmd-0123456789abcdef', roomId,
       status: 'rejected', reason: 'MATCH_NOT_ACTIVE', version: 4 });
+  });
+  it('re-evaluates a rejected server start at the same version instead of replaying the rejection', async () => {
+    let ready = false;
+    const start = () => executeReliableAction(roomId, 'server', 'server:tryStartTestGame:0', 0, 'tryStartTestGame', { roomId }, '/test', async () => {
+      if (ready) durableEmit({ name: '/test' }, 'test', { success: true, data: { gameStarted: true } });
+    }, true);
+    // First attempt: the opponent is not ready yet, so the start does nothing and is rejected without advancing.
+    expect(await start()).toMatchObject({ status: 'rejected', version: 0 });
+    expect(await db.collection('game_commands').countDocuments({})).toBe(0);
+    ready = true;
+    expect(await start()).toMatchObject({ status: 'accepted', version: 1 });
+  });
+  it('runs a server command again when an earlier version stored its rejection', async () => {
+    const payload = { roomId };
+    await db.collection('game_commands').insertOne({ _id: `${roomId}:server:server:tryStartTestGame:0` as any, roomId, actorId: 'server',
+      commandId: 'server:tryStartTestGame:0', hash: fingerprint({ name: 'tryStartTestGame', payload }),
+      result: { commandId: 'server:tryStartTestGame:0', roomId, status: 'rejected', version: 0 }, createdAt: new Date() });
+    const result = await executeReliableAction(roomId, 'server', 'server:tryStartTestGame:0', 0, 'tryStartTestGame', payload, '/test', async () => {
+      durableEmit({ name: '/test' }, 'test', { success: true, data: { gameStarted: true } });
+    }, true);
+    expect(result).toMatchObject({ status: 'accepted', version: 1 });
+  });
+  it('completes simultaneous REST room actions by retrying the one that lost the version', async () => {
+    process.env.RELIABLE_COMMANDS_ENABLED = 'true';
+    try {
+      class Rooms {
+        @ReliableRoomServiceAction()
+        async place(userId: string, room: string) {
+          await games.updateOne({ room_id: room }, { $push: { board: 1 } });
+          return { placed: userId };
+        }
+      }
+      const rooms = new Rooms();
+      // Both players confirm at once (e.g. their battleship fleets); one claims the version first.
+      const results = await Promise.all([rooms.place(actor, roomId), rooms.place(opponent, roomId)]);
+      expect(results).toEqual([{ placed: actor }, { placed: opponent }]);
+      expect((await games.findOne({ room_id: roomId })).board).toEqual([1, 1]);
+    } finally { delete process.env.RELIABLE_COMMANDS_ENABLED; }
   });
 });
