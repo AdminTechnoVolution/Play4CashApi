@@ -31,7 +31,6 @@ export class RoomService {
   private readonly liveStatsCache = new TtlCache<any>();
   private readonly roomsByGameCache = new TtlCache<any>();
   private readonly roomByIdCache = new TtlCache<any>();
-  private readonly roomStatusCache = new TtlCache<any>();
   private readonly activeRoomCache = new TtlCache<any>();
 
   constructor(
@@ -132,24 +131,24 @@ export class RoomService {
   }
 
   async getRoomStatus(id: string): Promise<any> {
-    return this.roomStatusCache.getOrSet(`room-status:${id}`, 2_000, async () => {
-      const room = await this.roomModel.findById(id).populate('game_id', 'name').lean();
-      if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
-      return {
-        success: true,
-        messages: [],
-        data: {
-          id: room._id,
-          status: room.status,
-          playerCount: room.players.length,
-          playerLimit: room.player_limit || (room.game_id as any)?.max_players || 2,
-          bet_amount: room.bet_amount,
-          currentPlayer: room.status === RoomStatus.STARTED ? room.players[0].playerId : null,
-          winner: room.winner || null,
-          winner_reason: room.winner_reason || (room.status === RoomStatus.STARTED ? 'playing' : null),
-        },
-      };
-    });
+    // Leave prechecks must observe timeout/finish writes made by the game gateways,
+    // which do not invalidate RoomService's read caches.
+    const room = await this.roomModel.findById(id).populate('game_id', 'name').lean();
+    if (!room) throw new BusinessException('ERROR_NOT_FOUND', 404);
+    return {
+      success: true,
+      messages: [],
+      data: {
+        id: room._id,
+        status: room.status,
+        playerCount: room.players.length,
+        playerLimit: room.player_limit || (room.game_id as any)?.max_players || 2,
+        bet_amount: room.bet_amount,
+        currentPlayer: room.status === RoomStatus.STARTED ? room.players[0].playerId : null,
+        winner: room.winner || null,
+        winner_reason: room.winner_reason || (room.status === RoomStatus.STARTED ? 'playing' : null),
+      },
+    };
   }
 
   async getRoomState(id: string, userId: string): Promise<any> {
@@ -853,7 +852,6 @@ export class RoomService {
     this.liveStatsCache.clear();
     this.roomsByGameCache.clear();
     this.roomByIdCache.clear();
-    this.roomStatusCache.clear();
     this.activeRoomCache.clear();
   }
 }
