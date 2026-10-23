@@ -31,7 +31,6 @@ export class RoomService {
   private readonly liveStatsCache = new TtlCache<any>();
   private readonly roomsByGameCache = new TtlCache<any>();
   private readonly roomByIdCache = new TtlCache<any>();
-  private readonly activeRoomCache = new TtlCache<any>();
 
   constructor(
     @InjectModel(Room.name) private readonly roomModel: Model<RoomDocument>,
@@ -177,25 +176,22 @@ export class RoomService {
    * Shape: `{ success: true, data: <enrichedRoom | null> }`.
    */
   async getActiveRoomForUser(userId: string, lang = 'en'): Promise<any> {
-    const cacheKey = `active-room:${userId}:${lang}`;
-    return this.activeRoomCache.getOrSet(cacheKey, 3_000, async () => {
-      const startedAt = process.hrtime.bigint();
-      const active = await this.roomModel
-        .findOne({
-          'players.playerId': new Types.ObjectId(userId),
-          status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
-        })
-        .populate('game_id', '-created_at')
-        .populate('players.playerId', 'username')
-        .lean();
-      if (!active) {
-        logSlowEvent(this.logger, 'room_active_trace', startedAt, 25, { found: false });
-        return { success: true, messages: [], data: null };
-      }
-      const [enriched] = this.localizeRooms([active], lang);
-      logSlowEvent(this.logger, 'room_active_trace', startedAt, 25, { found: true });
-      return { success: true, messages: [], data: enriched };
-    });
+    const startedAt = process.hrtime.bigint();
+    const active = await this.roomModel
+      .findOne({
+        'players.playerId': new Types.ObjectId(userId),
+        status: { $in: [RoomStatus.WAITING, RoomStatus.STARTED] },
+      })
+      .populate('game_id', '-created_at')
+      .populate('players.playerId', 'username')
+      .lean();
+    if (!active) {
+      logSlowEvent(this.logger, 'room_active_trace', startedAt, 25, { found: false });
+      return { success: true, messages: [], data: null };
+    }
+    const [enriched] = this.localizeRooms([active], lang);
+    logSlowEvent(this.logger, 'room_active_trace', startedAt, 25, { found: true });
+    return { success: true, messages: [], data: enriched };
   }
 
   // ── CREATE ROOM ─────────────────────────────────────────────────────────────
@@ -852,6 +848,5 @@ export class RoomService {
     this.liveStatsCache.clear();
     this.roomsByGameCache.clear();
     this.roomByIdCache.clear();
-    this.activeRoomCache.clear();
   }
 }
