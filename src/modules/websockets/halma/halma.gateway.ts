@@ -503,13 +503,14 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
 
     const now = new Date();
     const elapsed = Math.floor((now.getTime() - game.turn_start_time.getTime()) / 1000);
-    const remaining = Math.max(0, 30 - elapsed);
+    let remaining = Math.max(0, 30 - elapsed);
 
     const sockets = await this.server.in(room_id).fetchSockets();
     const pendingCaptures = game.pending_captures || [];
 
     if (chainPossible) {
       game.turn_start_time = new Date();
+      remaining = 30;
       await game.save();
       durableEmit(client, 'halma', {
         success: true,
@@ -525,6 +526,11 @@ export class HalmaGateway implements OnGatewayInit, OnGatewayConnection, OnGatew
         messages: [this.i18n.translate('ws.games.moveAcceptedEndTurn', lang)]
       });
     }
+
+    // The initial turn gets extra time for both clients to join. Once the
+    // player has made a move, align the authoritative deadline with the
+    // 30-second countdown shown in the game.
+    this.startTimer(client, room_id, remaining);
 
     const p1Name = await this.getCachedUsername(game.player1_id.toString());
     const p2Name = await this.getCachedUsername(game.player2_id.toString());
